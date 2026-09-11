@@ -89,3 +89,16 @@ def test_ptp_status_log_tracks_latest_status_per_week(store):
     # History preserved: earlier week still reads as Active as-of that date.
     assert store.current_ptp_status("ptp-1", date(2026, 1, 12)) == PTPStatus.ACTIVE
     assert store.current_ptp_status("ptp-1", date(2026, 1, 19)) == PTPStatus.BROKEN
+
+
+def test_voucher_log_dedupes_and_supports_key_lookup(store):
+    store.append_voucher_log_entry(
+        "KOL", date(2026, 1, 5), "Acme", "Sales", "SB/1", date(2026, 1, 3), Decimal("5000.00")
+    )
+    # Re-logging the identical voucher (e.g. a re-run of the same week)
+    # must not duplicate - INSERT OR IGNORE on the natural key.
+    store.append_voucher_log_entry(
+        "KOL", date(2026, 1, 5), "Acme", "Sales", "SB/1", date(2026, 1, 3), Decimal("5000.00")
+    )
+    keys = store.logged_voucher_keys("KOL", "Acme")
+    assert keys == {("Sales", "SB/1", date(2026, 1, 3).isoformat(), "5000.00")}

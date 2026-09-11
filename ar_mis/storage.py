@@ -87,6 +87,23 @@ CREATE TABLE IF NOT EXISTS ptp_status_log (
     notes TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (ptp_id) REFERENCES ptp_register (ptp_id)
 );
+
+-- Natural-key record of every voucher line that fed a given week's build,
+-- for Section 4.2 drift isolation: a fresh YTD pull can be diffed against
+-- this table to find exactly which voucher(s) were absent from the
+-- original incremental run (e.g. a backdated entry) and which week's
+-- date range they land in.
+CREATE TABLE IF NOT EXISTS voucher_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    week_ending TEXT NOT NULL,
+    party_ledger_name TEXT NOT NULL,
+    voucher_type TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    voucher_date TEXT NOT NULL,
+    flipped_amount TEXT NOT NULL,
+    UNIQUE (branch_id, party_ledger_name, voucher_type, voucher_number, voucher_date, flipped_amount)
+);
 """
 
 
@@ -234,6 +251,47 @@ class Store:
             ),
         )
         self.conn.commit()
+
+    # ---- Voucher log (append-only, supports 4.2 drift isolation) --
+
+    def append_voucher_log_entry(
+        self,
+        branch_id: str,
+        week_ending: date,
+        party_ledger_name: str,
+        voucher_type: str,
+        voucher_number: str,
+        voucher_date: date,
+        flipped_amount: Decimal,
+    ) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO voucher_log "
+            "(branch_id, week_ending, party_ledger_name, voucher_type, voucher_number, voucher_date, flipped_amount)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                branch_id,
+                week_ending.isoformat(),
+                party_ledger_name,
+                voucher_type,
+                voucher_number,
+                voucher_date.isoformat(),
+                str(flipped_amount),
+            ),
+        )
+        self.conn.commit()
+
+    def logged_voucher_keys(self, branch_id: str, party_ledger_name: str) -> set[tuple[str, str, str, str]]:
+        """Natural keys (voucher_type, voucher_number, voucher_date,
+        flipped_amount) of every voucher line ever logged for this party/
+        branch across all prior weekly runs - the ground truth a fresh
+        YTD pull is diffed against to isolate drift.
+        """
+        cur = self.conn.execute(
+            "SELECT voucher_type, voucher_number, voucher_date, flipped_amount FROM voucher_log"
+            " WHERE branch_id=? AND party_ledger_name=?",
+            (branch_id, party_ledger_name),
+        )
+        return {tuple(row) for row in cur.fetchall()}
 
     def current_ptp_status(self, ptp_id: str, as_of_week: date) -> PTPStatus | None:
         row = self.conn.execute(
