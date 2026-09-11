@@ -1,9 +1,10 @@
 from datetime import date
 from decimal import Decimal
 
-from ar_mis.models import LedgerEntry, Voucher, VoucherType
-from ar_mis.rollforward import aggregate_party_movements
+from ar_mis.models import CustomerMasterRecord, LedgerEntry, Voucher, VoucherType, WeeklySnapshotRow
+from ar_mis.rollforward import aggregate_party_movements, resolve_opening_balances
 from ar_mis.sign import flip_sign
+from ar_mis.storage import Store
 
 
 def test_flip_sign_debit_becomes_positive():
@@ -81,3 +82,38 @@ def test_non_party_ledger_lines_are_excluded():
     movements = aggregate_party_movements([voucher], {party}, {party: Decimal("0.00")})
     assert movements[party].sales == Decimal("100000.00")
     assert "Freight Income" not in movements
+
+
+def test_resolve_opening_balances_uses_pre_mis_outstanding_for_first_week(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
+    openings = resolve_opening_balances(store, {"Acme"}, "KOL")
+    assert openings == {"Acme": Decimal("100000.00")}
+    store.close()
+
+
+def test_resolve_opening_balances_uses_prior_week_closing_after_first_week(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="Acme",
+            branch_id="KOL",
+            week_ending=date(2026, 1, 5),
+            opening=Decimal("100000.00"),
+            sales=Decimal("20000.00"),
+            credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"),
+            receipts=Decimal("-15000.00"),
+            journals=Decimal("0.00"),
+            closing_computed=Decimal("105000.00"),
+            closing_extracted=Decimal("105000.00"),
+            reconciled=True,
+            difference=Decimal("0.00"),
+        )
+    )
+    openings = resolve_opening_balances(store, {"Acme"}, "KOL")
+    # Must use last week's closing (105000), not re-seed from the
+    # Pre-MIS Outstanding baseline (100000) now that a prior week exists.
+    assert openings == {"Acme": Decimal("105000.00")}
+    store.close()

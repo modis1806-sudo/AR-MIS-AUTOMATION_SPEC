@@ -172,6 +172,24 @@ class Store:
         )
         self.conn.commit()
 
+    def get_latest_closing(self, party_id: str, branch_id: str) -> Decimal | None:
+        """Most recent weekly_snapshot.closing_computed for this party/
+        branch, or None if no prior week exists yet. This - not
+        pre_mis_outstanding - is the correct Opening Balance for every
+        week after the first: Section 2.5 fixes the Pre-MIS Outstanding
+        baseline itself against weekly recalculation, it does not mean
+        every week's roll-forward re-seeds from that one figure. Week 1
+        opens from Pre-MIS Outstanding; every week after opens from the
+        prior week's computed closing, exactly like a standard roll-
+        forward bridge.
+        """
+        row = self.conn.execute(
+            "SELECT closing_computed FROM weekly_snapshot WHERE party_id=? AND branch_id=?"
+            " ORDER BY week_ending DESC LIMIT 1",
+            (party_id, branch_id),
+        ).fetchone()
+        return Decimal(row[0]) if row else None
+
     def get_opening_balance(self, party_id: str, branch_id: str) -> Decimal:
         row = self.conn.execute(
             "SELECT pre_mis_outstanding FROM customer_master WHERE party_id=? AND branch_id=?",

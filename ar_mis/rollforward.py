@@ -64,6 +64,21 @@ _TYPE_TO_FIELD = {
 }
 
 
+def resolve_opening_balances(store, party_ledger_names: set[str], branch_id: str) -> dict[str, Decimal]:
+    """Opening Balance per Section 2.5: a party's first-ever week opens
+    from Layer 1's Pre-MIS Outstanding; every week after opens from the
+    prior week's stored closing_computed. Never the other way round, and
+    never recomputed from scratch against Pre-MIS Outstanding once a
+    prior week exists - that would let the weekly pipeline silently
+    re-derive the one figure Section 2.5 requires to stay fixed.
+    """
+    openings: dict[str, Decimal] = {}
+    for party in party_ledger_names:
+        latest = store.get_latest_closing(party, branch_id)
+        openings[party] = latest if latest is not None else store.get_opening_balance(party, branch_id)
+    return openings
+
+
 def aggregate_party_movements(
     vouchers: list[Voucher],
     party_ledger_names: set[str],
