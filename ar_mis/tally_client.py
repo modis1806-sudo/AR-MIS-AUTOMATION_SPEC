@@ -86,14 +86,23 @@ class TallyClient:
         except UnicodeDecodeError:
             return raw.decode("utf-16")
 
+    def list_open_companies(self) -> list[str]:
+        """Every company currently open/reachable at this gateway, with no
+        opinion about which one is "right" - the raw building block behind
+        both confirm_current_company() (checks membership) and the webapp's
+        Discover Companies page (lets a human pick from this same list
+        instead of having to already know the exact name to type in).
+        """
+        raw = self._post(list_of_companies_request())
+        return parse_currently_loaded_companies(raw)
+
     def confirm_current_company(self) -> None:
         """Section 2.2 mandatory check. Raises CompanyMismatchError if the
         company loaded in this Tally instance isn't the expected branch.
         Must be called, and must succeed, before any extraction request
         for this branch.
         """
-        raw = self._post(list_of_companies_request())
-        loaded = parse_currently_loaded_companies(raw)
+        loaded = self.list_open_companies()
         if self.branch.tally_company_name not in loaded:
             raise CompanyMismatchError(self.branch.tally_company_name, loaded)
 

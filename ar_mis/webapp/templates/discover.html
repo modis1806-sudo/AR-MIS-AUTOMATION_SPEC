@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Discover Companies{% endblock %}
+{% block content %}
+<h1>Discover Companies</h1>
+<p class="subtitle">Asks Tally what companies are open right now, instead of you having to already know the exact name to type into Branch Master.</p>
+
+<div class="card">
+<form method="post">
+  <label>Tally Host</label>
+  <input name="tally_host" value="{{ host }}" placeholder="localhost">
+  <label>Tally Port</label>
+  <input name="tally_port" type="number" value="{{ port }}">
+  <p style="margin-top:20px;"><button class="btn" type="submit">Discover</button></p>
+</form>
+</div>
+
+{% if result %}
+  {% if result.ok %}
+    {% if result.companies %}
+    <div class="card">
+      <h2 style="margin-top:0;">Companies currently open at {{ host }}:{{ port }}</h2>
+      <table>
+        <thead><tr><th>Company Name</th><th></th></tr></thead>
+        <tbody>
+        {% for company in result.companies %}
+          <tr>
+            <td>{{ company }}</td>
+            <td><a class="btn" href="{{ url_for('branch_new', tally_company_name=company, tally_host=host, tally_port=port) }}">Use this company</a></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card empty">No companies are currently open at this address.</div>
+    {% endif %}
+  {% else %}
+    <div class="card"><p style="color:#991b1b; margin:0;">{{ result.error }}</p></div>
+  {% endif %}
+{% endif %}
+{% endblock %}

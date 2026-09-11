@@ -11,13 +11,14 @@
   <input name="branch_name" value="{{ branch.branch_name if branch else '' }}" required placeholder="e.g. Kolkata">
 
   <label>Tally Company Name (exact, as it appears loaded in Tally)</label>
-  <input name="tally_company_name" value="{{ branch.tally_company_name if branch else '' }}" required placeholder="e.g. Kolkata HQ">
+  <input name="tally_company_name" value="{{ branch.tally_company_name if branch else (prefill.tally_company_name if prefill else '') }}" required placeholder="e.g. Kolkata HQ">
+  {% if prefill and not branch %}<p style="font-size:12px;color:#6b7280;margin:4px 0 0;">Pre-filled from Discover Companies.</p>{% endif %}
 
   <label>Tally Host</label>
-  <input name="tally_host" value="{{ branch.tally_host if branch else 'localhost' }}" placeholder="localhost">
+  <input name="tally_host" value="{{ branch.tally_host if branch else (prefill.tally_host if prefill else 'localhost') }}" placeholder="localhost">
 
   <label>Tally Port</label>
-  <input name="tally_port" type="number" value="{{ branch.tally_port if branch else 9000 }}">
+  <input name="tally_port" type="number" value="{{ branch.tally_port if branch else (prefill.tally_port if prefill else 9000) }}">
 
   <p style="margin-top:20px;">
     <button class="btn" type="submit">Save</button>

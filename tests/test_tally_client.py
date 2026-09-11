@@ -41,6 +41,19 @@ def test_confirm_current_company_raises_on_mismatch():
     ]
 
 
+def test_list_open_companies_returns_raw_list_with_no_matching_opinion():
+    branch = BranchConfig(branch_id="_probe", branch_name="_probe", tally_company_name="")
+    raw = (FIXTURES / "list_of_companies.xml").read_text()
+    client = _client_with_stubbed_response(branch, raw)
+    companies = client.list_open_companies()
+    assert companies == [
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED (MUNDRA)",
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED (NAGPUR) - (from-1.4.23)",
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED VIZAG - (From 1.4.23)",
+        "SPEEDWAYS LOGISTICS PVT. LTD. (DELHI) (from 1-Apr-23)",
+    ]
+
+
 def test_fetch_vouchers_returns_parsed_vouchers():
     branch = BranchConfig(branch_id="KOL", branch_name="Kolkata", tally_company_name="Kolkata HQ")
     raw = (FIXTURES / "voucher_collection_sales.xml").read_text()

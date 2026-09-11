@@ -68,7 +68,18 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             store.close()
             flash(f"Branch '{branch.branch_name}' added.", "success")
             return redirect(url_for("branches_list"))
-        return render_template("branch_form.html", branch=None)
+
+        # A GET can arrive from Discover Companies with the company/host/
+        # port already known - pre-fill those fields, but branch_id and
+        # branch_name still need a human to name the branch.
+        prefill = None
+        if request.args.get("tally_company_name"):
+            prefill = {
+                "tally_company_name": request.args["tally_company_name"],
+                "tally_host": request.args.get("tally_host", "localhost") or "localhost",
+                "tally_port": request.args.get("tally_port", "9000") or "9000",
+            }
+        return render_template("branch_form.html", branch=None, prefill=prefill)
 
     @app.route("/branches/<branch_id>/edit", methods=["GET", "POST"])
     def branch_edit(branch_id):
@@ -160,6 +171,34 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         store.close()
         return render_template("test_extraction.html", branches=branches, result=result)
+
+    @app.route("/discover", methods=["GET", "POST"])
+    def discover_companies():
+        """Asks Tally what companies are open right now, so a company name
+        can be picked rather than typed from memory - the source of a real
+        production incident (a company that was open when this project
+        started had moved on by the time testing caught up with it).
+        """
+        host = request.form.get("tally_host", "localhost") if request.method == "POST" else "localhost"
+        port = request.form.get("tally_port", "9000") if request.method == "POST" else "9000"
+        result = None
+
+        if request.method == "POST":
+            probe_branch = BranchConfig(
+                branch_id="_probe",
+                branch_name="_probe",
+                tally_company_name="",  # irrelevant - this request doesn't target one company
+                tally_host=host or "localhost",
+                tally_port=int(port or 9000),
+            )
+            client = TallyClient(branch=probe_branch, timeout_seconds=15.0)
+            try:
+                companies = client.list_open_companies()
+                result = {"ok": True, "companies": companies}
+            except TallyConnectionError as exc:
+                result = {"ok": False, "error": str(exc)}
+
+        return render_template("discover.html", host=host, port=port, result=result)
 
     return app
 

@@ -156,3 +156,47 @@ def test_test_extraction_reports_connection_failure_clearly(client, monkeypatch)
     assert b"Could not reach Tally" in resp.data
     # A connection failure must not go on to attempt voucher extraction.
     assert b"Voucher extraction" not in resp.data
+
+
+class FakeTallyClientDiscover:
+    def __init__(self, branch, timeout_seconds=15.0):
+        self.branch = branch
+
+    def list_open_companies(self):
+        return ["SHAIMARINE CONTAINER LINE PRIVATE LIMITED", "SPEEDWAYS LOGISTICS PRIVATE LIMITED (MUNDRA)"]
+
+
+class FakeTallyClientDiscoverUnreachable:
+    def __init__(self, branch, timeout_seconds=15.0):
+        self.branch = branch
+
+    def list_open_companies(self):
+        from ar_mis.tally_client import TallyConnectionError
+
+        raise TallyConnectionError(f"Could not reach Tally at {self.branch.gateway_url}")
+
+
+def test_discover_companies_lists_open_companies_with_use_links(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientDiscover)
+    resp = client.post("/discover", data={"tally_host": "localhost", "tally_port": "9000"})
+    assert b"SHAIMARINE CONTAINER LINE PRIVATE LIMITED" in resp.data
+    assert b"SPEEDWAYS LOGISTICS PRIVATE LIMITED (MUNDRA)" in resp.data
+    assert b"Use this company" in resp.data
+
+
+def test_discover_companies_reports_connection_failure(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientDiscoverUnreachable)
+    resp = client.post("/discover", data={"tally_host": "localhost", "tally_port": "9000"})
+    assert b"Could not reach Tally" in resp.data
+
+
+def test_use_this_company_prefills_add_branch_form(client):
+    resp = client.get(
+        "/branches/new?tally_company_name=SHAIMARINE+CONTAINER+LINE+PRIVATE+LIMITED"
+        "&tally_host=localhost&tally_port=9000"
+    )
+    assert b"SHAIMARINE CONTAINER LINE PRIVATE LIMITED" in resp.data
+    assert b"Pre-filled from Discover Companies" in resp.data
+    # Branch ID/Name must stay blank and editable - only the Tally-side
+    # fields come from discovery, a human still names the branch.
+    assert b'name="branch_id" value=""' in resp.data
