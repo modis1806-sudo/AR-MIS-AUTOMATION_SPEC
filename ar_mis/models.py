@@ -45,11 +45,20 @@ class LedgerEntry:
 
 @dataclass(frozen=True)
 class Voucher:
+    """`voucher_type` is the CATEGORY this voucher was matched into
+    (Section 2.1's five categories), not necessarily Tally's literal
+    VOUCHERTYPENAME - real Tally deployments commonly customize voucher
+    type names with prefixes/suffixes (e.g. "Sales - Export") that still
+    belong to one of the five categories. `raw_voucher_type_name` keeps
+    the original name Tally reported, for audit/debugging.
+    """
+
     voucher_type: VoucherType
     voucher_date: date
     voucher_number: str
     branch_id: str
     entries: list[LedgerEntry] = field(default_factory=list)
+    raw_voucher_type_name: str = ""
 
 
 @dataclass(frozen=True)

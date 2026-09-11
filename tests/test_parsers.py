@@ -5,12 +5,54 @@ from pathlib import Path
 from ar_mis.models import VoucherType
 from ar_mis.parsers import (
     _sanitize_xml,
+    categorize_voucher_type,
     parse_currently_loaded_companies,
     parse_ledger_closing_balances,
     parse_voucher_collection,
 )
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
+
+
+def test_categorize_voucher_type_matches_exact_canonical_names():
+    assert categorize_voucher_type("Sales") == VoucherType.SALES
+    assert categorize_voucher_type("Credit Note") == VoucherType.CREDIT_NOTE
+    assert categorize_voucher_type("Debit Note") == VoucherType.DEBIT_NOTE
+    assert categorize_voucher_type("Receipt") == VoucherType.RECEIPT
+    assert categorize_voucher_type("Journal") == VoucherType.JOURNAL
+
+
+def test_categorize_voucher_type_matches_custom_prefixed_suffixed_names():
+    # Real Tally deployments commonly customize voucher type names -
+    # these must still categorize correctly, not be rejected.
+    assert categorize_voucher_type("Sales - Export") == VoucherType.SALES
+    assert categorize_voucher_type("Local Sales") == VoucherType.SALES
+    assert categorize_voucher_type("GST Credit Note") == VoucherType.CREDIT_NOTE
+    assert categorize_voucher_type("Debit Note - Purchase Return") == VoucherType.DEBIT_NOTE
+    assert categorize_voucher_type("Bank Receipt") == VoucherType.RECEIPT
+    assert categorize_voucher_type("Journal Voucher") == VoucherType.JOURNAL
+
+
+def test_categorize_voucher_type_is_case_insensitive():
+    assert categorize_voucher_type("SALES") == VoucherType.SALES
+    assert categorize_voucher_type("credit note") == VoucherType.CREDIT_NOTE
+
+
+def test_categorize_voucher_type_prefers_credit_note_over_sales_on_ambiguous_name():
+    # A hypothetical custom name containing both keywords should resolve
+    # to the more specific category, not the more generic one.
+    assert categorize_voucher_type("Sales Credit Note") == VoucherType.CREDIT_NOTE
+
+
+def test_categorize_voucher_type_returns_none_for_irrelevant_types():
+    # Payment, Contra, Purchase, Stock Journal etc. are legitimate real
+    # voucher types that simply don't belong to the five AR categories -
+    # returning None for them is correct, not a failure to recognize them.
+    assert categorize_voucher_type("Payment") is None
+    assert categorize_voucher_type("Contra") is None
+    assert categorize_voucher_type("Purchase") is None
+    assert categorize_voucher_type("Stock Journal") is None
+    assert categorize_voucher_type("") is None
 
 
 def test_sanitize_xml_fixes_bare_ampersand():
@@ -54,6 +96,22 @@ def test_parse_voucher_collection_receipt_with_partial_multi_bill_allocation():
     assert len(party_entries) == 2
     amounts = {e.bill_name: e.amount_as_extracted for e in party_entries}
     assert amounts == {"SB/0143": Decimal("60000.00"), "SB/0120": Decimal("27500.00")}
+
+
+def test_parse_voucher_collection_keeps_custom_named_ar_types_and_skips_irrelevant_ones():
+    raw = (FIXTURES / "voucher_collection_mixed_types.xml").read_text()
+    vouchers = parse_voucher_collection(raw, branch_id="KOL")
+    # Payment and Stock Journal must be silently skipped - not errors,
+    # just not AR-relevant. Only 2 of the 4 source vouchers survive.
+    assert len(vouchers) == 2
+
+    by_number = {v.voucher_number: v for v in vouchers}
+    assert by_number["SB/0200"].voucher_type == VoucherType.SALES
+    assert by_number["SB/0200"].raw_voucher_type_name == "Sales - Export"
+    assert by_number["JV/0009"].voucher_type == VoucherType.JOURNAL
+    assert by_number["JV/0009"].raw_voucher_type_name == "Provision Journal"
+    assert "PAY/0011" not in by_number
+    assert "SJ/0004" not in by_number
 
 
 def test_parse_ledger_closing_balances():

@@ -42,7 +42,7 @@ def test_companies_command_raw_flag_also_prints_xml(stub_post, capsys):
     assert "Currently open:" in out
 
 
-def test_vouchers_command_writes_all_five_types_to_output_file(stub_post, tmp_path):
+def test_vouchers_command_writes_raw_response_and_prints_category_counts(stub_post, tmp_path, capsys):
     stub_post["next"] = (FIXTURES / "voucher_collection_sales.xml").read_text()
     output_path = tmp_path / "dump.txt"
     exit_code = diagnostics.main(
@@ -50,9 +50,9 @@ def test_vouchers_command_writes_all_five_types_to_output_file(stub_post, tmp_pa
     )
     assert exit_code == 0
     text = output_path.read_text()
-    assert "===== Sales =====" in text
-    assert "===== Journal =====" in text
-    assert text.count("<ENVELOPE>") == 5  # one per voucher type
+    assert text.count("<ENVELOPE>") == 1  # one request now, not five
+    out = capsys.readouterr().out
+    assert "Sales: 2" in out
 
 
 def test_ledgers_command_prints_raw_response(stub_post, capsys):

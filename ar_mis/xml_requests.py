@@ -17,8 +17,6 @@ from __future__ import annotations
 from datetime import date
 from xml.sax.saxutils import escape
 
-from ar_mis.models import VoucherType
-
 _TALLY_DATE_FMT = "%Y%m%d"
 
 
@@ -28,16 +26,25 @@ def _tally_date(d: date) -> str:
 
 def voucher_export_request(
     company_name: str,
-    voucher_type: VoucherType,
     from_date: date,
     to_date: date,
 ) -> str:
-    """Collection export request for one voucher type over a date range,
+    """Collection export request for every voucher over a date range,
     fetching bill-wise allocation detail via ALLLEDGERENTRIES.LIST /
     BILLALLOCATIONS.LIST.
+
+    Deliberately fetches ALL voucher types in one request rather than
+    filtering server-side per type (an earlier version did, via a TDL
+    `$VoucherTypeName = "Sales"` formula). Real Tally deployments
+    commonly have custom-named voucher types with prefixes/suffixes
+    (e.g. "Sales - Export") that are still fundamentally that category -
+    exact server-side filtering would silently miss them, and there is
+    no verified-against-real-Tally way to do "contains" filtering in TDL
+    formula syntax. Categorization instead happens client-side in
+    parsers.py, where it's ordinary Python string matching we can trust
+    and test.
     """
     company = escape(company_name)
-    vtype = escape(voucher_type.value)
     return f"""<ENVELOPE>
  <HEADER>
   <VERSION>1</VERSION>
@@ -57,13 +64,11 @@ def voucher_export_request(
     <TDLMESSAGE>
      <COLLECTION NAME="ARMIS Voucher Collection" ISMODIFY="No">
       <TYPE>Voucher</TYPE>
-      <FILTERS>ARMISVoucherTypeFilter</FILTERS>
       <FETCH>DATE,VOUCHERNUMBER,VOUCHERTYPENAME,ALLLEDGERENTRIES.LIST</FETCH>
       <FETCH>ALLLEDGERENTRIES.LEDGERNAME,ALLLEDGERENTRIES.AMOUNT,ALLLEDGERENTRIES.ISDEEMEDPOSITIVE</FETCH>
       <FETCH>ALLLEDGERENTRIES.BILLALLOCATIONS.LIST</FETCH>
       <FETCH>ALLLEDGERENTRIES.BILLALLOCATIONS.NAME,ALLLEDGERENTRIES.BILLALLOCATIONS.AMOUNT</FETCH>
      </COLLECTION>
-     <SYSTEM TYPE="Formulae" NAME="ARMISVoucherTypeFilter">$VoucherTypeName = "{vtype}"</SYSTEM>
     </TDLMESSAGE>
    </TDL>
   </DESC>

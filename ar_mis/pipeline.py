@@ -10,9 +10,10 @@ on a real branch before the first live run.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 from ar_mis.config import BranchConfig, financial_year_start
-from ar_mis.models import WeeklySnapshotRow
+from ar_mis.models import CustomerMasterRecord, WeeklySnapshotRow
 from ar_mis.orchestration import BranchRunOutcome, ExtractionOutcome
 from ar_mis.reconciliation import reconcile_all_parties
 from ar_mis.rollforward import aggregate_party_movements, resolve_opening_balances
@@ -57,6 +58,20 @@ def build_branch_runner(store: Store, week_ending: date, from_date: date, to_dat
         }
         party_names = set(closing_extracted)
 
+        # A party in the Sundry Debtors YTD pull with no customer_master
+        # record is a genuinely new customer (the client provides a
+        # comprehensive opening-balance seed covering every customer as
+        # of go-live, so anything missing from it didn't exist then).
+        # Auto-create at Pre-MIS Outstanding = 0, the only correct value
+        # for a party with no legacy balance - but still surface it in
+        # the report's Exceptions section, since a new customer is worth
+        # a human noticing even when the number itself isn't in doubt.
+        new_parties = [
+            party for party in party_names if not store.customer_master_exists(party, branch.branch_id)
+        ]
+        for party in new_parties:
+            store.upsert_customer_master(CustomerMasterRecord(party, party, branch.branch_id, Decimal("0.00")))
+
         openings = resolve_opening_balances(store, party_names, branch.branch_id)
         movements = aggregate_party_movements(all_vouchers, party_names, openings)
         results = reconcile_all_parties(branch.branch_id, movements, closing_extracted)
@@ -70,6 +85,7 @@ def build_branch_runner(store: Store, week_ending: date, from_date: date, to_dat
                 outcome=ExtractionOutcome.RECON_FAIL,
                 detail=f"{len(failed)} part(y/ies) did not reconcile: {failed_names}",
                 failed_parties=[r.party_ledger_name for r in failed],
+                new_parties=new_parties,
             )
 
         for result in results:
@@ -111,6 +127,7 @@ def build_branch_runner(store: Store, week_ending: date, from_date: date, to_dat
             branch_name=branch.branch_name,
             outcome=ExtractionOutcome.PASS,
             detail=f"{len(results)} part(y/ies) reconciled clean",
+            new_parties=new_parties,
         )
 
     return run_branch

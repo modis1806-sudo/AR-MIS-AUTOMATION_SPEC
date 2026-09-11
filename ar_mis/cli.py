@@ -71,9 +71,13 @@ def run(
             )
 
         gate_status = evaluate_output_gate(cycle_report, drift_findings)
+        new_parties = [
+            (party, outcome.branch_id) for outcome in cycle_report.results for party in outcome.new_parties
+        ]
         report_path = f"{report_dir}/AR_MIS_{week_ending.isoformat()}.xlsx"
         generate_report(
-            store, week_ending, gate_status, cycle_report.final_failed_branches, drift_findings, report_path
+            store, week_ending, gate_status, cycle_report.final_failed_branches, drift_findings, report_path,
+            new_parties=new_parties,
         )
 
         print(f"Report written to {report_path}")

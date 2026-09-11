@@ -18,6 +18,43 @@ from ar_mis.models import LedgerEntry, Voucher, VoucherType
 
 _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
 
+# Ordered deliberately: "Credit Note" / "Debit Note" are checked before
+# "Sales" so a custom name like "Sales Credit Note" (if a deployment ever
+# has one) categorizes as a credit note, the more specific match, rather
+# than as a sale. Matching is substring/case-insensitive because real
+# Tally deployments commonly customize voucher type names with prefixes
+# or suffixes (e.g. "Sales - Export") while the underlying category is
+# unchanged - Section 2.1's five categories, not Tally's literal name.
+_CATEGORY_KEYWORDS: list[tuple[VoucherType, str]] = [
+    (VoucherType.CREDIT_NOTE, "credit note"),
+    (VoucherType.DEBIT_NOTE, "debit note"),
+    (VoucherType.RECEIPT, "receipt"),
+    (VoucherType.JOURNAL, "journal"),
+    (VoucherType.SALES, "sales"),
+]
+
+# "Stock Journal" is Tally's built-in name for an inventory transfer
+# between godowns - structurally unrelated to an accounting Journal
+# despite sharing the word "journal". A naive substring match on
+# "journal" would wrongly pull every stock transfer into AR movement.
+_EXCLUDED_NAME_SUBSTRINGS = ["stock journal"]
+
+
+def categorize_voucher_type(raw_voucher_type_name: str) -> VoucherType | None:
+    """Maps a raw Tally VOUCHERTYPENAME to one of the five AR-relevant
+    categories, or None if it doesn't match any of them - which is the
+    normal, expected outcome for the many voucher types a real company
+    has that are irrelevant to debtor movement (Payment, Contra,
+    Purchase, Stock Journal, and so on). None is not an error case.
+    """
+    lowered = raw_voucher_type_name.strip().lower()
+    if any(excluded in lowered for excluded in _EXCLUDED_NAME_SUBSTRINGS):
+        return None
+    for category, keyword in _CATEGORY_KEYWORDS:
+        if keyword in lowered:
+            return category
+    return None
+
 
 def _sanitize_xml(raw: str) -> str:
     return _BARE_AMPERSAND.sub("&amp;", raw)
@@ -34,19 +71,23 @@ def _text(el: ET.Element | None, default: str = "") -> str:
 
 
 def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
+    """Parses every voucher in the response, keeping only the ones that
+    categorize into one of Section 2.1's five AR-relevant types
+    (categorize_voucher_type). A voucher whose type doesn't match any of
+    them (Payment, Contra, Purchase, Stock Journal, ...) is silently
+    skipped - that's the normal case for most of a company's vouchers,
+    not an error. This request is no longer filtered server-side by
+    voucher type (see xml_requests.voucher_export_request), so this
+    function is what actually separates AR-relevant vouchers from
+    everything else in the company's books.
+    """
     root = ET.fromstring(_sanitize_xml(raw_xml))
     vouchers: list[Voucher] = []
     for v_el in root.iter("VOUCHER"):
-        voucher_type_name = _text(v_el.find("VOUCHERTYPENAME"))
-        try:
-            voucher_type = VoucherType(voucher_type_name)
-        except ValueError:
-            # Unknown/unexpected voucher type in the response for a
-            # collection that filtered on a specific type - surfacing
-            # this as a hard error is safer than silently coercing it.
-            raise ValueError(
-                f"Unrecognized VOUCHERTYPENAME '{voucher_type_name}' in extraction response"
-            ) from None
+        raw_voucher_type_name = _text(v_el.find("VOUCHERTYPENAME"))
+        voucher_type = categorize_voucher_type(raw_voucher_type_name)
+        if voucher_type is None:
+            continue
 
         entries: list[LedgerEntry] = []
         for le_el in v_el.findall("ALLLEDGERENTRIES.LIST"):
@@ -80,6 +121,7 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
                 voucher_number=_text(v_el.find("VOUCHERNUMBER")),
                 branch_id=branch_id,
                 entries=entries,
+                raw_voucher_type_name=raw_voucher_type_name,
             )
         )
     return vouchers

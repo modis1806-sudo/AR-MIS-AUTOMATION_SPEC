@@ -114,6 +114,19 @@ def test_exceptions_sheet_lists_reconciliation_failures_separately(tmp_path):
     assert any(r[0] == "Party reconciliation FAIL" and "DEL" in r[1] for r in rows[1:])
 
 
+def test_exceptions_sheet_lists_new_parties(tmp_path):
+    store, week1, week2 = _build_store(tmp_path)
+    output = tmp_path / "report.xlsx"
+    generate_report(
+        store, week1, GateStatus(clean=True, reasons=[]), final_failed_branches=[], drift_findings=[],
+        output_path=str(output), new_parties=[("Fresh Cargo Ltd", "KOL")],
+    )
+    wb = load_workbook(output)
+    exceptions = wb["Exceptions"]
+    rows = list(exceptions.iter_rows(values_only=True))
+    assert any(r[0] == "New party this week" and "Fresh Cargo Ltd" in r[1] for r in rows[1:])
+
+
 def test_movement_trend_flags_missing_week_gap(tmp_path):
     store, week1, week2 = _build_store(tmp_path)
     output = tmp_path / "report.xlsx"

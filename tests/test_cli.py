@@ -81,6 +81,37 @@ def test_cli_run_clean_cycle_produces_validated_report(tmp_path, monkeypatch):
     assert status_row[1] == "VALIDATED"
 
 
+def test_cli_run_auto_discovers_new_party_without_pre_seeding(tmp_path, monkeypatch):
+    # Deliberately skip _seed_customer_master - "Acme" has no
+    # customer_master record at all, simulating a genuinely new
+    # customer not on the go-live seed list. The pipeline must not
+    # crash; it should auto-create Acme at Pre-MIS Outstanding = 0 and
+    # still reconcile clean, since opening(0) + sales(100000) = 100000
+    # matches the fake YTD closing balance.
+    monkeypatch.setattr("ar_mis.pipeline.TallyClient", FakeTallyClient)
+    monkeypatch.setattr("ar_mis.cli.TallyClient", FakeTallyClient)
+
+    db_path = str(tmp_path / "cli.db")
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+
+    week_ending = date(2026, 1, 5)
+    exit_code = cli.run(
+        week_ending, db_path=db_path, report_dir=str(report_dir), branches=[KOL],
+        announce=lambda *_: None, confirm=lambda *_: "",
+    )
+    assert exit_code == 0
+
+    store = Store(db_path)
+    assert store.get_opening_balance("Acme", "KOL") == Decimal("0.00")
+    store.close()
+
+    report_path = report_dir / f"AR_MIS_{week_ending.isoformat()}.xlsx"
+    wb = load_workbook(report_path)
+    exceptions_rows = list(wb["Exceptions"].iter_rows(values_only=True))
+    assert any(r[0] == "New party this week" and "Acme" in r[1] for r in exceptions_rows[1:])
+
+
 def test_cli_run_halts_on_reconciliation_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr("ar_mis.pipeline.TallyClient", FakeTallyClientMismatch)
     monkeypatch.setattr("ar_mis.cli.TallyClient", FakeTallyClientMismatch)

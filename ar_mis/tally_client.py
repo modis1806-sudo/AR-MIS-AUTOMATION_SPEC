@@ -106,21 +106,29 @@ class TallyClient:
         if self.branch.tally_company_name not in loaded:
             raise CompanyMismatchError(self.branch.tally_company_name, loaded)
 
-    def fetch_vouchers(
-        self, voucher_type: VoucherType, from_date: date, to_date: date
-    ) -> list[Voucher]:
-        raw = self._post(
-            voucher_export_request(self.branch.tally_company_name, voucher_type, from_date, to_date)
-        )
+    def fetch_vouchers(self, from_date: date, to_date: date) -> list[Voucher]:
+        """One request for every voucher in the period - see
+        xml_requests.voucher_export_request for why this isn't filtered
+        by type server-side. Only vouchers that categorize into one of
+        the five AR-relevant types (parsers.categorize_voucher_type) come
+        back; everything else (Payment, Contra, Purchase, ...) is
+        already excluded by parse_voucher_collection.
+        """
+        raw = self._post(voucher_export_request(self.branch.tally_company_name, from_date, to_date))
         return parse_voucher_collection(raw, self.branch.branch_id)
 
     def fetch_all_voucher_types(
         self, from_date: date, to_date: date
     ) -> dict[VoucherType, list[Voucher]]:
-        """Pulls all five voucher types for the period, per Section 2.1's
-        'uniform method across all five voucher types' requirement.
+        """Same vouchers as fetch_vouchers(), bucketed by category - kept
+        as a separate method because callers (pipeline.py, the webapp,
+        the weekly CLI) want per-type breakdowns, not because it costs a
+        second request; it's the same one request as fetch_vouchers().
         """
-        return {vt: self.fetch_vouchers(vt, from_date, to_date) for vt in VoucherType}
+        buckets: dict[VoucherType, list[Voucher]] = {vt: [] for vt in VoucherType}
+        for voucher in self.fetch_vouchers(from_date, to_date):
+            buckets[voucher.voucher_type].append(voucher)
+        return buckets
 
     def fetch_ytd_sundry_debtors(self, fy_start: date, as_of: date) -> dict[str, Decimal]:
         raw = self._post(ytd_sundry_debtors_request(self.branch.tally_company_name, fy_start, as_of))

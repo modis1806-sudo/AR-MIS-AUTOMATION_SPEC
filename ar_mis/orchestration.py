@@ -40,6 +40,13 @@ class BranchRunOutcome:
     outcome: ExtractionOutcome
     detail: str
     failed_parties: list[str] = field(default_factory=list)
+    new_parties: list[str] = field(default_factory=list)
+    """Parties auto-created this run because extraction found them (in the
+    Sundry Debtors YTD pull) with no existing customer_master record.
+    Populated even on a PASS outcome - a new customer isn't a failure,
+    but it's worth a human noticing, so it's still surfaced separately in
+    the report's Exceptions section rather than blended into Party Detail.
+    """
 
 
 class EscalationRequired(Exception):

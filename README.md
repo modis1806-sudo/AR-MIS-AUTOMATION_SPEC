@@ -166,6 +166,31 @@ bulk re-load. A changed balance before any weekly run exists for that party
 (i.e. still fixing a bad initial load) requires `--force` and is reported
 either way — nothing is overwritten silently.
 
+**New customers that arrive after the seed is loaded are handled automatically,
+not by editing the CSV again.** If extraction finds a party in Tally's Sundry
+Debtors ledger with no customer_master record, it auto-creates one with
+Pre-MIS Outstanding = 0 — the only correct value for a party that didn't exist
+at go-live, given the seed CSV is a comprehensive one-time list of everyone
+who did. It's still surfaced as a "New party this week" line in the report's
+Exceptions section, not silently absorbed — worth a human noticing even
+though the number itself isn't in doubt.
+
+## Voucher type matching: contains, not exact
+
+Real Tally deployments commonly customize voucher type names with prefixes
+or suffixes (e.g. "Sales - Export", "GST Credit Note") while the underlying
+category is unchanged. Extraction no longer filters by voucher type
+server-side (an earlier version did, via a TDL formula) — it pulls every
+voucher in the date range in one request and categorizes each one
+client-side (`parsers.categorize_voucher_type`) by matching the raw
+`VOUCHERTYPENAME` against the five category keywords, case-insensitively,
+as a substring. A voucher that matches none of them (Payment, Contra,
+Purchase, Stock Journal, and so on) is silently excluded — that's the normal
+case for most of a company's vouchers, not an error. One deliberate
+exclusion: "Stock Journal" is never categorized as Journal despite
+containing that word, since it's Tally's built-in name for an inventory
+transfer between godowns, unrelated to an accounting Journal voucher.
+
 ## Running the weekly cycle
 
 ```

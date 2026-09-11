@@ -121,9 +121,22 @@ def _build_party_detail_sheet(wb, rows_this_week) -> None:
     _autosize(ws)
 
 
-def _build_exceptions_sheet(wb, rows_this_week, final_failed_branches, drift_findings: list[DriftFinding]) -> None:
+def _build_exceptions_sheet(
+    wb, rows_this_week, final_failed_branches, drift_findings: list[DriftFinding],
+    new_parties: list[tuple[str, str]] | None = None,
+) -> None:
     ws = wb.create_sheet("Exceptions")
     _header_row(ws, ["Type", "Party / Branch", "Detail"])
+
+    for party, branch_id in new_parties or []:
+        ws.append(
+            [
+                "New party this week",
+                f"{party} / {branch_id}",
+                "Auto-created with Pre-MIS Outstanding = 0 (not on the go-live seed list) - not a data error, "
+                "worth a human glance.",
+            ]
+        )
 
     for r in rows_this_week:
         if not r["reconciled"]:
@@ -217,6 +230,7 @@ def generate_report(
     final_failed_branches,
     drift_findings: list[DriftFinding],
     output_path: str,
+    new_parties: list[tuple[str, str]] | None = None,
 ) -> None:
     """Always writes a report file - a non-clean gate does not mean "no
     report", it means the report is stamped UNVALIDATED and held for
@@ -227,7 +241,7 @@ def generate_report(
     wb = Workbook()
     _build_summary_sheet(wb, week_ending, rows_this_week, gate_status)
     _build_party_detail_sheet(wb, rows_this_week)
-    _build_exceptions_sheet(wb, rows_this_week, final_failed_branches, drift_findings)
+    _build_exceptions_sheet(wb, rows_this_week, final_failed_branches, drift_findings, new_parties)
     _build_movement_trend_sheet(wb, store)
     _build_ptp_sheet(wb, store, week_ending)
 

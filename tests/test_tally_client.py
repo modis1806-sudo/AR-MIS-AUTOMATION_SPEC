@@ -60,8 +60,19 @@ def test_fetch_vouchers_returns_parsed_vouchers():
     client = _client_with_stubbed_response(branch, raw)
     from datetime import date
 
-    from ar_mis.models import VoucherType
-
-    vouchers = client.fetch_vouchers(VoucherType.SALES, date(2026, 4, 1), date(2026, 4, 7))
+    vouchers = client.fetch_vouchers(date(2026, 4, 1), date(2026, 4, 7))
     assert len(vouchers) == 2
     assert all(v.branch_id == "KOL" for v in vouchers)
+
+
+def test_fetch_all_voucher_types_buckets_from_a_single_fetch():
+    from datetime import date
+
+    from ar_mis.models import VoucherType
+
+    branch = BranchConfig(branch_id="KOL", branch_name="Kolkata", tally_company_name="Kolkata HQ")
+    raw = (FIXTURES / "voucher_collection_sales.xml").read_text()
+    client = _client_with_stubbed_response(branch, raw)
+    buckets = client.fetch_all_voucher_types(date(2026, 4, 1), date(2026, 4, 7))
+    assert len(buckets[VoucherType.SALES]) == 2
+    assert buckets[VoucherType.RECEIPT] == []

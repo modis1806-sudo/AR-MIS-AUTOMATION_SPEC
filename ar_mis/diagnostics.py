@@ -21,8 +21,7 @@ import sys
 from datetime import date, timedelta
 
 from ar_mis.config import BranchConfig, financial_year_start
-from ar_mis.models import VoucherType
-from ar_mis.parsers import parse_currently_loaded_companies
+from ar_mis.parsers import parse_currently_loaded_companies, parse_voucher_collection
 from ar_mis.tally_client import TallyClient
 from ar_mis.xml_requests import (
     list_of_companies_request,
@@ -55,23 +54,33 @@ def cmd_companies(args: argparse.Namespace) -> int:
 
 
 def cmd_vouchers(args: argparse.Namespace) -> int:
+    """One request now, not five - see xml_requests.voucher_export_request.
+    Prints/saves the raw response, then the categorized breakdown so you
+    can see both what Tally actually said and what this codebase made of
+    it (categorize_voucher_type in parsers.py).
+    """
     client = _client(args.host, args.port, args.company)
     to_date = date.fromisoformat(args.to) if args.to else date.today()
     from_date = date.fromisoformat(args.frm) if args.frm else to_date - timedelta(days=args.days)
 
-    chunks = []
-    for vtype in VoucherType:
-        chunks.append(f"\n\n===== {vtype.value} =====\n\n")
-        request = voucher_export_request(args.company, vtype, from_date, to_date)
-        chunks.append(client._post(request))
-    text = "".join(chunks)
+    raw = client._post(voucher_export_request(args.company, from_date, to_date))
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
-            f.write(text)
-        print(f"Written to {args.output}")
+            f.write(raw)
+        print(f"Raw response written to {args.output}")
     else:
-        print(text)
+        print(raw)
+
+    counts: dict[str, int] = {}
+    for voucher in parse_voucher_collection(raw, branch_id="_diag"):
+        counts[voucher.voucher_type.value] = counts.get(voucher.voucher_type.value, 0) + 1
+    print("\nCategorized as AR-relevant:")
+    if counts:
+        for category, count in counts.items():
+            print(f"  - {category}: {count}")
+    else:
+        print("  (none)")
     return 0
 
 
