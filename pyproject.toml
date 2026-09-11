@@ -5,6 +5,7 @@ description = "Tally extraction and AR MIS reporting pipeline"
 requires-python = ">=3.10"
 dependencies = [
     "openpyxl>=3.1",
+    "flask>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -13,7 +14,10 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["ar_mis"]
+packages = ["ar_mis", "ar_mis.webapp"]
+
+[tool.setuptools.package-data]
+"ar_mis.webapp" = ["templates/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

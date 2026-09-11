@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit Branch' if branch else 'Add Branch' }}{% endblock %}
+{% block content %}
+<h1>{{ 'Edit Branch' if branch else 'Add Branch' }}</h1>
+<div class="card">
+<form method="post">
+  <label>Branch ID{% if branch %} (fixed once created){% endif %}</label>
+  <input name="branch_id" value="{{ branch.branch_id if branch else '' }}" {% if branch %}readonly{% endif %} required placeholder="e.g. KOL">
+
+  <label>Branch Name</label>
+  <input name="branch_name" value="{{ branch.branch_name if branch else '' }}" required placeholder="e.g. Kolkata">
+
+  <label>Tally Company Name (exact, as it appears loaded in Tally)</label>
+  <input name="tally_company_name" value="{{ branch.tally_company_name if branch else '' }}" required placeholder="e.g. Kolkata HQ">
+
+  <label>Tally Host</label>
+  <input name="tally_host" value="{{ branch.tally_host if branch else 'localhost' }}" placeholder="localhost">
+
+  <label>Tally Port</label>
+  <input name="tally_port" type="number" value="{{ branch.tally_port if branch else 9000 }}">
+
+  <p style="margin-top:20px;">
+    <button class="btn" type="submit">Save</button>
+    <a class="btn secondary" href="{{ url_for('branches_list') }}">Cancel</a>
+  </p>
+</form>
+</div>
+{% endblock %}

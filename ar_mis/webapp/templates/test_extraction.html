@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Test Extraction{% endblock %}
+{% block content %}
+<h1>Test Extraction</h1>
+<p class="subtitle">Runs a real connectivity + extraction check against the selected branch's Tally instance. Read-only — nothing is written to the database.</p>
+
+<div class="card">
+{% if branches %}
+<form method="post">
+  <label>Branch</label>
+  <select name="branch_id" required>
+    {% for b in branches %}
+      <option value="{{ b.branch_id }}" {% if result and result.branch.branch_id == b.branch_id %}selected{% endif %}>
+        {{ b.branch_name }} — {{ b.tally_company_name }} @ {{ b.tally_host }}:{{ b.tally_port }}
+      </option>
+    {% endfor %}
+  </select>
+
+  <label>Look back (days)</label>
+  <input name="days" type="number" value="7" min="1" max="365">
+
+  <p style="margin-top:20px;"><button class="btn" type="submit">Run Test</button></p>
+</form>
+{% else %}
+<p>No branches configured yet. <a href="{{ url_for('branch_new') }}">Add one in Branch Master</a> first.</p>
+{% endif %}
+</div>
+
+{% if result %}
+<div class="card">
+  <h2 style="margin-top:0;">
+    Result — {{ result.branch.branch_name }}
+    <span class="pill {{ 'ok' if result.all_ok else 'fail' }}">{{ 'ALL PASSED' if result.all_ok else 'FAILED' }}</span>
+  </h2>
+  <table>
+    <thead><tr><th>Step</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for step, ok, detail in result.steps %}
+      <tr>
+        <td>{{ step }}</td>
+        <td><span class="pill {{ 'ok' if ok else 'fail' }}">{{ 'PASS' if ok else 'FAIL' }}</span></td>
+        <td>{{ detail }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

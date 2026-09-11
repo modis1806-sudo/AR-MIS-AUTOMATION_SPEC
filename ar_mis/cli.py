@@ -15,7 +15,7 @@ import sys
 from collections.abc import Callable
 from datetime import date, timedelta
 
-from ar_mis.config import BRANCHES, BranchConfig, financial_year_start
+from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.gate import evaluate_output_gate
 from ar_mis.orchestration import EscalationRequired, run_weekly_cycle
 from ar_mis.pipeline import build_branch_runner
@@ -33,10 +33,16 @@ def run(
     announce: Callable[[str], None] = print,
     confirm: Callable[[str], str] = input,
 ) -> int:
-    branches = branches if branches is not None else BRANCHES
     from_date = week_ending - timedelta(days=6)
     store = Store(db_path)
     try:
+        # Branch list is user-editable master data (Branch Master screen /
+        # storage.list_branches), not a hardcoded Python list - `branches`
+        # is only overridable here for tests.
+        branches = branches if branches is not None else store.list_branches()
+        if not branches:
+            print("No branches configured. Add at least one in Branch Master before running.")
+            return 1
         run_branch = build_branch_runner(store, week_ending, from_date, week_ending)
         try:
             cycle_report = run_weekly_cycle(branches, run_branch, announce=announce, confirm=confirm)

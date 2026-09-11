@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Branch Master{% endblock %}
+{% block content %}
+<h1>Branch Master</h1>
+<p class="subtitle">Every branch this pipeline extracts from. Add, edit or remove branches here — never in code.</p>
+<p><a class="btn" href="{{ url_for('branch_new') }}">+ Add Branch</a></p>
+
+{% if branches %}
+<table>
+  <thead>
+    <tr><th>Branch ID</th><th>Branch Name</th><th>Tally Company Name</th><th>Host</th><th>Port</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for b in branches %}
+    <tr>
+      <td>{{ b.branch_id }}</td>
+      <td>{{ b.branch_name }}</td>
+      <td>{{ b.tally_company_name }}</td>
+      <td>{{ b.tally_host }}</td>
+      <td>{{ b.tally_port }}</td>
+      <td class="row-actions">
+        <a href="{{ url_for('branch_edit', branch_id=b.branch_id) }}">Edit</a>
+        &nbsp;·&nbsp;
+        <form method="post" action="{{ url_for('branch_delete', branch_id=b.branch_id) }}" style="display:inline"
+              onsubmit="return confirm('Remove {{ b.branch_name }}?');">
+          <button type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="card empty">No branches configured yet.</div>
+{% endif %}
+{% endblock %}

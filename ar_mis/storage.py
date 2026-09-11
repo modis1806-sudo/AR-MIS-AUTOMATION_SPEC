@@ -20,6 +20,7 @@ from dataclasses import asdict
 from datetime import date
 from decimal import Decimal
 
+from ar_mis.config import BranchConfig
 from ar_mis.models import (
     CustomerMasterRecord,
     PreMisAdjustment,
@@ -30,6 +31,14 @@ from ar_mis.models import (
 )
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS branch_master (
+    branch_id TEXT PRIMARY KEY,
+    branch_name TEXT NOT NULL,
+    tally_company_name TEXT NOT NULL,
+    tally_host TEXT NOT NULL DEFAULT 'localhost',
+    tally_port INTEGER NOT NULL DEFAULT 9000
+);
+
 CREATE TABLE IF NOT EXISTS customer_master (
     party_id TEXT NOT NULL,
     branch_id TEXT NOT NULL,
@@ -122,6 +131,56 @@ class Store:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+    # ---- Branch Master (extraction config, user-editable) ----------
+    #
+    # This is deliberately a database table, not a hardcoded Python list
+    # (ar_mis/config.py used to carry a placeholder BRANCHES list) - the
+    # user configuring which branches exist and how to reach their Tally
+    # instance is master-data entry, exactly like Layer 1's customer
+    # master, not something that should require editing source code.
+
+    def list_branches(self) -> list[BranchConfig]:
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute("SELECT * FROM branch_master ORDER BY branch_name")
+        return [
+            BranchConfig(
+                branch_id=row["branch_id"],
+                branch_name=row["branch_name"],
+                tally_company_name=row["tally_company_name"],
+                tally_host=row["tally_host"],
+                tally_port=row["tally_port"],
+            )
+            for row in cur.fetchall()
+        ]
+
+    def get_branch(self, branch_id: str) -> BranchConfig | None:
+        self.conn.row_factory = sqlite3.Row
+        row = self.conn.execute("SELECT * FROM branch_master WHERE branch_id=?", (branch_id,)).fetchone()
+        if row is None:
+            return None
+        return BranchConfig(
+            branch_id=row["branch_id"],
+            branch_name=row["branch_name"],
+            tally_company_name=row["tally_company_name"],
+            tally_host=row["tally_host"],
+            tally_port=row["tally_port"],
+        )
+
+    def upsert_branch(self, branch: BranchConfig) -> None:
+        self.conn.execute(
+            "INSERT INTO branch_master (branch_id, branch_name, tally_company_name, tally_host, tally_port)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(branch_id) DO UPDATE SET"
+            " branch_name=excluded.branch_name, tally_company_name=excluded.tally_company_name,"
+            " tally_host=excluded.tally_host, tally_port=excluded.tally_port",
+            (branch.branch_id, branch.branch_name, branch.tally_company_name, branch.tally_host, branch.tally_port),
+        )
+        self.conn.commit()
+
+    def delete_branch(self, branch_id: str) -> None:
+        self.conn.execute("DELETE FROM branch_master WHERE branch_id=?", (branch_id,))
+        self.conn.commit()
 
     # ---- Layer 1: customer master ---------------------------------
 

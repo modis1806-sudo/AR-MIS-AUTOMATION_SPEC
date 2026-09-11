@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}AR MIS{% endblock %}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin:0; background:#f4f5f7; color:#1f2937; }
+  header { background:#1f2937; color:#fff; padding:16px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  header a.brand { color:#fff; text-decoration:none; font-weight:700; font-size:16px; }
+  nav a { color:#d1d5db; margin-left:20px; text-decoration:none; font-size:14px; }
+  nav a:hover { color:#fff; }
+  main { max-width: 960px; margin: 32px auto; padding: 0 20px; }
+  h1 { font-size:22px; margin-bottom:4px; }
+  .subtitle { color:#6b7280; margin-top:0; margin-bottom:24px; font-size:14px; }
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  th, td { text-align:left; padding:10px 14px; border-bottom:1px solid #e5e7eb; font-size:14px; }
+  th { background:#f9fafb; font-weight:600; color:#374151; }
+  tr:last-child td { border-bottom:none; }
+  .btn { display:inline-block; background:#2563eb; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-size:14px; border:none; cursor:pointer; }
+  .btn.secondary { background:#e5e7eb; color:#1f2937; }
+  .card { background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:20px; }
+  form label { display:block; font-size:13px; font-weight:600; margin:14px 0 4px; color:#374151; }
+  form input, form select { width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; }
+  .flash { padding:10px 14px; border-radius:6px; margin-bottom:16px; font-size:14px; }
+  .flash.success { background:#dcfce7; color:#166534; }
+  .flash.error { background:#fee2e2; color:#991b1b; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.ok { background:#dcfce7; color:#166534; }
+  .pill.fail { background:#fee2e2; color:#991b1b; }
+  .empty { color:#6b7280; font-style:italic; padding:20px; text-align:center; }
+  .row-actions button { background:none; border:none; color:#dc2626; cursor:pointer; padding:0; font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="{{ url_for('home') }}">AR MIS Pipeline</a>
+  <nav>
+    <a href="{{ url_for('home') }}">Home</a>
+    <a href="{{ url_for('branches_list') }}">Branch Master</a>
+    <a href="{{ url_for('test_extraction') }}">Test Extraction</a>
+  </nav>
+</header>
+<main>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

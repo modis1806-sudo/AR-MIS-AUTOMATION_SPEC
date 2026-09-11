@@ -1,8 +1,10 @@
-"""Branch registry and run configuration.
+"""Branch config shape and run-level constants.
 
-Branch list, Tally gateway host/port per branch, and financial-year start
-date live here. This is the one file that needs editing when a branch is
-added/removed or a Tally host changes.
+The branch list itself is NOT here - it is user-editable master data
+stored in the branch_master table (ar_mis/storage.py: list_branches,
+upsert_branch, delete_branch) and managed through the Branch Master
+screen in ar_mis/webapp, precisely so adding a branch or fixing a Tally
+host/port never requires editing Python source or redeploying anything.
 """
 from __future__ import annotations
 
@@ -22,17 +24,6 @@ class BranchConfig:
     def gateway_url(self) -> str:
         return f"http://{self.tally_host}:{self.tally_port}"
 
-
-# Placeholder registry — replace with the client's actual 6-7 branches
-# and confirmed Tally company names before the first live run.
-BRANCHES: list[BranchConfig] = [
-    BranchConfig(branch_id="KOL", branch_name="Kolkata", tally_company_name="Kolkata HQ"),
-    BranchConfig(branch_id="DEL", branch_name="Delhi", tally_company_name="Delhi Branch"),
-    BranchConfig(branch_id="MUM", branch_name="Mumbai", tally_company_name="Mumbai Branch"),
-    BranchConfig(branch_id="CHN", branch_name="Chennai", tally_company_name="Chennai Branch"),
-    BranchConfig(branch_id="BLR", branch_name="Bangalore", tally_company_name="Bangalore Branch"),
-    BranchConfig(branch_id="HYD", branch_name="Hyderabad", tally_company_name="Hyderabad Branch"),
-]
 
 # Financial year start — used for the Section 4.2 YTD full-pull cross-check.
 FINANCIAL_YEAR_START_MONTH = 4  # April

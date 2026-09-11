@@ -3,6 +3,23 @@
 Implementation of `AR_MIS_Automation_Spec.md`. Read that document first — this
 README only covers build-specific decisions and how to run things.
 
+## Deployment target
+
+This is a Python application (backend + a small local web app). It must run on
+a machine that can reach Tally's XML/HTTP gateway (default `http://<host>:9000`)
+directly — same office LAN as Tally, or a private VPN link to it. Requirements:
+
+- Python 3.10+
+- `pip install -e .` (installs Flask and openpyxl)
+
+**Do not** run this on a public cloud VM with no private network path to
+Tally, and do not open Tally's port 9000 to the public internet to make that
+work. Tally's XML/HTTP interface has no authentication of its own — anyone
+who can reach that port can query it. The spec's "LAN-only, no cloud
+dependency" framing exists specifically to keep that interface unreachable
+from outside the office network; that's a security boundary, not an
+implementation detail to route around.
+
 ## Decisions on Section 8 open items
 
 These were open in the spec and have been resolved by the client before build:
@@ -70,6 +87,34 @@ run:
   orchestration, pipeline, the 4.2 drift check, the 4.4 gate, and reporting
   into one weekly command.
 - `ar_mis/seed.py` — one-time Layer 1 Pre-MIS Outstanding load from a CSV.
+- `ar_mis/webapp/` — local web app: Branch Master (extraction config as
+  user-editable data) and Test Extraction (a self-serve connectivity +
+  extraction check against a real Tally instance).
+
+## Seeing the application: the local web app
+
+Before touching real data, use this to (a) configure branches yourself
+without editing any Python file, and (b) check this can actually reach and
+pull from your Tally instance:
+
+```
+python -m ar_mis.webapp.app
+```
+
+Then open `http://127.0.0.1:5000` in a browser, on the same machine (or LAN)
+that can reach Tally. Two screens:
+
+- **Branch Master** — add/edit/remove branches: branch name, exact Tally
+  company name, host, port. This replaced a hardcoded list in
+  `ar_mis/config.py` specifically so this is something you configure, not
+  something you edit source code for.
+- **Test Extraction** — pick a branch, click Run Test. It runs the real
+  Section 2.2 company-check, a voucher pull, and a Sundry Debtors pull
+  against that branch's Tally instance and shows PASS/FAIL per step with the
+  actual error if something fails (wrong company loaded, Tally unreachable,
+  etc.). Read-only — nothing is written to the database. This is the fastest
+  way to find out whether host/port/company-name config is right before any
+  real weekly run depends on it.
 
 ## One-time setup: seeding Layer 1 (Pre-MIS Outstanding)
 

@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+from ar_mis.config import BranchConfig
 from ar_mis.models import (
     CustomerMasterRecord,
     PreMisAdjustment,
@@ -89,6 +90,24 @@ def test_ptp_status_log_tracks_latest_status_per_week(store):
     # History preserved: earlier week still reads as Active as-of that date.
     assert store.current_ptp_status("ptp-1", date(2026, 1, 12)) == PTPStatus.ACTIVE
     assert store.current_ptp_status("ptp-1", date(2026, 1, 19)) == PTPStatus.BROKEN
+
+
+def test_branch_master_crud(store):
+    assert store.list_branches() == []
+    kol = BranchConfig("KOL", "Kolkata", "Kolkata HQ", "192.168.1.10", 9000)
+    store.upsert_branch(kol)
+    assert store.list_branches() == [kol]
+    assert store.get_branch("KOL") == kol
+    assert store.get_branch("NOPE") is None
+
+    updated = BranchConfig("KOL", "Kolkata HQ Renamed", "Kolkata HQ", "192.168.1.20", 9001)
+    store.upsert_branch(updated)
+    branches = store.list_branches()
+    assert len(branches) == 1
+    assert branches[0] == updated
+
+    store.delete_branch("KOL")
+    assert store.list_branches() == []
 
 
 def test_voucher_log_dedupes_and_supports_key_lookup(store):

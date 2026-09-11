@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}AR MIS Pipeline{% endblock %}
+{% block content %}
+<h1>AR MIS — Tally Extraction Pipeline</h1>
+<p class="subtitle">Local tool. Runs on this machine only — nothing here leaves it.</p>
+
+<div class="card">
+  <h2 style="margin-top:0;">Status</h2>
+  <p>{{ branch_count }} branch(es) configured in Branch Master.</p>
+  {% if branch_count == 0 %}
+    <p>No branches yet. <a href="{{ url_for('branch_new') }}">Add your first branch</a> before testing extraction.</p>
+  {% else %}
+    <a class="btn" href="{{ url_for('test_extraction') }}">Test Extraction</a>
+    <a class="btn secondary" href="{{ url_for('branches_list') }}">Manage Branches</a>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">What this does</h2>
+  <ul>
+    <li><strong>Branch Master</strong> — configure each branch's Tally company name and how to reach it (host/port). This is the only place branch config lives; nothing is hardcoded in source code.</li>
+    <li><strong>Test Extraction</strong> — pick a branch and run a real connectivity + extraction check against its Tally instance: company match, voucher pull, Sundry Debtors pull. Read-only — nothing is written to the database. Use this before trusting any real weekly run.</li>
+  </ul>
+</div>
+{% endblock %}
