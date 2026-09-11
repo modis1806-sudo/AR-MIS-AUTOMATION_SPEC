@@ -1,4 +1,4 @@
-# Version 2 Design Discussion — Registers, Reporting, Deployment
+# Registers, Reporting & Deployment Design Discussion (v1 scope)
 
 Living record of design conversations that haven't been implemented yet. This
 is **not** a spec that's been built — nothing in this document exists in code
