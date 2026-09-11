@@ -172,6 +172,42 @@ class Store:
         )
         self.conn.commit()
 
+    def customer_master_exists(self, party_id: str, branch_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM customer_master WHERE party_id=? AND branch_id=?", (party_id, branch_id)
+        ).fetchone()
+        return row is not None
+
+    def has_weekly_snapshots(self, party_id: str, branch_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM weekly_snapshot WHERE party_id=? AND branch_id=? LIMIT 1",
+            (party_id, branch_id),
+        ).fetchone()
+        return row is not None
+
+    def force_overwrite_pre_mis_outstanding(self, party_id: str, branch_id: str, new_amount: Decimal) -> None:
+        """Corrects a bad *initial* Layer 1 load - before the weekly
+        pipeline has ever produced a snapshot for this party. Raises if
+        any weekly_snapshot row already exists: at that point the only
+        sanctioned path is record_pre_mis_adjustment() (an explicit,
+        logged, reasoned adjustment), never a silent bulk overwrite of
+        the seed. This is the one place besides record_pre_mis_adjustment
+        that can move pre_mis_outstanding after creation, and it refuses
+        to run once the field it protects has actually been relied upon.
+        """
+        if self.has_weekly_snapshots(party_id, branch_id):
+            raise ValueError(
+                f"{party_id}/{branch_id} already has weekly snapshot rows on record - "
+                "use record_pre_mis_adjustment() instead of overwriting the seed."
+            )
+        if not self.customer_master_exists(party_id, branch_id):
+            raise ValueError(f"No customer_master record for {party_id}/{branch_id} to overwrite")
+        self.conn.execute(
+            "UPDATE customer_master SET pre_mis_outstanding=? WHERE party_id=? AND branch_id=?",
+            (str(new_amount), party_id, branch_id),
+        )
+        self.conn.commit()
+
     def get_latest_closing(self, party_id: str, branch_id: str) -> Decimal | None:
         """Most recent weekly_snapshot.closing_computed for this party/
         branch, or None if no prior week exists yet. This - not

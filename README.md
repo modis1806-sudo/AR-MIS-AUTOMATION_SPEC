@@ -69,6 +69,31 @@ run:
 - `ar_mis/cli.py` — the actual script run each Monday (Section 2.2); ties
   orchestration, pipeline, the 4.2 drift check, the 4.4 gate, and reporting
   into one weekly command.
+- `ar_mis/seed.py` — one-time Layer 1 Pre-MIS Outstanding load from a CSV.
+
+## One-time setup: seeding Layer 1 (Pre-MIS Outstanding)
+
+Before the first weekly run for a branch, load each party's Pre-MIS
+Outstanding baseline (Section 2.5) from a CSV:
+
+```
+python -m ar_mis.seed pre_mis_outstanding.csv --db-path data/ar_mis.db --dry-run
+python -m ar_mis.seed pre_mis_outstanding.csv --db-path data/ar_mis.db
+```
+
+CSV columns: `party_id,party_name,branch_id,pre_mis_outstanding`. Amounts must
+already be in this pipeline's sign convention (Dr positive / Cr negative,
+Section 2.3), not Tally's raw export. See
+`fixtures/sample_pre_mis_outstanding.csv` for the format.
+
+This is guarded to match Section 2.5's "must not move except through
+explicit, logged adjustment": re-running against an unchanged CSV is a safe
+no-op; a changed balance for a party that already has weekly snapshot data on
+record is refused outright, `--force` included — at that point the only path
+is `Store.record_pre_mis_adjustment()`, a deliberate logged correction, not a
+bulk re-load. A changed balance before any weekly run exists for that party
+(i.e. still fixing a bad initial load) requires `--force` and is reported
+either way — nothing is overwritten silently.
 
 ## Running the weekly cycle
 
@@ -76,12 +101,8 @@ run:
 python -m ar_mis.cli 2026-01-05    # week ending date; defaults to today
 ```
 
-Before the first real run, edit `ar_mis/config.py`'s `BRANCHES` list with the
-client's actual branch names and exact Tally company names, and seed
-`ar_mis/storage.py`'s `customer_master` table with each party's Pre-MIS
-Outstanding baseline (Layer 1) — there is deliberately no automatic seeding
-path, since that number must come from an explicit one-time load, not a
-weekly extraction run.
+Before the first real run, also edit `ar_mis/config.py`'s `BRANCHES` list
+with the client's actual branch names and exact Tally company names.
 
 ## Known gap: no ageing-bucket detail yet
 

@@ -1,0 +1,4 @@
+party_id,party_name,branch_id,pre_mis_outstanding
+ACME001,Acme Corp Pvt Ltd,KOL,325000.00
+RELI002,Reliable Cargo Movers,KOL,150000.00
+GHOST003,Ghost Ltd,DEL,0.00
