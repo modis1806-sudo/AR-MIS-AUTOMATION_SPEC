@@ -111,16 +111,38 @@ def list_of_companies_request() -> str:
     """Returns only the company/companies currently OPEN in the target
     Tally instance -- the basis for confirm_current_company() (Section
     2.2's mandatory pre-extraction check).
+
+    Uses a TDL Collection over the built-in `Company` object type, not
+    the simpler `REPORTNAME: List of Companies` EXPORTDATA request that
+    an earlier version of this function used. That simpler form was
+    never validated against a live Tally instance during development
+    (see README's "Known limitation") and, confirmed against a real
+    TallyPrime Gold server, returns
+    `<RESPONSE>Unknown Request, cannot be processed</RESPONSE>` instead
+    of company data -- a real version/edition difference, not a
+    hypothetical one. The Collection form below was verified against
+    the same live instance and correctly returns every currently-open
+    company (Tally supports multiple companies open at once, which is
+    exactly why this is a membership check against a list, not a
+    single-value comparison).
     """
     return """<ENVELOPE>
  <HEADER>
-  <TALLYREQUEST>EXPORT</TALLYREQUEST>
+  <VERSION>1</VERSION>
+  <TALLYREQUEST>Export</TALLYREQUEST>
+  <TYPE>Collection</TYPE>
+  <ID>ARMIS List of Companies</ID>
  </HEADER>
  <BODY>
-  <EXPORTDATA>
-   <REQUESTDESC>
-    <REPORTNAME>List of Companies</REPORTNAME>
-   </REQUESTDESC>
-  </EXPORTDATA>
+  <DESC>
+   <TDL>
+    <TDLMESSAGE>
+     <COLLECTION NAME="ARMIS List of Companies" ISINITIALIZE="Yes">
+      <TYPE>Company</TYPE>
+      <FETCH>NAME</FETCH>
+     </COLLECTION>
+    </TDLMESSAGE>
+   </TDL>
+  </DESC>
  </BODY>
 </ENVELOPE>"""

@@ -64,6 +64,17 @@ def test_parse_ledger_closing_balances():
 
 
 def test_parse_currently_loaded_companies():
+    # Fixture reflects the real response from a live TallyPrime Gold
+    # instance: multiple companies can be open at once, and the request
+    # (xml_requests.list_of_companies_request) is a Company-type TDL
+    # Collection, not the simpler REPORTNAME form an earlier version of
+    # this function used - that form returned "Unknown Request, cannot
+    # be processed" against real Tally instead of company data.
     raw = (FIXTURES / "list_of_companies.xml").read_text()
     names = parse_currently_loaded_companies(raw)
-    assert names == ["Kolkata HQ"]
+    assert names == [
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED (MUNDRA)",
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED (NAGPUR) - (from-1.4.23)",
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED VIZAG - (From 1.4.23)",
+        "SPEEDWAYS LOGISTICS PVT. LTD. (DELHI) (from 1-Apr-23)",
+    ]

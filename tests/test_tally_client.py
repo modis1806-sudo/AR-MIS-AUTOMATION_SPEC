@@ -15,7 +15,12 @@ def _client_with_stubbed_response(branch: BranchConfig, raw_response: str) -> Ta
 
 
 def test_confirm_current_company_passes_when_loaded_company_matches():
-    branch = BranchConfig(branch_id="KOL", branch_name="Kolkata", tally_company_name="Kolkata HQ")
+    # Fixture reflects a real live-Tally response: multiple companies can
+    # be open at once (Tally's multi-company feature). The expected
+    # branch just needs to be *among* them, not the only one open.
+    branch = BranchConfig(
+        branch_id="MUN", branch_name="Mundra", tally_company_name="SPEEDWAYS LOGISTICS PRIVATE LIMITED (MUNDRA)"
+    )
     raw = (FIXTURES / "list_of_companies.xml").read_text()
     client = _client_with_stubbed_response(branch, raw)
     client.confirm_current_company()  # must not raise
@@ -23,12 +28,17 @@ def test_confirm_current_company_passes_when_loaded_company_matches():
 
 def test_confirm_current_company_raises_on_mismatch():
     branch = BranchConfig(branch_id="DEL", branch_name="Delhi", tally_company_name="Delhi Branch")
-    raw = (FIXTURES / "list_of_companies.xml").read_text()  # actually loaded: Kolkata HQ
+    raw = (FIXTURES / "list_of_companies.xml").read_text()  # actually loaded: the 4 SPEEDWAYS companies
     client = _client_with_stubbed_response(branch, raw)
     with pytest.raises(CompanyMismatchError) as excinfo:
         client.confirm_current_company()
     assert excinfo.value.expected == "Delhi Branch"
-    assert excinfo.value.actual == ["Kolkata HQ"]
+    assert excinfo.value.actual == [
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED (MUNDRA)",
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED (NAGPUR) - (from-1.4.23)",
+        "SPEEDWAYS LOGISTICS PRIVATE LIMITED VIZAG - (From 1.4.23)",
+        "SPEEDWAYS LOGISTICS PVT. LTD. (DELHI) (from 1-Apr-23)",
+    ]
 
 
 def test_fetch_vouchers_returns_parsed_vouchers():
