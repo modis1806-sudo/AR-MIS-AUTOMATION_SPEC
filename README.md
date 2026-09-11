@@ -108,6 +108,13 @@ that can reach Tally. Two screens:
   company name, host, port. This replaced a hardcoded list in
   `ar_mis/config.py` specifically so this is something you configure, not
   something you edit source code for.
+- **Discover Companies** — asks Tally what companies are actually open right
+  now at a given host/port, and lets you pick one ("Use this company")
+  instead of having to already know and correctly type the exact current
+  name. Exists because that name can change: a shared/multi-user Tally
+  deployment (or a standalone Tally Gateway Server service, as opposed to
+  whichever interactive Tally window a person happens to have open) may
+  report a different "currently open" company at different moments.
 - **Test Extraction** — pick a branch, click Run Test. It runs the real
   Section 2.2 company-check, a voucher pull, and a Sundry Debtors pull
   against that branch's Tally instance and shows PASS/FAIL per step with the
@@ -115,6 +122,25 @@ that can reach Tally. Two screens:
   etc.). Read-only — nothing is written to the database. This is the fastest
   way to find out whether host/port/company-name config is right before any
   real weekly run depends on it.
+
+## Diagnosing a live Tally connection from the command line
+
+`ar_mis/diagnostics.py` is a small CLI for looking at exactly what a Tally
+instance is saying, rather than guessing:
+
+```
+python -m ar_mis.diagnostics companies --host localhost --port 9000 --raw
+python -m ar_mis.diagnostics vouchers --company "Exact Name" --days 7 --output dump.txt
+python -m ar_mis.diagnostics ledgers --company "Exact Name" --as-of 2026-04-07
+```
+
+This is the generalized, committed form of one-off scripts that came out of
+real troubleshooting against a live TallyPrime instance during this
+project's first on-site test: the "List of Companies" request this codebase
+originally used turned out to return "Unknown Request, cannot be processed"
+against that real server, and only reading the raw XML directly (via what
+became this CLI) revealed the request shape that actually worked. Keep
+reaching for this whenever a new Tally version/edition behaves unexpectedly.
 
 ## One-time setup: seeding Layer 1 (Pre-MIS Outstanding)
 
