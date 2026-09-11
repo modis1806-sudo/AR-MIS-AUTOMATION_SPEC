@@ -64,6 +64,38 @@ run:
 - `ar_mis/orchestration.py` — human-in-the-loop branch loop + retry queue.
 - `ar_mis/gate.py` — PASS/FAIL aggregation + output gate (4.4).
 - `ar_mis/reporting.py` — static weekly snapshot report (Section 6).
+- `ar_mis/pipeline.py` — wires extraction → roll-forward → reconciliation →
+  storage into the per-branch runner orchestration drives.
+- `ar_mis/cli.py` — the actual script run each Monday (Section 2.2); ties
+  orchestration, pipeline, the 4.2 drift check, the 4.4 gate, and reporting
+  into one weekly command.
+
+## Running the weekly cycle
+
+```
+python -m ar_mis.cli 2026-01-05    # week ending date; defaults to today
+```
+
+Before the first real run, edit `ar_mis/config.py`'s `BRANCHES` list with the
+client's actual branch names and exact Tally company names, and seed
+`ar_mis/storage.py`'s `customer_master` table with each party's Pre-MIS
+Outstanding baseline (Layer 1) — there is deliberately no automatic seeding
+path, since that number must come from an explicit one-time load, not a
+weekly extraction run.
+
+## Known gap: no ageing-bucket detail yet
+
+Section 6 asks for an Ageing Matrix and a `>180-day` "Bad Debt Risk" KPI —
+exactly the two areas responsible for two of the six original defects (a
+bucket sub-split not summing to its own combined total, and a Bad Debt Risk
+figure disagreeing with the Ageing Matrix for the same date). Building these
+correctly requires bill-level due-date and `BILLTYPE` (New Ref vs Against
+Ref) data that the current extraction layer does not pull. Rather than derive
+an ageing bucket from closing balances alone — which would silently
+reintroduce the same class of unvalidated-figure bug this project exists to
+remove — this build ships without it. Adding it means extending
+`xml_requests.py`'s bill-allocation fetch to include `BILLTYPE` and due date,
+and a new module to bucket open bills by age as of the report date.
 
 ## Running tests
 

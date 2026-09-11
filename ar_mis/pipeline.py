@@ -48,7 +48,13 @@ def build_branch_runner(store: Store, week_ending: date, from_date: date, to_dat
         all_vouchers = [v for vs in vouchers_by_type.values() for v in vs]
 
         fy_start = financial_year_start(to_date)
-        closing_extracted = client.fetch_ytd_sundry_debtors(fy_start, to_date)
+        # fetch_ytd_sundry_debtors returns raw Tally-signed balances
+        # (Section 2.3: Dr negative at source) - flip here so the
+        # comparison in reconcile_all_parties is post-flip on both sides,
+        # matching movements[...].closing_computed.
+        closing_extracted = {
+            name: flip_sign(balance) for name, balance in client.fetch_ytd_sundry_debtors(fy_start, to_date).items()
+        }
         party_names = set(closing_extracted)
 
         openings = resolve_opening_balances(store, party_names, branch.branch_id)
