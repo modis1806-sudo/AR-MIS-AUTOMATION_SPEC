@@ -22,6 +22,18 @@ def store(tmp_path):
     s.close()
 
 
+def test_store_creates_missing_parent_directory(tmp_path):
+    # A fresh checkout never ships an empty `data/` dir (git can't track
+    # one), so Store must create it rather than fail with sqlite3's
+    # "unable to open database file" - hit for real on a first-time
+    # Windows install where data/ didn't exist yet.
+    db_path = tmp_path / "data" / "nested" / "ar_mis.db"
+    assert not db_path.parent.exists()
+    s = Store(str(db_path))
+    assert db_path.exists()
+    s.close()
+
+
 def test_customer_master_upsert_does_not_touch_pre_mis_outstanding(store):
     store.upsert_customer_master(
         CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("100000.00"))

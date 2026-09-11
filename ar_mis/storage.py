@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from ar_mis.config import BranchConfig
 from ar_mis.models import (
@@ -118,6 +119,12 @@ CREATE TABLE IF NOT EXISTS voucher_log (
 
 class Store:
     def __init__(self, db_path: str):
+        # sqlite3.connect() fails with "unable to open database file" if
+        # the parent directory doesn't exist yet - true for a fresh
+        # checkout, since an empty `data/` dir can't be committed to git.
+        parent = Path(db_path).parent
+        if str(parent) not in ("", "."):
+            parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
