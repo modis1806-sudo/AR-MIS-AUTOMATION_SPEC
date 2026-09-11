@@ -5,6 +5,8 @@ reachable from this build environment (see README).
 """
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -279,3 +281,91 @@ def test_use_this_company_prefills_add_branch_form(client):
     # Branch ID/Name must stay blank and editable - only the Tally-side
     # fields come from discovery, a human still names the branch.
     assert b'name="branch_id" value=""' in resp.data
+
+
+# ---- Manual Upload ----------------------------------------------------
+
+MANUAL_UPLOAD_FIXTURES = Path(__file__).parent.parent / "fixtures"
+
+
+def _add_manual_upload_branch(client):
+    from ar_mis.config import BranchConfig
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_branch(BranchConfig("KOL", "Kolkata", "A & B Transport Pvt Ltd Co"))
+    store.close()
+
+
+def _seed_manual_upload_openings(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(
+        CustomerMasterRecord("A & B Transport Pvt Ltd", "A & B Transport Pvt Ltd", "KOL", Decimal("300000.00"))
+    )
+    store.upsert_customer_master(
+        CustomerMasterRecord("Reliable Cargo Movers", "Reliable Cargo Movers", "KOL", Decimal("62500.00"))
+    )
+    store.close()
+
+
+def test_manual_upload_page_with_no_branches_prompts_to_add_one(client):
+    resp = client.get("/manual-upload")
+    assert b"Add one in Branch Master" in resp.data
+
+
+def test_manual_upload_requires_trial_balance_file(client):
+    _add_manual_upload_branch(client)
+    sales_xml = (MANUAL_UPLOAD_FIXTURES / "voucher_collection_sales.xml").read_bytes()
+    resp = client.post(
+        "/manual-upload",
+        data={
+            "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+            "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert b"Trial Balance" in resp.data and b"required" in resp.data
+
+
+def test_manual_upload_clean_run_shows_reconciled_clean(client):
+    _add_manual_upload_branch(client)
+    _seed_manual_upload_openings(client)
+    sales_xml = (MANUAL_UPLOAD_FIXTURES / "voucher_collection_sales.xml").read_bytes()
+    tb_xml = (MANUAL_UPLOAD_FIXTURES / "ledger_closing_balances.xml").read_bytes()
+
+    resp = client.post(
+        "/manual-upload",
+        data={
+            "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+            "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+            "trial_balance": (BytesIO(tb_xml), "tb.xml"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert b"RECONCILED CLEAN" in resp.data
+
+
+def test_manual_upload_refuses_when_already_recorded(client):
+    _add_manual_upload_branch(client)
+    _seed_manual_upload_openings(client)
+    sales_xml = (MANUAL_UPLOAD_FIXTURES / "voucher_collection_sales.xml").read_bytes()
+    tb_xml = (MANUAL_UPLOAD_FIXTURES / "ledger_closing_balances.xml").read_bytes()
+
+    def _post_kwargs():
+        return dict(
+            data={
+                "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+                "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+                "trial_balance": (BytesIO(tb_xml), "tb.xml"),
+            },
+            content_type="multipart/form-data",
+        )
+
+    client.post("/manual-upload", **_post_kwargs())
+    resp = client.post("/manual-upload", **_post_kwargs())
+    assert b"NOT PROCESSED" in resp.data
+    assert b"already has recorded data" in resp.data

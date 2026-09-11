@@ -359,6 +359,19 @@ class Store:
         for row in rows:
             self.append_weekly_snapshot(row)
 
+    def has_weekly_snapshot_for_branch_week(self, branch_id: str, week_ending: date) -> bool:
+        """True if this branch/week already has any recorded data, from
+        either live extraction or a manual upload - the two converge on
+        the same append-only weekly_snapshot table, so this is the one
+        check that enforces "first one in wins, no silent overwrite"
+        regardless of which path got there first.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM weekly_snapshot WHERE branch_id=? AND week_ending=? LIMIT 1",
+            (branch_id, week_ending.isoformat()),
+        ).fetchone()
+        return row is not None
+
     def all_week_endings(self) -> list[date]:
         cur = self.conn.execute("SELECT DISTINCT week_ending FROM weekly_snapshot ORDER BY week_ending")
         return [date.fromisoformat(row[0]) for row in cur.fetchall()]

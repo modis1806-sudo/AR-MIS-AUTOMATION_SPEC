@@ -16,7 +16,8 @@ from datetime import date, timedelta
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
-from ar_mis.config import BranchConfig
+from ar_mis.config import BranchConfig, financial_year_start
+from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
 from ar_mis.storage import Store
 from ar_mis.tally_client import CompanyMismatchError, TallyClient, TallyConnectionError
 
@@ -258,6 +259,104 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         flash(f"Marked reconciled by {reconciled_by}.", "success")
         return redirect(url_for("customers_list"))
+
+    def _decode_upload(file_storage) -> str:
+        """Same UTF-8-then-UTF-16 fallback as TallyClient._post - a
+        manually exported Tally file can use either encoding depending
+        on Tally version, same as a live HTTP response would.
+        """
+        if file_storage is None or not file_storage.filename:
+            return ""
+        raw = file_storage.read()
+        if not raw:
+            return ""
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw.decode("utf-16")
+
+    @app.route("/manual-upload", methods=["GET", "POST"])
+    def manual_upload():
+        store = get_store()
+        branches = store.list_branches()
+        default_to = date.today()
+        default_from = default_to - timedelta(days=7)
+        result = None
+
+        if request.method == "POST":
+            branch_id = request.form.get("branch_id", "")
+            branch = store.get_branch(branch_id)
+            if branch is None:
+                flash("Select a branch first.", "error")
+                store.close()
+                return render_template(
+                    "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                )
+
+            try:
+                from_date = date.fromisoformat(request.form["from_date"])
+                to_date = date.fromisoformat(request.form["to_date"])
+            except (KeyError, ValueError):
+                flash("Enter valid From and To dates.", "error")
+                store.close()
+                return render_template(
+                    "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                )
+            if from_date > to_date:
+                flash("From Date must be on or before To Date.", "error")
+                store.close()
+                return render_template(
+                    "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                )
+
+            weekly_voucher_xml = {
+                slot: _decode_upload(request.files.get(f"voucher_{slot}")) for slot in WEEKLY_VOUCHER_SLOTS
+            }
+            trial_balance_xml = _decode_upload(request.files.get("trial_balance"))
+            ytd_voucher_xml = _decode_upload(request.files.get("ytd_vouchers"))
+
+            if not trial_balance_xml.strip():
+                flash("Trial Balance / Sundry Debtors closing balance file is required.", "error")
+                store.close()
+                return render_template(
+                    "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                )
+            if not any(xml.strip() for xml in weekly_voucher_xml.values()):
+                flash("At least one voucher file is required.", "error")
+                store.close()
+                return render_template(
+                    "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                )
+
+            try:
+                upload_result = process_manual_upload(
+                    store, branch.branch_id, branch.branch_name, to_date,
+                    weekly_voucher_xml=weekly_voucher_xml,
+                    trial_balance_xml=trial_balance_xml,
+                    ytd_voucher_xml=ytd_voucher_xml,
+                )
+                result = {
+                    "branch": branch, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+                    "refused": False, "outcome": upload_result.outcome, "drift_findings": upload_result.drift_findings,
+                    "fy_start": financial_year_start(to_date).isoformat(),
+                }
+            except ManualUploadRefused as exc:
+                result = {
+                    "branch": branch, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+                    "refused": True, "detail": str(exc),
+                }
+            default_from, default_to = from_date, to_date
+
+        store.close()
+        return render_template(
+            "manual_upload.html", branches=branches, result=result, slots=WEEKLY_VOUCHER_SLOTS,
+            default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+        )
 
     return app
 

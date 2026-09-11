@@ -122,6 +122,18 @@ that can reach Tally. Two screens:
   etc.). Read-only — nothing is written to the database. This is the fastest
   way to find out whether host/port/company-name config is right before any
   real weekly run depends on it.
+- **Manual Upload** — a fallback for when the live Tally connection isn't
+  reachable at all (built after the client's own Tally Gateway Server proved
+  unreliable during real testing). Upload the same data by hand, exported
+  from Tally's own File → Export menu: the five weekly voucher types, the
+  Trial Balance/Sundry Debtors closing balance as-on the reporting date, and
+  optionally a YTD voucher-wise detail file for the Section 4.2 drift check.
+  Runs through the exact same roll-forward, auto-discovery, and
+  zero-tolerance reconciliation as a live extraction
+  (`ar_mis.pipeline.process_branch_data`) — parsing never cared whether XML
+  arrived over HTTP or as a file, so neither does anything downstream of it.
+  Refuses outright if the branch/week already has recorded data from either
+  a live run or an earlier upload — first one in wins, no silent overwrite.
 
 ## Diagnosing a live Tally connection from the command line
 

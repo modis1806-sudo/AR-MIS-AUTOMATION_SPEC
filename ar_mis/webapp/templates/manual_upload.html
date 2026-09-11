@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Manual Upload{% endblock %}
+{% block content %}
+<h1>Manual Upload</h1>
+<p class="subtitle">Fallback for when the live Tally connection isn't reachable. Upload the same data by hand, exported from Tally's own File &rarr; Export menu — this runs through the identical roll-forward and zero-tolerance reconciliation as a live extraction. Refuses outright if this branch/week already has recorded data (from a live run or an earlier upload) — no silent overwrite.</p>
+
+<div class="card">
+{% if branches %}
+<form method="post" enctype="multipart/form-data">
+  <label>Branch</label>
+  <select name="branch_id" required>
+    {% for b in branches %}
+      <option value="{{ b.branch_id }}" {% if result and result.branch.branch_id == b.branch_id %}selected{% endif %}>
+        {{ b.branch_name }} — {{ b.tally_company_name }}
+      </option>
+    {% endfor %}
+  </select>
+
+  <label>From Date (this reporting week)</label>
+  <input name="from_date" type="date" value="{{ default_from }}" required>
+
+  <label>To Date (this reporting week — also the date the Trial Balance is as-on)</label>
+  <input name="to_date" type="date" value="{{ default_to }}" required>
+
+  <p style="margin-top:20px; font-weight:600;">Weekly voucher files (From Date &rarr; To Date)</p>
+  <p style="font-size:12px;color:#6b7280;margin:0 0 8px;">At least one required. Vouchers are categorized by their actual content, not by which box you put the file in — an upload in the wrong slot still gets classified correctly.</p>
+  {% for slot in slots %}
+    <label>{{ slot }}</label>
+    <input type="file" name="voucher_{{ slot }}" accept=".xml">
+  {% endfor %}
+
+  <p style="margin-top:20px; font-weight:600;">Trial Balance</p>
+  <label>Sundry Debtors closing balance, as-on To Date (required)</label>
+  <input type="file" name="trial_balance" accept=".xml" required>
+
+  <p style="margin-top:20px; font-weight:600;">YTD cross-check (optional)</p>
+  <label>Voucher-wise detail, day 1 of financial year &rarr; To Date</label>
+  <input type="file" name="ytd_vouchers" accept=".xml">
+  <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">If omitted, the weekly figures are still processed — just without the Section 4.2 drift check this run.</p>
+
+  <p style="margin-top:20px;"><button class="btn" type="submit">Upload and Process</button></p>
+</form>
+{% else %}
+<p>No branches configured yet. <a href="{{ url_for('branch_new') }}">Add one in Branch Master</a> first.</p>
+{% endif %}
+</div>
+
+{% if result %}
+  {% if result.refused %}
+  <div class="card">
+    <h2 style="margin-top:0;">Refused <span class="pill fail">NOT PROCESSED</span></h2>
+    <p>{{ result.detail }}</p>
+  </div>
+  {% else %}
+  <div class="card">
+    <h2 style="margin-top:0;">
+      Result — {{ result.branch.branch_name }} ({{ result.from_date }} to {{ result.to_date }})
+      <span class="pill {{ 'ok' if result.outcome.outcome == 'PASS' else 'fail' }}">
+        {{ 'RECONCILED CLEAN' if result.outcome.outcome == 'PASS' else 'RECONCILIATION FAILED' }}
+      </span>
+    </h2>
+    <p>{{ result.outcome.detail }}</p>
+
+    {% if result.outcome.new_parties %}
+    <p><strong>New parties this run:</strong> {{ result.outcome.new_parties | join(', ') }} (auto-created at Pre-MIS Outstanding = 0)</p>
+    {% endif %}
+
+    {% if result.drift_findings %}
+    <table>
+      <thead><tr><th>Party</th><th>Voucher</th><th>Date</th><th>Amount</th><th>Attributed Week</th></tr></thead>
+      <tbody>
+      {% for f in result.drift_findings %}
+        <tr>
+          <td>{{ f.party_ledger_name }}</td>
+          <td>{{ f.voucher_type }} {{ f.voucher_number }}</td>
+          <td>{{ f.voucher_date }}</td>
+          <td>{{ f.flipped_amount }}</td>
+          <td>{{ f.attributed_week or 'unassigned' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% elif result.outcome.outcome == 'PASS' %}
+    <p style="color:#166534;">No YTD drift found.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+{% endblock %}
