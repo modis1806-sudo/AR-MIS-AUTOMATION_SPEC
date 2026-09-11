@@ -141,17 +141,48 @@ def _add_branch(client):
 def test_test_extraction_reports_all_passed(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientOK)
     _add_branch(client)
-    resp = client.post("/test-extraction", data={"branch_id": "KOL", "days": "7"})
+    resp = client.post(
+        "/test-extraction",
+        data={"branch_id": "KOL", "from_date": "2026-01-01", "to_date": "2026-01-07"},
+    )
     assert b"ALL PASSED" in resp.data
     assert b"Company check" in resp.data
     assert b"Voucher extraction" in resp.data
     assert b"Sundry Debtors pull" in resp.data
+    assert b"2026-01-01" in resp.data and b"2026-01-07" in resp.data
+
+
+def test_test_extraction_accepts_a_full_year_range(client, monkeypatch):
+    # No artificial min/max on the range - a first-time backfill needs a
+    # full financial year, not just a week.
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientOK)
+    _add_branch(client)
+    resp = client.post(
+        "/test-extraction",
+        data={"branch_id": "KOL", "from_date": "2025-04-01", "to_date": "2026-03-31"},
+    )
+    assert b"ALL PASSED" in resp.data
+    assert b"2025-04-01" in resp.data and b"2026-03-31" in resp.data
+
+
+def test_test_extraction_rejects_from_date_after_to_date(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientOK)
+    _add_branch(client)
+    resp = client.post(
+        "/test-extraction",
+        data={"branch_id": "KOL", "from_date": "2026-01-10", "to_date": "2026-01-01"},
+        follow_redirects=True,
+    )
+    assert b"From Date must be on or before To Date" in resp.data
 
 
 def test_test_extraction_reports_connection_failure_clearly(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientUnreachable)
     _add_branch(client)
-    resp = client.post("/test-extraction", data={"branch_id": "KOL", "days": "7"})
+    resp = client.post(
+        "/test-extraction",
+        data={"branch_id": "KOL", "from_date": "2026-01-01", "to_date": "2026-01-07"},
+    )
     assert b"FAILED" in resp.data
     assert b"Could not reach Tally" in resp.data
     # A connection failure must not go on to attempt voucher extraction.

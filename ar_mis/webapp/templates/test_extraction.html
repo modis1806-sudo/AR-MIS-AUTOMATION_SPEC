@@ -16,8 +16,12 @@
     {% endfor %}
   </select>
 
-  <label>Look back (days)</label>
-  <input name="days" type="number" value="7" min="1" max="365">
+  <label>From Date</label>
+  <input name="from_date" type="date" value="{{ default_from }}" required>
+
+  <label>To Date</label>
+  <input name="to_date" type="date" value="{{ default_to }}" required>
+  <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">Any range — a week, a month, or a full financial year (e.g. for a first-time backfill).</p>
 
   <p style="margin-top:20px;"><button class="btn" type="submit">Run Test</button></p>
 </form>
@@ -29,7 +33,7 @@
 {% if result %}
 <div class="card">
   <h2 style="margin-top:0;">
-    Result — {{ result.branch.branch_name }}
+    Result — {{ result.branch.branch_name }} ({{ result.from_date }} to {{ result.to_date }})
     <span class="pill {{ 'ok' if result.all_ok else 'fail' }}">{{ 'ALL PASSED' if result.all_ok else 'FAILED' }}</span>
   </h2>
   <table>

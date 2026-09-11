@@ -125,6 +125,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store = get_store()
         branches = store.list_branches()
         result = None
+        default_to = date.today()
+        default_from = default_to - timedelta(days=7)
 
         if request.method == "POST":
             branch_id = request.form.get("branch_id", "")
@@ -132,11 +134,33 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             if branch is None:
                 flash("Select a branch first.", "error")
                 store.close()
-                return render_template("test_extraction.html", branches=branches, result=None)
+                return render_template(
+                    "test_extraction.html", branches=branches, result=None,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                )
 
-            days = int(request.form.get("days") or 7)
-            to_date = date.today()
-            from_date = to_date - timedelta(days=days)
+            # Any range the operator picks - a week, a month, a full
+            # financial year for a first-time backfill. No artificial
+            # min/max: this is a diagnostic tool, not the weekly production
+            # cadence (which cli.py fixes to 7 days by design).
+            try:
+                from_date = date.fromisoformat(request.form["from_date"])
+                to_date = date.fromisoformat(request.form["to_date"])
+            except (KeyError, ValueError):
+                flash("Enter valid From and To dates.", "error")
+                store.close()
+                return render_template(
+                    "test_extraction.html", branches=branches, result=None,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                )
+            if from_date > to_date:
+                flash("From Date must be on or before To Date.", "error")
+                store.close()
+                return render_template(
+                    "test_extraction.html", branches=branches, result=None,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                )
+
             steps: list[tuple[str, bool, str]] = []
             client = TallyClient(branch=branch, timeout_seconds=15.0)
 
@@ -167,10 +191,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 except TallyConnectionError as exc:
                     steps.append(("Sundry Debtors pull", False, str(exc)))
 
-            result = {"branch": branch, "steps": steps, "all_ok": all(ok for _, ok, _ in steps)}
+            result = {
+                "branch": branch, "steps": steps, "all_ok": all(ok for _, ok, _ in steps),
+                "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+            }
+            default_from, default_to = from_date, to_date
 
         store.close()
-        return render_template("test_extraction.html", branches=branches, result=result)
+        return render_template(
+            "test_extraction.html", branches=branches, result=result,
+            default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+        )
 
     @app.route("/discover", methods=["GET", "POST"])
     def discover_companies():
