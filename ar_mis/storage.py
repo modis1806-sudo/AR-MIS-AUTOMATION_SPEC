@@ -237,6 +237,23 @@ class Store:
         for row in rows:
             self.append_weekly_snapshot(row)
 
+    def all_week_endings(self) -> list[date]:
+        cur = self.conn.execute("SELECT DISTINCT week_ending FROM weekly_snapshot ORDER BY week_ending")
+        return [date.fromisoformat(row[0]) for row in cur.fetchall()]
+
+    def weekly_snapshots_for_party(self, party_id: str, branch_id: str) -> list[sqlite3.Row]:
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute(
+            "SELECT * FROM weekly_snapshot WHERE party_id=? AND branch_id=? ORDER BY week_ending",
+            (party_id, branch_id),
+        )
+        return cur.fetchall()
+
+    def all_customer_master_records(self) -> list[sqlite3.Row]:
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute("SELECT * FROM customer_master ORDER BY party_name")
+        return cur.fetchall()
+
     # ---- Layer 3: PTP register + status log (append-only) ---------
 
     def create_ptp_entry(self, entry: PTPEntry) -> None:
@@ -255,6 +272,11 @@ class Store:
             ),
         )
         self.conn.commit()
+
+    def all_ptp_entries(self) -> list[sqlite3.Row]:
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute("SELECT * FROM ptp_register ORDER BY promised_date")
+        return cur.fetchall()
 
     def log_ptp_status(self, log_row: PTPStatusLogRow) -> None:
         self.conn.execute(
