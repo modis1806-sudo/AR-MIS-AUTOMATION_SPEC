@@ -189,6 +189,54 @@ def test_test_extraction_reports_connection_failure_clearly(client, monkeypatch)
     assert b"Voucher extraction" not in resp.data
 
 
+def _seed_customer(client, party_id="P1", party_name="Acme", branch_id="KOL", pre_mis="50000.00"):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord(party_id, party_name, branch_id, Decimal(pre_mis)))
+    store.close()
+
+
+def test_customers_list_shows_never_reconciled_parties(client):
+    _seed_customer(client)
+    resp = client.get("/customers")
+    assert b"Acme" in resp.data
+    assert b"Never" in resp.data
+
+
+def test_mark_reconciled_updates_the_list(client):
+    _seed_customer(client)
+    resp = client.post(
+        "/customers/reconcile",
+        data={"party_id": "P1", "branch_id": "KOL", "reconciled_by": "Priya"},
+        follow_redirects=True,
+    )
+    assert b"Marked reconciled by Priya" in resp.data
+    assert b"Priya" in resp.data
+    assert date.today().isoformat().encode() in resp.data
+
+
+def test_mark_reconciled_requires_a_name(client):
+    _seed_customer(client)
+    resp = client.post(
+        "/customers/reconcile",
+        data={"party_id": "P1", "branch_id": "KOL", "reconciled_by": ""},
+        follow_redirects=True,
+    )
+    assert b"Enter who is confirming this reconciliation" in resp.data
+    assert b"Never" in resp.data  # unchanged
+
+
+def test_customers_list_puts_never_reconciled_before_reconciled(client):
+    _seed_customer(client, party_id="P1", party_name="Already Reconciled", branch_id="KOL")
+    _seed_customer(client, party_id="P2", party_name="Needs Review", branch_id="KOL")
+    client.post("/customers/reconcile", data={"party_id": "P1", "branch_id": "KOL", "reconciled_by": "Priya"})
+    resp = client.get("/customers")
+    text = resp.data.decode()
+    assert text.index("Needs Review") < text.index("Already Reconciled")
+
+
 class FakeTallyClientDiscover:
     def __init__(self, branch, timeout_seconds=15.0):
         self.branch = branch

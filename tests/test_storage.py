@@ -22,6 +22,29 @@ def store(tmp_path):
     s.close()
 
 
+def test_mark_reconciled_records_who_and_when(store):
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme", "KOL", Decimal("0.00")))
+    records = store.all_customer_master_records()
+    assert records[0]["last_reconciled_on"] is None
+    assert records[0]["last_reconciled_by"] is None
+
+    store.mark_reconciled("P1", "KOL", date(2026, 1, 12), "Priya")
+    records = store.all_customer_master_records()
+    assert records[0]["last_reconciled_on"] == "2026-01-12"
+    assert records[0]["last_reconciled_by"] == "Priya"
+
+
+def test_mark_reconciled_does_not_touch_pre_mis_outstanding(store):
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme", "KOL", Decimal("50000.00")))
+    store.mark_reconciled("P1", "KOL", date(2026, 1, 12), "Priya")
+    assert store.get_opening_balance("P1", "KOL") == Decimal("50000.00")
+
+
+def test_mark_reconciled_raises_for_unknown_party(store):
+    with pytest.raises(ValueError, match="No customer_master record"):
+        store.mark_reconciled("GHOST", "KOL", date(2026, 1, 12), "Priya")
+
+
 def test_store_creates_missing_parent_directory(tmp_path):
     # A fresh checkout never ships an empty `data/` dir (git can't track
     # one), so Store must create it rather than fail with sqlite3's

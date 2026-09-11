@@ -231,6 +231,34 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         return render_template("discover.html", host=host, port=port, result=result)
 
+    @app.route("/customers")
+    def customers_list():
+        store = get_store()
+        records = store.all_customer_master_records()
+        store.close()
+        # Never-reconciled parties first, then longest-unreconciled - this
+        # view exists to put a name against who last actually looked at a
+        # party, so it should lead with whoever needs that look most.
+        rows = sorted(
+            records,
+            key=lambda r: (r["last_reconciled_on"] is not None, r["last_reconciled_on"] or "", r["party_name"]),
+        )
+        return render_template("customers_list.html", rows=rows, today=date.today().isoformat())
+
+    @app.route("/customers/reconcile", methods=["POST"])
+    def customers_reconcile():
+        party_id = request.form.get("party_id", "")
+        branch_id = request.form.get("branch_id", "")
+        reconciled_by = request.form.get("reconciled_by", "").strip()
+        if not reconciled_by:
+            flash("Enter who is confirming this reconciliation.", "error")
+            return redirect(url_for("customers_list"))
+        store = get_store()
+        store.mark_reconciled(party_id, branch_id, date.today(), reconciled_by)
+        store.close()
+        flash(f"Marked reconciled by {reconciled_by}.", "success")
+        return redirect(url_for("customers_list"))
+
     return app
 
 

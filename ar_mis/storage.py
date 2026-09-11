@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS customer_master (
     branch_id TEXT NOT NULL,
     party_name TEXT NOT NULL,
     pre_mis_outstanding TEXT NOT NULL,
+    last_reconciled_on TEXT,
+    last_reconciled_by TEXT,
     PRIMARY KEY (party_id, branch_id)
 );
 
@@ -213,6 +215,24 @@ class Store:
                 "UPDATE customer_master SET party_name=? WHERE party_id=? AND branch_id=?",
                 (record.party_name, record.party_id, record.branch_id),
             )
+        self.conn.commit()
+
+    def mark_reconciled(self, party_id: str, branch_id: str, reconciled_on: date, reconciled_by: str) -> None:
+        """Records that a human on the AR team personally reviewed this
+        party - separate from, and a complement to, the automated
+        zero-tolerance check in reconciliation.py. The automated check
+        catches numeric mismatches; it cannot catch "this looks off" or
+        "someone should double-check this classification". Tracking who
+        and when puts a name against the human review, not just a
+        checkbox nobody is accountable for.
+        """
+        if not self.customer_master_exists(party_id, branch_id):
+            raise ValueError(f"No customer_master record for {party_id}/{branch_id}")
+        self.conn.execute(
+            "UPDATE customer_master SET last_reconciled_on=?, last_reconciled_by=?"
+            " WHERE party_id=? AND branch_id=?",
+            (reconciled_on.isoformat(), reconciled_by, party_id, branch_id),
+        )
         self.conn.commit()
 
     def record_pre_mis_adjustment(self, adj: PreMisAdjustment) -> None:

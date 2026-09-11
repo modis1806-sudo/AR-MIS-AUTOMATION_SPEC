@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Customer Master{% endblock %}
+{% block content %}
+<h1>Customer Master</h1>
+<p class="subtitle">Every party on record, across all branches. "Last Reconciled" is a human review — separate from the automated zero-tolerance check — so a name and date are on record for whoever last actually looked at this party. Never-reconciled and longest-overdue parties are listed first.</p>
+
+{% if rows %}
+<table>
+  <thead>
+    <tr><th>Party</th><th>Branch</th><th>Pre-MIS Outstanding</th><th>Last Reconciled On</th><th>Last Reconciled By</th><th>Mark Reconciled</th></tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td>{{ r['party_name'] }}</td>
+      <td>{{ r['branch_id'] }}</td>
+      <td>{{ r['pre_mis_outstanding'] }}</td>
+      <td>{% if r['last_reconciled_on'] %}{{ r['last_reconciled_on'] }}{% else %}<span class="pill fail">Never</span>{% endif %}</td>
+      <td>{{ r['last_reconciled_by'] or '—' }}</td>
+      <td>
+        <form method="post" action="{{ url_for('customers_reconcile') }}" style="display:flex; gap:6px;">
+          <input type="hidden" name="party_id" value="{{ r['party_id'] }}">
+          <input type="hidden" name="branch_id" value="{{ r['branch_id'] }}">
+          <input name="reconciled_by" placeholder="Your name" style="width:120px; padding:6px 8px;" required>
+          <button class="btn" type="submit" style="padding:6px 12px; font-size:13px;">Mark reconciled today</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="card empty">No customers on record yet — seed Layer 1 first (see README).</div>
+{% endif %}
+{% endblock %}
