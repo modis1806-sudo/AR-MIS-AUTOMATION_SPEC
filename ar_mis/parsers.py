@@ -50,7 +50,7 @@ _NUMERIC_CHARREF = re.compile(r"&#(\d+);|&#x([0-9a-fA-F]+);")
 # Lone surrogates (U+D800-U+DFFF) are not included: a strict UTF-8 decode
 # (what TallyClient._post uses) cannot produce them in the first place -
 # that byte sequence would already have failed to decode.
-_RAW_CONTROL_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f￾￿]")
+_RAW_CONTROL_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
 
 
 def _is_valid_xml_codepoint(codepoint: int) -> bool:
