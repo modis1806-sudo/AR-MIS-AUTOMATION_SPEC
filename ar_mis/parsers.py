@@ -1,11 +1,25 @@
 """Parses Tally XML responses into ar_mis.models objects.
 
-Known real-world wrinkle (not a hypothetical): Tally's XML export is
-widely reported to emit bare, unescaped `&` characters inside text values
-(e.g. a ledger literally named "A & B Transport") even though that is
-invalid XML. `_sanitize_xml` patches only bare `&` not already part of a
-valid entity, before handing the payload to ElementTree, rather than
-silently dropping or crashing on those vouchers.
+Two known real-world wrinkles (not hypotheticals):
+
+1. Tally's XML export is widely reported to emit bare, unescaped `&`
+   characters inside text values (e.g. a ledger literally named "A & B
+   Transport") even though that is invalid XML. `_BARE_AMPERSAND` patches
+   only bare `&` not already part of a valid entity.
+2. CONFIRMED against a live TallyPrime instance: Tally emits numeric
+   character references to control codepoints that are illegal in XML
+   1.0 - e.g. `<GSTCLASS>&#4; Not Applicable</GSTCLASS>` - apparently as
+   an internal placeholder for an unset enum-style field. Python's
+   ElementTree (correctly) refuses to parse these at all
+   (`xml.etree.ElementTree.ParseError: reference to invalid character
+   number`), crashing extraction outright rather than just mis-reading a
+   field. `_ILLEGAL_NUMERIC_CHARREF` strips exactly these references
+   (and no others) before parsing - the field's actual text ("Not
+   Applicable" etc.) survives untouched.
+
+`_sanitize_xml` applies both patches before handing the payload to
+ElementTree, rather than silently dropping or crashing on affected
+vouchers.
 """
 from __future__ import annotations
 
@@ -17,6 +31,30 @@ from xml.etree import ElementTree as ET
 from ar_mis.models import LedgerEntry, Voucher, VoucherType
 
 _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
+
+_NUMERIC_CHARREF = re.compile(r"&#(\d+);|&#x([0-9a-fA-F]+);")
+
+
+def _is_valid_xml_codepoint(codepoint: int) -> bool:
+    """XML 1.0's legal character ranges (spec section 2.2) - anything
+    outside these, chiefly the low control codes below 0x20 other than
+    tab/newline/carriage-return, cannot appear in a conforming document
+    even as a numeric character reference.
+    """
+    return (
+        codepoint == 0x9
+        or codepoint == 0xA
+        or codepoint == 0xD
+        or 0x20 <= codepoint <= 0xD7FF
+        or 0xE000 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0x10FFFF
+    )
+
+
+def _strip_illegal_charref(match: re.Match) -> str:
+    decimal_group, hex_group = match.groups()
+    codepoint = int(decimal_group) if decimal_group is not None else int(hex_group, 16)
+    return match.group(0) if _is_valid_xml_codepoint(codepoint) else ""
 
 # Ordered deliberately: "Credit Note" / "Debit Note" are checked before
 # "Sales" so a custom name like "Sales Credit Note" (if a deployment ever
@@ -57,7 +95,8 @@ def categorize_voucher_type(raw_voucher_type_name: str) -> VoucherType | None:
 
 
 def _sanitize_xml(raw: str) -> str:
-    return _BARE_AMPERSAND.sub("&amp;", raw)
+    without_illegal_charrefs = _NUMERIC_CHARREF.sub(_strip_illegal_charref, raw)
+    return _BARE_AMPERSAND.sub("&amp;", without_illegal_charrefs)
 
 
 def _parse_tally_date(value: str) -> date:
