@@ -46,24 +46,35 @@ These were open in the spec and have been resolved by the client before build:
    (Active / Kept / Broken), consistent with the existing Layer 3 Action Log
    design.
 
-## Known limitation: no live Tally connection in this build environment
+## Live Tally connection: validated against a real TallyPrime instance
 
-This pipeline was developed in a sandboxed environment with no LAN access to
-the client's Tally instance. `ar_mis/tally_client.py` implements Tally's
-documented XML/HTTP request-response protocol (default gateway
-`http://<tally-host>:9000`) and has been exercised against synthetic fixture
-XML in `fixtures/` and `tests/`, matching Tally's published export schema
-(`ENVELOPE` / `BILLALLOCATIONS.LIST` / `LEDGERENTRIES.LIST` structure).
+This pipeline was originally developed in a sandboxed environment with no LAN
+access to a real Tally instance, exercised only against synthetic fixture XML
+in `fixtures/` and `tests/`. It has since been tested live against a real
+TallyPrime install, which surfaced and fixed one real bug:
 
-**It has not been run against a real Tally instance.** Before the first live
-run:
-- Confirm the exact Tally version/release in use (TallyPrime vs Tally.ERP 9 —
-  XML schema has minor differences between them).
-- Confirm the ODBC/HTTP gateway port and that "Act as ODBC/HTTP Server" is
-  enabled per company.
-- Run `ar_mis/tally_client.py`'s `confirm_current_company()` against a real
-  session and verify it correctly reflects the loaded company before trusting
-  it as the Section 2.2 safety check.
+- `confirm_current_company()` (Section 2.2's safety check) and company
+  discovery both work correctly against real TallyPrime data, unchanged.
+- The original voucher export request (a TDL `Collection` definition
+  fetching `ALLLEDGERENTRIES.LIST`) **hung indefinitely against real
+  TallyPrime** — no error, no response, just a dead socket — the moment any
+  nested list-type field was requested, regardless of exact FETCH syntax.
+  Flat-field Collection requests worked fine, which is how this was
+  isolated. Fixed in `ar_mis/xml_requests.py`'s `voucher_export_request()` by
+  switching to a `REPORTNAME=Day Book` "Export Data" request — the same
+  mechanism Tally's own Alt+E export in the UI uses — which returns full
+  detail in under a second. See that function's docstring for the full
+  diagnostic trail. `parsers.py` needed **no changes** — it was already
+  reading the correct plain tag names (`LEDGERNAME`, `AMOUNT`, `NAME`); only
+  the request shape was wrong.
+
+Still outstanding before the first live production run:
+- `ytd_sundry_debtors_request()` (a flat-field Ledger Collection, not a
+  Voucher one) has not yet been tested live — lower risk since it doesn't
+  hit the nested-list issue above, but unconfirmed.
+- Confirm the exact Tally version/release in use at the client (TallyPrime vs
+  Tally.ERP 9 — XML schema has minor differences between them); this fix was
+  validated against TallyPrime specifically.
 - Validate one branch end-to-end in parallel with the manual process (Section 5
   parallel-run requirement) before removing any manual step.
 

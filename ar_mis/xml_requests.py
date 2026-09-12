@@ -29,49 +29,56 @@ def voucher_export_request(
     from_date: date,
     to_date: date,
 ) -> str:
-    """Collection export request for every voucher over a date range,
-    fetching bill-wise allocation detail via ALLLEDGERENTRIES.LIST /
-    BILLALLOCATIONS.LIST.
+    """Day Book export request for every voucher over a date range,
+    returning full native voucher objects (bill-wise allocation detail
+    included via ALLLEDGERENTRIES.LIST / BILLALLOCATIONS.LIST).
+
+    CONFIRMED against a live TallyPrime instance (see
+    docs/registers_and_reporting_design.md / commit history for the
+    session that diagnosed this): a TDL Collection request
+    (`<TYPE>Collection</TYPE>` with a `<FETCH>` list) hangs indefinitely
+    - no response, no error - the moment any nested LIST-type field
+    (ALLLEDGERENTRIES.LIST) is requested, regardless of exact FETCH
+    syntax, field-line grouping, or using LEDGERENTRIES.LIST instead.
+    Flat-field Collection requests (no nested lists) work fine, which is
+    how this was isolated. A REPORTNAME-based "Export Data" request for
+    Tally's built-in Day Book report - the same mechanism Tally's own
+    Alt+E export in the UI uses - returns full detail in under a second
+    against the same instance. This function now uses that mechanism.
 
     Deliberately fetches ALL voucher types in one request rather than
     filtering server-side per type (an earlier version did, via a TDL
     `$VoucherTypeName = "Sales"` formula). Real Tally deployments
     commonly have custom-named voucher types with prefixes/suffixes
     (e.g. "Sales - Export") that are still fundamentally that category -
-    exact server-side filtering would silently miss them, and there is
-    no verified-against-real-Tally way to do "contains" filtering in TDL
-    formula syntax. Categorization instead happens client-side in
-    parsers.py, where it's ordinary Python string matching we can trust
-    and test.
+    exact server-side filtering would silently miss them. Categorization
+    instead happens client-side in parsers.py, where it's ordinary
+    Python string matching we can trust and test. Day Book naturally
+    returns every voucher type for the period, so this still holds.
+
+    No FETCH/field list is specified - unlike the Collection form, a
+    Day Book Export Data request returns the full native voucher object
+    regardless, which parsers.parse_voucher_collection reads by plain
+    tag name (LEDGERNAME, AMOUNT, NAME) exactly as confirmed present in
+    the live response - no parser changes were needed for this fix.
     """
     company = escape(company_name)
     return f"""<ENVELOPE>
  <HEADER>
-  <VERSION>1</VERSION>
-  <TALLYREQUEST>Export</TALLYREQUEST>
-  <TYPE>Collection</TYPE>
-  <ID>ARMIS Voucher Collection</ID>
+  <TALLYREQUEST>Export Data</TALLYREQUEST>
  </HEADER>
  <BODY>
-  <DESC>
-   <STATICVARIABLES>
-    <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
-    <SVFROMDATE>{_tally_date(from_date)}</SVFROMDATE>
-    <SVTODATE>{_tally_date(to_date)}</SVTODATE>
-    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-   </STATICVARIABLES>
-   <TDL>
-    <TDLMESSAGE>
-     <COLLECTION NAME="ARMIS Voucher Collection" ISMODIFY="No">
-      <TYPE>Voucher</TYPE>
-      <FETCH>DATE,VOUCHERNUMBER,VOUCHERTYPENAME,ALLLEDGERENTRIES.LIST</FETCH>
-      <FETCH>ALLLEDGERENTRIES.LEDGERNAME,ALLLEDGERENTRIES.AMOUNT,ALLLEDGERENTRIES.ISDEEMEDPOSITIVE</FETCH>
-      <FETCH>ALLLEDGERENTRIES.BILLALLOCATIONS.LIST</FETCH>
-      <FETCH>ALLLEDGERENTRIES.BILLALLOCATIONS.NAME,ALLLEDGERENTRIES.BILLALLOCATIONS.AMOUNT</FETCH>
-     </COLLECTION>
-    </TDLMESSAGE>
-   </TDL>
-  </DESC>
+  <EXPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>Day Book</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
+     <SVFROMDATE>{_tally_date(from_date)}</SVFROMDATE>
+     <SVTODATE>{_tally_date(to_date)}</SVTODATE>
+     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+  </EXPORTDATA>
  </BODY>
 </ENVELOPE>"""
 
