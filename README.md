@@ -46,15 +46,15 @@ These were open in the spec and have been resolved by the client before build:
    (Active / Kept / Broken), consistent with the existing Layer 3 Action Log
    design.
 
-## Live Tally connection: validated against a real TallyPrime instance
+## Live Tally connection: Test Extraction passes end-to-end against real TallyPrime
 
 This pipeline was originally developed in a sandboxed environment with no LAN
 access to a real Tally instance, exercised only against synthetic fixture XML
 in `fixtures/` and `tests/`. It has since been tested live against a real
-TallyPrime install, which surfaced and fixed one real bug:
+TallyPrime install via the webapp's Test Extraction page, and **all three
+checks pass**: company check, voucher extraction, and the Sundry Debtors YTD
+pull. Two real bugs were found and fixed along the way:
 
-- `confirm_current_company()` (Section 2.2's safety check) and company
-  discovery both work correctly against real TallyPrime data, unchanged.
 - The original voucher export request (a TDL `Collection` definition
   fetching `ALLLEDGERENTRIES.LIST`) **hung indefinitely against real
   TallyPrime** — no error, no response, just a dead socket — the moment any
@@ -64,17 +64,30 @@ TallyPrime install, which surfaced and fixed one real bug:
   switching to a `REPORTNAME=Day Book` "Export Data" request — the same
   mechanism Tally's own Alt+E export in the UI uses — which returns full
   detail in under a second. See that function's docstring for the full
-  diagnostic trail. `parsers.py` needed **no changes** — it was already
-  reading the correct plain tag names (`LEDGERNAME`, `AMOUNT`, `NAME`); only
-  the request shape was wrong.
+  diagnostic trail.
+- Once vouchers were flowing, `parsers.py` hit two real Tally XML
+  well-formedness quirks: numeric character references to codepoints illegal
+  in XML 1.0 (`<GSTCLASS>&#4; Not Applicable</GSTCLASS>`), and the same kind
+  of illegal control character appearing instead as a raw literal byte
+  elsewhere in the same export. Both are now stripped in `_sanitize_xml`
+  before parsing — see that module's docstring. The actual field-reading
+  logic (`LEDGERNAME`, `AMOUNT`, `NAME` by plain tag name) needed **no
+  changes** at any point; every bug found was in request-building or
+  input-sanitization, not in how data is interpreted once parsed.
+
+Confirmed working against real TallyPrime, in order: `27 Sales, 3 Receipts,
+12 Journals` correctly pulled and categorized, and `964` Sundry Debtors
+ledgers pulled for the YTD cross-check — the first time this pipeline has
+processed real production-shaped data end-to-end.
 
 Still outstanding before the first live production run:
-- `ytd_sundry_debtors_request()` (a flat-field Ledger Collection, not a
-  Voucher one) has not yet been tested live — lower risk since it doesn't
-  hit the nested-list issue above, but unconfirmed.
 - Confirm the exact Tally version/release in use at the client (TallyPrime vs
-  Tally.ERP 9 — XML schema has minor differences between them); this fix was
+  Tally.ERP 9 — XML schema has minor differences between them); this was
   validated against TallyPrime specifically.
+- The three fixes above were validated via Test Extraction (a read-only
+  connectivity + extraction check). The full pipeline — roll-forward,
+  reconciliation, storage writes (`ar_mis.pipeline.process_branch_data`) —
+  has not yet been run against this real data.
 - Validate one branch end-to-end in parallel with the manual process (Section 5
   parallel-run requirement) before removing any manual step.
 
