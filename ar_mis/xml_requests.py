@@ -29,22 +29,39 @@ def voucher_export_request(
     from_date: date,
     to_date: date,
 ) -> str:
-    """Day Book export request for every voucher over a date range,
-    returning full native voucher objects (bill-wise allocation detail
-    included via ALLLEDGERENTRIES.LIST / BILLALLOCATIONS.LIST).
+    """Voucher Register export request for every voucher over a date
+    range, returning full native voucher objects (bill-wise allocation
+    detail included via ALLLEDGERENTRIES.LIST / BILLALLOCATIONS.LIST).
 
     CONFIRMED against a live TallyPrime instance (see
     docs/registers_and_reporting_design.md / commit history for the
-    session that diagnosed this): a TDL Collection request
-    (`<TYPE>Collection</TYPE>` with a `<FETCH>` list) hangs indefinitely
-    - no response, no error - the moment any nested LIST-type field
-    (ALLLEDGERENTRIES.LIST) is requested, regardless of exact FETCH
-    syntax, field-line grouping, or using LEDGERENTRIES.LIST instead.
-    Flat-field Collection requests (no nested lists) work fine, which is
-    how this was isolated. A REPORTNAME-based "Export Data" request for
-    Tally's built-in Day Book report - the same mechanism Tally's own
-    Alt+E export in the UI uses - returns full detail in under a second
-    against the same instance. This function now uses that mechanism.
+    session that diagnosed this) across two real bugs, in order:
+
+    1. A TDL Collection request (`<TYPE>Collection</TYPE>` with a
+       `<FETCH>` list) hangs indefinitely - no response, no error - the
+       moment any nested LIST-type field (ALLLEDGERENTRIES.LIST) is
+       requested, regardless of exact FETCH syntax. Flat-field Collection
+       requests work fine, which is how this was isolated. Fixed by
+       switching to a REPORTNAME-based "Export Data" request instead,
+       which returns the full native voucher object with no FETCH list
+       needed at all.
+    2. The first REPORTNAME tried, "Day Book", silently **ignored**
+       SVFROMDATE/SVTODATE entirely - confirmed by requesting two
+       non-overlapping date ranges and getting a byte-identical response
+       both times, always showing whatever period Tally's own UI session
+       currently has set rather than the requested range. Day Book is
+       apparently tied to Tally's live UI period state in a way other
+       reports aren't. "Voucher Register" was tested as an alternative
+       and confirmed to (a) correctly return different vouchers for
+       different date ranges and (b) still carry the exact same
+       ALLLEDGERENTRIES.LIST/BILLALLOCATIONS.LIST/PARTYLEDGERNAME detail
+       Day Book did. This function now uses Voucher Register.
+
+    Takeaway for future maintainers: a REPORTNAME-based request's
+    date-range behavior is not something to assume from one working
+    example - different named reports can behave differently against the
+    same static variables, and this must be verified per report name
+    against a live instance, not just assumed to generalize.
 
     Deliberately fetches ALL voucher types in one request rather than
     filtering server-side per type (an earlier version did, via a TDL
@@ -53,14 +70,15 @@ def voucher_export_request(
     (e.g. "Sales - Export") that are still fundamentally that category -
     exact server-side filtering would silently miss them. Categorization
     instead happens client-side in parsers.py, where it's ordinary
-    Python string matching we can trust and test. Day Book naturally
-    returns every voucher type for the period, so this still holds.
+    Python string matching we can trust and test. Voucher Register
+    naturally returns every voucher type for the period, so this still
+    holds.
 
-    No FETCH/field list is specified - unlike the Collection form, a
-    Day Book Export Data request returns the full native voucher object
-    regardless, which parsers.parse_voucher_collection reads by plain
-    tag name (LEDGERNAME, AMOUNT, NAME) exactly as confirmed present in
-    the live response - no parser changes were needed for this fix.
+    No FETCH/field list is specified - a REPORTNAME-based Export Data
+    request returns the full native voucher object regardless, which
+    parsers.parse_voucher_collection reads by plain tag name (LEDGERNAME,
+    AMOUNT, NAME) exactly as confirmed present in the live response - no
+    parser changes were needed for either fix.
     """
     company = escape(company_name)
     return f"""<ENVELOPE>
@@ -70,7 +88,7 @@ def voucher_export_request(
  <BODY>
   <EXPORTDATA>
    <REQUESTDESC>
-    <REPORTNAME>Day Book</REPORTNAME>
+    <REPORTNAME>Voucher Register</REPORTNAME>
     <STATICVARIABLES>
      <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
      <SVFROMDATE>{_tally_date(from_date)}</SVFROMDATE>

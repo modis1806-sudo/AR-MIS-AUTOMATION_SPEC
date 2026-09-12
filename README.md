@@ -51,34 +51,50 @@ These were open in the spec and have been resolved by the client before build:
 This pipeline was originally developed in a sandboxed environment with no LAN
 access to a real Tally instance, exercised only against synthetic fixture XML
 in `fixtures/` and `tests/`. It has since been tested live against a real
-TallyPrime install via the webapp's Test Extraction page, and **all three
-checks pass**: company check, voucher extraction, and the Sundry Debtors YTD
-pull. Two real bugs were found and fixed along the way:
+TallyPrime install via the webapp's Test Extraction page. Four real bugs were
+found and fixed along the way — the fourth one is worth reading carefully,
+since it silently corrupted correctness after the first fix appeared to work:
 
 - The original voucher export request (a TDL `Collection` definition
   fetching `ALLLEDGERENTRIES.LIST`) **hung indefinitely against real
   TallyPrime** — no error, no response, just a dead socket — the moment any
   nested list-type field was requested, regardless of exact FETCH syntax.
   Flat-field Collection requests worked fine, which is how this was
-  isolated. Fixed in `ar_mis/xml_requests.py`'s `voucher_export_request()` by
-  switching to a `REPORTNAME=Day Book` "Export Data" request — the same
-  mechanism Tally's own Alt+E export in the UI uses — which returns full
-  detail in under a second. See that function's docstring for the full
-  diagnostic trail.
+  isolated. Fixed by switching to a REPORTNAME-based "Export Data" request
+  instead, which returns the full native voucher object with no FETCH list
+  needed at all.
 - Once vouchers were flowing, `parsers.py` hit two real Tally XML
   well-formedness quirks: numeric character references to codepoints illegal
   in XML 1.0 (`<GSTCLASS>&#4; Not Applicable</GSTCLASS>`), and the same kind
   of illegal control character appearing instead as a raw literal byte
   elsewhere in the same export. Both are now stripped in `_sanitize_xml`
-  before parsing — see that module's docstring. The actual field-reading
-  logic (`LEDGERNAME`, `AMOUNT`, `NAME` by plain tag name) needed **no
-  changes** at any point; every bug found was in request-building or
-  input-sanitization, not in how data is interpreted once parsed.
+  before parsing — see that module's docstring.
+- **The REPORTNAME first tried, `Day Book`, silently ignored
+  `SVFROMDATE`/`SVTODATE` entirely.** Test Extraction reported PASS with
+  plausible-looking voucher counts, which looked like success — but
+  requesting two different, non-overlapping date ranges returned a
+  byte-identical response both times, always showing whatever period
+  Tally's own UI session happened to have set (1-Apr-2026) rather than the
+  requested range. This was caught by deliberately testing two date ranges
+  side by side, not by the original passing test alone — a passing
+  connectivity check is not the same as a correctness check. Fixed by
+  switching to `REPORTNAME=Voucher Register`, confirmed to (a) correctly
+  return different vouchers for different date ranges and (b) still carry
+  the exact same `ALLLEDGERENTRIES.LIST`/`BILLALLOCATIONS.LIST` detail Day
+  Book did. See `voucher_export_request()`'s docstring for the full
+  diagnostic trail across all of the above.
 
-Confirmed working against real TallyPrime, in order: `27 Sales, 3 Receipts,
-12 Journals` correctly pulled and categorized, and `964` Sundry Debtors
+The actual field-reading logic (`LEDGERNAME`, `AMOUNT`, `NAME` by plain tag
+name) needed **no changes** through any of this — every bug found was in
+request-building or input-sanitization, never in how data is interpreted
+once parsed.
+
+Confirmed working against real TallyPrime, correctly scoped to the requested
+date range: real Sales, Receipt, Journal, Payment and other voucher types
+pulled with full ledger-entry and bill-allocation detail, and Sundry Debtors
 ledgers pulled for the YTD cross-check — the first time this pipeline has
-processed real production-shaped data end-to-end.
+processed real production-shaped data end-to-end, with the date-range
+correctness actually verified rather than assumed from one passing test.
 
 Still outstanding before the first live production run:
 - Confirm the exact Tally version/release in use at the client (TallyPrime vs
