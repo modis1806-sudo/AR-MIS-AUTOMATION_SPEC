@@ -21,56 +21,114 @@ the registers.
 ### 2. Three master registers, combined across all branches, cumulative from FY start
 
 Not one register per branch — one continuously growing register per category,
-spanning every branch, appended to on every extraction run or manual upload:
+spanning every branch, appended to on every extraction run or manual upload.
+Column shapes below were cross-checked in a follow-up session against the
+client's actual current dashboard column headers; differences were resolved
+one by one (see "Resolved in the column cross-check session" further down for
+the reasoning behind each addition/removal).
 
 **Sales & Debit Note Register** — one row per invoice (DNs included here
-since both are receivables). Columns agreed so far:
+since both are receivables). Final columns:
 
 | Column | Notes |
 |---|---|
 | Branch | |
-| Date | |
+| Invoice / Debit Note Date | |
+| Note Type | Invoice or Debit Note — needed because this register combines both; not called out in the original design, added during the column cross-check |
+| Voucher Number (InvoiceNo / DebitNote No) | The human-facing invoice/DN number, printed/sent to customer |
+| Bill Allocation Reference ("New Ref") | The *actual* Tally field (`BILLALLOCATIONS.LIST`) receipts/CNs match against internally — see item 8. Confirmed as a genuinely new column: it does not exist in the client's current dashboard at all |
+| Job ID / Shipment ID | Client-specific field, retained on client's explicit request; pass-through only, no computation keyed off it |
 | Customer Name | |
-| Group (Sundry Debtor / Related Party) | Set manually per party; see item 5 |
+| Grouping (Sundry Debtor / Related Party) | Set manually per party; see item 5 |
 | Taxable Value | |
-| CGST | Needs sample XML to confirm tax-ledger naming — see Open Items |
-| SGST | |
-| IGST | |
-| Total Invoice Value | |
-| Voucher Number | The human-facing invoice number, printed/sent to customer |
-| Bill Allocation Reference ("New Ref") | The *actual* Tally field receipts/CNs match against internally — see item 8, this is NOT always equal to Voucher Number |
-| CN Ref No. | The CN number if exactly one CN against this invoice; "Multiple credit notes issued" if more than one |
-| CN Amount | Sum of all CNs against this invoice (rollup from CN Register) |
-| Receipt Amount | Sum of all receipts against this invoice (rollup from Receipt & Journal Register) |
-| Open Amount | Total Invoice Value − CN Amount − Receipt Amount |
-| Due Date | Invoice Date + that customer's Credit Period (see item 6) |
-| Status | Open / Closed |
-| Due Days | Only meaningful when Open |
-| Ageing Bucket | Derived from Due Days |
+| CGST / SGST / IGST | Needs sample XML to confirm tax-ledger naming — see Open Items |
+| Invoice Value | = Taxable Value + Tax |
+| Due Date | = Invoice Date + that customer's Credit Period **in effect at invoice creation, computed and stored once** — a later Credit Period change on Customer Master never retroactively recalculates existing invoices' Due Dates (see item 6) |
+| Linked CN No. | The CN number if exactly one CN against this invoice; "Multiple credit notes issued" if more than one |
+| Linked CN Amount | Sum of all CNs against this invoice (rollup from CN Register) |
+| Net Receivable | = Invoice Value − Linked CN Amount |
+| Receipts Applied | Sum of all receipts applied against this invoice (rollup from Receipt & Journal Register) |
+| Open Amount | = Net Receivable − Receipts Applied. (A Discount/Adjustment term was proposed and then explicitly dropped — Open Amount has no discount component) |
+| Carried Forward Open Amount | A **frozen snapshot** of Open Amount taken at the moment of FY rollover — display/audit only, never an input back into the live Open Amount formula above |
+| Overdue Flag (Y/N) | As-of-date relative — see new as-of-date decision below |
+| DPD / Due Days | As-of-date relative; only meaningful when Open |
+| Ageing Bucket | Derived from DPD, as-of-date relative |
 | PTP Date | **Editable** — see item 7 |
 | PTP Amount | **Editable** — see item 7 |
+| PTP Status | Active / Kept / Broken — as-of-date relative (a PTP not yet due when viewed "as of" an earlier date must show Active even if it has since been broken by today's real date) |
+| Next Action | **Editable**, part of the PTP workflow, same tier as PTP Date/Amount |
+| Expected Collection Date | **Editable**, part of the PTP workflow, same tier as PTP Date/Amount |
+
+Explicitly removed from the original proposal during the cross-check:
+**Discount/Adjustment** (dropped entirely, not deferred — no longer part of
+the Open Amount formula at all), **Collector** (removed for now), and
+**Reference No. (BL No.)** (this was a Bill of Lading / shipping reference —
+confirmed unrelated to the Bill Allocation Reference above; a naming
+collision, not the same field).
 
 **Credit Note Register** — voucher-wise, all branches combined, date-wise.
-Columns: Branch, Date, Customer, CN Number, Original Invoice Ref, Total CN
-Value. No tax split needed here (client's explicit instruction).
+Columns: Branch, Date, Customer, CN Number, Original Invoice/DN Ref (matched
+via Party + Bill Allocation Reference — the same composite-key principle as
+item 8, not voucher number alone), CN Amount, Reason Code. No tax split
+needed here (client's explicit instruction).
+
+Confirmed this session: a Credit Note can exist **on account / unapplied**,
+exactly like a receipt can. So the register also needs, mirroring the
+Receipt & Journal Register:
+- An Open/Unapplied CN Amount column (client's current dashboard already has
+  `OpenCreditNotes` for this).
+- **Classification** (Current / Pre-MIS Adjustment / Pending Review) — an
+  unmatched CN "Against Ref" is the same pre-go-live exception problem as an
+  unmatched receipt/journal (item 10), just from the credit side.
+- Netting, not pair-matching, for unapplied CNs — same principle as item 9.
+
+The exact final column names for the unapplied/classification fields on this
+register are drafted by inference from the Receipt & Journal Register's
+equivalent columns, not yet reviewed line-by-line with the client — **confirm
+next session**.
+
+Explicitly removed: `Match_Key` — an Excel-era manual lookup column,
+unnecessary once the tool enforces Party + Bill Allocation Reference matching
+itself.
 
 **Receipt & Journal Register** — voucher-wise, all branches combined,
-bill-allocated. Columns: Branch, Date, Customer (from the receipt/journal
-entry itself), Voucher Type, Voucher Number, Invoice Ref it's allocated
-against (or "Unapplied"), Total Amount, **Classification** (Current / Pre-MIS
-Adjustment / Pending Review — see item 9). No tax split needed here either.
+bill-allocated. Columns: Branch, Date, Voucher Type (as per books) / Voucher
+Type (normalised), Voucher Number, Customer (from the receipt/journal entry
+itself), Allocation Type (Against Ref / Unapplied), **Target Doc No.** — the
+Bill Allocation Reference of the invoice this is tagged against (confirmed
+this is the actual matching key, not the Voucher Number — this is the field
+that implements item 8's fix), Applied Amount, Unapplied Flag / Unapplied
+Balance, **Classification** (Current / Pre-MIS Adjustment / Pending Review —
+see item 9 and item 10), DPD at Application / Age Unapplied Days, Invoice Fin
+Year (the FY of the invoice being applied against, which can differ from the
+receipt's own FY), Narration/Ref Text.
 
 A voucher/journal can allocate against a specific invoice ("Agst Ref") or be
 left unapplied ("New Ref" / on-account) — this applies to Journals exactly
 like Receipts, not just Receipts (any voucher type can carry a bill
 allocation if the ledger has bill-by-bill tracking on).
 
+Explicitly removed: **ETA Application Date** (a mistaken duplicate of PTP
+Date — no separate "unapplied cash follow-up date" concept exists), **Owner**
+(removed for now), and **Allocated Party** (redundant — confirmed it can
+never differ from Customer Name when a receipt is actually allocated,
+since matching is party-scoped by construction; and when unapplied, that
+state is already captured by Allocation Type / Target Doc No. being blank —
+so it carries no information Customer Name + Allocation Type don't already
+carry).
+
 ### 3. PTP stays inside the Sales & DN Register — not a separate editable register
 
 PTP Date/Amount are edited directly against the relevant invoice row by the
-AR team (who filter the register to Open invoices and fill them in). A
-separate "PTP Report" is just a filtered extract of rows where PTP Date/
-Amount are populated — a view, not a second data-entry surface.
+AR team (who filter the register to Open invoices and fill them in). The PTP
+view is a filtered extract of the Sales & DN Register, **not** a second data
+store — confirmed independently this session: the client's own current PTP
+register is column-for-column a subset of the Sales & DN Register (drops
+Note Type, Job ID, Grouping, and the tax split; keeps everything else).
+
+Confirmed shape of the filter: shows only rows where **both** PTP Date and
+PTP Amount are populated — not all Open invoices ("otherwise there's no
+point to a PTP register"). Does **not** carry the Grouping column.
 
 ### 4. Financial-year handling
 
@@ -86,6 +144,8 @@ Amount are populated — a view, not a second data-entry surface.
   by the calendar date. Reason: late-arriving branch data (e.g. a branch's
   March vouchers extracted in April) could otherwise get carried forward
   incorrectly if rollover fires the instant the FY turns on the calendar.
+- See the new as-of-date decision below for how this interacts with viewing
+  a prior FY's position after rollover has happened.
 
 ### 5. New-party classification (Sundry Debtor vs Related Party)
 
@@ -100,7 +160,11 @@ Amount are populated — a view, not a second data-entry surface.
 
 New column on Customer Master: `Credit Period (Days)`, default 30,
 overridable per customer per branch. Due Date on every invoice = Invoice Date
-+ that specific customer's credit period.
++ that specific customer's credit period **as it stood at the moment the
+invoice was created** — computed and stored once. Confirmed this session:
+if the Credit Period is changed later, it applies only to invoices created
+after the change; it never retroactively recalculates Due Date on invoices
+already in the register.
 
 ### 7. Editable fields — general principle
 
@@ -112,7 +176,8 @@ Matrix — the original six defects named in the top-level spec/README).
 
 Fields that ARE legitimately editable, because there's no other source of
 truth for them:
-- PTP Date, PTP Amount (Sales & DN Register)
+- PTP Date, PTP Amount, Next Action, Expected Collection Date (Sales & DN
+  Register — all part of the PTP workflow, confirmed same editable tier)
 - Sundry Debtor / Related Party classification
 - Credit Period override (Customer Master)
 
@@ -136,7 +201,10 @@ internally and eliminates the whole class of cross-party reference collisions
 by construction, rather than detecting them after the fact. Confirmed the
 Sales & DN Register needs **both** Voucher Number (display) and Bill
 Allocation Reference (actual matching key) as separate columns — see the
-register table above.
+register table above. Confirmed this session: the Receipt & Journal
+Register's `Target Doc No.` and the Credit Note Register's `Original
+Invoice/DN Ref` are both meant to carry this same Bill Allocation Reference,
+not the Voucher Number — this is the field that actually implements the fix.
 
 **Important scoping note (confirmed in follow-up discussion):** New Ref must
 never be used to identify or de-duplicate rows *within* the Sales & DN
@@ -176,6 +244,10 @@ matches on coincidental same-amount transactions). Full detail is still
 visible in the Receipt & Journal register itself if anyone needs to trace
 why a total is zero.
 
+Confirmed this session: the **same netting principle applies to unapplied
+Credit Notes** on the Credit Note Register — a CN left "on account" nets per
+party the same way an unapplied receipt does.
+
 ### 10. Pre-MIS cleanup journals
 
 Client's team sometimes creates reversing journals to bill-wise-tag old
@@ -200,9 +272,11 @@ lump-sum Pre-MIS Outstanding baseline per party, never individually.
   Cash netting (item 9). Splitting it (one leg "Current", one leg "Pre-MIS")
   would recreate a phantom imbalance, since the on-account leg's true
   counterpart predates go-live and was never captured by this system.
-- New column on the Receipt & Journal Register: **Classification** — Current
-  / Pre-MIS Adjustment / Pending Review — set per voucher, all lines of that
-  voucher share the same value.
+- **Classification** column: Current / Pre-MIS Adjustment / Pending Review —
+  set per voucher, all lines of that voucher share the same value. Confirmed
+  this session: the same three-way classification is needed on the Credit
+  Note Register too, for exactly the same reason (an unmatched CN reference
+  can equally predate go-live).
 
 ### 11. Multi-user access, roles, and audit trail
 
@@ -249,25 +323,73 @@ commands.
 - A backup of the database is taken automatically before any migration
   commits, regardless.
 
+### 14. As-of-date / point-in-time reporting
+
+Reports must always be generated for a **selected reporting date (or
+range)**, independent of how much data has actually been loaded/extracted.
+Example: data has been extracted through 12th Sept, but the user wants to
+see the position as of 6th Sept — changing the reporting date must not
+require touching or removing any data, and must not show anything dated
+after the selected date.
+
+**Mechanism:** every derived/aggregate field — Open Amount, the CN Amount and
+Receipts Applied rollups, Overdue Flag, DPD, Ageing Bucket, PTP Status — is
+computed by filtering the underlying registers to `transaction date ≤
+selected as-of date` and re-deriving from that filtered slice. Nothing is
+read from a precomputed "current" total. This is only possible because of
+item 1's decision to base reporting on dated, voucher-level registers rather
+than the old cumulative weekly-snapshot model; a snapshot has no way to be
+rewound.
+
+This also directly validates why Carried Forward Open Amount (item 2) must
+be a frozen, non-formula snapshot rather than a live input: Open Amount stays
+always freshly derived from date-filtered register data, which is what lets
+an as-of query work identically whether or not an FY rollover has happened in
+between.
+
+- **Filtering is by transaction/voucher date, not by data-entry/extraction
+  date.** A backdated entry keyed in later still correctly appears in an
+  as-of report for its own (earlier) date. Practical consequence: the same
+  "as of 6th Sept" report can, in principle, produce a different result if
+  re-run after new backdated data lands. Accepted as-is — backdated entries
+  are mostly prohibited within the company and thus rare in practice, so this
+  isn't worth building a snapshot/locking feature for.
+- **No report-locking/freeze feature.** Always live recompute; confirmed
+  explicitly given how rare backdating is.
+- **Due Date is frozen at invoice creation** (see item 6) — this matters more
+  under as-of reporting than it otherwise would, since two as-of reports
+  straddling a Credit Period change must never disagree about the same
+  invoice's Due Date.
+- **PTP Status is as-of-date relative**, not tied to today's real date — a
+  PTP not yet due when viewed as of an earlier date shows Active even if it
+  has since been broken by today's actual date.
+- **Scoping across FY rollover:** the FY selector (item 4) and the as-of date
+  are two independent, nested filters — the FY selector picks which year's
+  invoice set is in view, and the as-of date filters the underlying
+  transaction registers within that view. Viewing a prior FY's position after
+  rollover works via the same general mechanism: select the prior FY first,
+  then the as-of date within it. No special-case "reconstruct pre-rollover
+  state while viewing the current FY" logic is needed or wanted — that's not
+  expected to be a realistic user flow.
+
 ## Open items — bring next session
 
 1. **Sample XML files** (all five voucher types) — needed to confirm real
    tax-ledger naming (for CGST/SGST/IGST parsing) and the actual
    `BILLALLOCATIONS.LIST` shape (New Ref, BILLTYPE, due date field if
-   present) against a real export rather than assumptions.
-2. **Client's current column headers** — cross-check against the register
-   designs above; reconcile any differences.
-3. **PTP register columns** — dedicated review (rough shape assumed so far:
-   Branch, Customer, Invoice Ref, PTP Date, PTP Amount, status
-   Active/Kept/Broken — needs confirming against how the AR team actually
-   works today).
-4. **Validate the Pre-MIS Classification/exception logic** (item 10) against
-   real data once the sample XML is available.
-5. **Existing AR MIS Dashboard's current report list** — client to share
+   present) against a real export rather than assumptions. Existing
+   `fixtures/*.xml` only cover Sales and Receipt, plus a mixed-types sample
+   (Payment, Provision Journal, Sales-Export, Stock Journal) — still missing
+   Debit Note, Credit Note, and a plain Journal sample.
+2. **Validate the Pre-MIS Classification/exception logic** (item 10) against
+   real data once the sample XML is available — now covers both the Receipt
+   & Journal Register and the Credit Note Register.
+3. **Existing AR MIS Dashboard's current report list** — client to share
    what's currently produced (Exception Register, a single-snapshot "AR
    Control Board", Weekly Movement Register, and others) so nothing already
-   relied upon gets dropped or missed in the redesign.
-6. **Live Tally connectivity / hosting question — parked, not resolved.**
+   relied upon gets dropped or missed in the redesign. Only the report names
+   have been given so far, not their actual columns/logic.
+4. **Live Tally connectivity / hosting question — parked, not resolved.**
    Client's Tally setup may involve a third-party "Tally on Cloud" style
    host running multiple companies' Tally instances on shared infrastructure
    reachable over the public internet. Real security question (Tally's
@@ -276,6 +398,10 @@ commands.
    Windows Server session) before this is discussed further. See prior
    session's discussion for the full reasoning; nothing to build here yet,
    and this should not be assumed resolved just because it's parked.
+5. **Credit Note Register's exact new column names** — the concept
+   (unapplied CN balance + Classification, mirroring the Receipt & Journal
+   Register) is confirmed, but the precise column set was drafted by
+   inference this session rather than reviewed line-by-line with the client.
 
 ## Deferred to a later version (not rejected, not in scope now)
 
@@ -295,6 +421,14 @@ commands.
   a status/date/notes field or real case tracking (counsel, hearings, case
   stage, documents); and is follow-up logged per invoice or per party (one
   call often covers several invoices).
+- **Discount/Adjustment as a formula component of Open Amount** — dropped
+  entirely for now during the column cross-check, not built as a hidden
+  zero-value placeholder. If a real "management discount/write-down"
+  requirement surfaces later, it needs its own design pass (editable-field
+  status, audit trail per item 11) rather than being silently reintroduced.
+- **Collector / Owner assignment columns** on the Sales & DN Register and the
+  Receipt & Journal Register — removed for now; no per-invoice/per-voucher
+  ownership tracking in v1.
 
 ## Explicit non-scope / rejected ideas
 
@@ -307,3 +441,18 @@ commands.
   pair-detection is fragile and risks false matches.
 - **Lump-sum year-end carry-forward** — rejected in favor of invoice-wise
   carry-forward (item 4).
+- **`Match_Key` (Credit Note Register)** — an Excel-era manual lookup column;
+  unnecessary now that the tool enforces Party + Bill Allocation Reference
+  matching itself.
+- **`Allocated Party` (Receipt & Journal Register)** — redundant with
+  Customer Name + Allocation Type; carries no information neither of those
+  already carries.
+- **`ETA Application Date` (Receipt & Journal Register)** — a mistaken
+  duplicate of PTP Date; no separate "unapplied cash follow-up date" concept
+  exists.
+- **`Reference No. (BL No.)` (Sales & DN Register)** — a Bill of Lading /
+  shipping reference, unrelated to the Bill Allocation Reference ("New
+  Ref"); removed to avoid the naming collision.
+- **A report-locking/snapshot feature for as-of-date reporting** — rejected;
+  live recompute is always acceptable given how rare backdated entries are
+  in practice.
