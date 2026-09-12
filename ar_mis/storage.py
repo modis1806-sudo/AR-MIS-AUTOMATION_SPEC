@@ -23,11 +23,18 @@ from pathlib import Path
 
 from ar_mis.config import BranchConfig
 from ar_mis.models import (
+    CreditNoteRegisterRow,
     CustomerMasterRecord,
+    FYRolloverSnapshot,
+    InvoiceFollowUp,
+    NoteType,
     PreMisAdjustment,
     PTPEntry,
     PTPStatus,
     PTPStatusLogRow,
+    ReceiptJournalRegisterRow,
+    RegisterClassification,
+    SalesDNRegisterRow,
     WeeklySnapshotRow,
 )
 
@@ -49,7 +56,7 @@ from ar_mis.models import (
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -136,6 +143,110 @@ CREATE TABLE IF NOT EXISTS voucher_log (
     voucher_date TEXT NOT NULL,
     flipped_amount TEXT NOT NULL,
     UNIQUE (branch_id, party_ledger_name, voucher_type, voucher_number, voucher_date, flipped_amount)
+);
+""",
+    # Registers design doc (docs/registers_and_reporting_design.md) items
+    # 1-4/7-10 — the invoice-level master registers replacing weekly_snapshot
+    # as the base of reporting. Row identity per item 2 is Branch + Voucher
+    # Number + Party, not bill_allocation_reference/target_doc_no (item 8's
+    # scoping note: those are lookup fields, not identity — they can
+    # legitimately collide across parties in real Tally data). INSERT OR
+    # IGNORE + these UNIQUE constraints is how re-extraction of an
+    # overlapping date range stays append-only-safe: a voucher already
+    # recorded here is silently skipped rather than duplicated, exactly
+    # like the existing voucher_log table's own dedup pattern.
+    2: """
+CREATE TABLE IF NOT EXISTS sales_dn_register (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    invoice_date TEXT NOT NULL,
+    note_type TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    bill_allocation_reference TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    taxable_value TEXT NOT NULL,
+    cgst TEXT NOT NULL,
+    sgst TEXT NOT NULL,
+    igst TEXT NOT NULL,
+    invoice_value TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    job_id TEXT,
+    UNIQUE (branch_id, voucher_number, party_id)
+);
+
+-- classification (item 10) starts Current and is the one field this
+-- table's append-only-ness doesn't apply to: resolve_credit_note_classification()
+-- updates it in place once a human confirms a Pending Review reference as
+-- Pre-MIS Adjustment (or Tally itself is corrected and the row is
+-- re-extracted under a now-matching reference — never a silent flip back
+-- to Current from inside this system).
+CREATE TABLE IF NOT EXISTS credit_note_register (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    cn_date TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    cn_amount TEXT NOT NULL,
+    bill_allocation_reference TEXT,
+    classification TEXT NOT NULL DEFAULT 'Current',
+    reason TEXT NOT NULL DEFAULT '',
+    UNIQUE (branch_id, voucher_number, party_id)
+);
+
+-- One row per bill-allocation line (a Receipt/Journal voucher can apply
+-- against several invoices at once — see ar_mis.registers), so identity
+-- includes target_doc_no + amount, not just the voucher — mirrors
+-- voucher_log's own reasoning for including amount in its dedup key.
+-- classification is set and updated per VOUCHER (item 10's invariant:
+-- every line of a flagged voucher travels together) — see
+-- resolve_receipt_journal_classification(), which updates every row
+-- sharing (branch_id, voucher_number, party_id) in one statement, never
+-- a single line in isolation.
+CREATE TABLE IF NOT EXISTS receipt_journal_register (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    txn_date TEXT NOT NULL,
+    voucher_type TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    target_doc_no TEXT,
+    classification TEXT NOT NULL DEFAULT 'Current',
+    narration TEXT NOT NULL DEFAULT '',
+    UNIQUE (branch_id, voucher_number, party_id, target_doc_no, amount)
+);
+
+-- Item 7's one deliberately-mutable/upserted row — human-entered PTP and
+-- follow-up fields with no other source of truth, keyed to the same
+-- (branch, voucher, party) identity as the invoice it follows up on.
+CREATE TABLE IF NOT EXISTS invoice_follow_up (
+    branch_id TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    ptp_date TEXT,
+    ptp_amount TEXT,
+    next_action TEXT NOT NULL DEFAULT '',
+    expected_collection_date TEXT,
+    updated_by TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (branch_id, voucher_number, party_id)
+);
+
+-- Item 4 — a frozen record created only by a deliberate year-end rollover
+-- action (never automatically). UNIQUE on the transition itself so the
+-- same invoice can't be rolled into the same target FY twice by mistake;
+-- rolling the same still-open invoice into a LATER FY transition is a
+-- separate, legitimate row.
+CREATE TABLE IF NOT EXISTS fy_rollover_snapshot (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    from_financial_year TEXT NOT NULL,
+    to_financial_year TEXT NOT NULL,
+    open_amount_at_rollover TEXT NOT NULL,
+    rolled_over_by TEXT NOT NULL,
+    rolled_over_at TEXT NOT NULL,
+    UNIQUE (branch_id, voucher_number, party_id, to_financial_year)
 );
 """,
 }
@@ -543,3 +654,275 @@ class Store:
             (ptp_id, as_of_week.isoformat()),
         ).fetchone()
         return PTPStatus(row[0]) if row else None
+
+    # ---- Registers (append-only invoice-level, replace weekly_snapshot
+    # as the base of reporting — docs/registers_and_reporting_design.md) --
+    #
+    # INSERT OR IGNORE against each table's UNIQUE constraint (see
+    # MIGRATIONS[2]) is what keeps re-extraction of an overlapping date
+    # range append-only-safe: a voucher already recorded is silently
+    # skipped, never duplicated.
+
+    def append_sales_dn_row(self, row: SalesDNRegisterRow) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sales_dn_register"
+            " (branch_id, invoice_date, note_type, voucher_number, bill_allocation_reference,"
+            " party_id, taxable_value, cgst, sgst, igst, invoice_value, due_date, job_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row.branch_id,
+                row.invoice_date.isoformat(),
+                row.note_type.value,
+                row.voucher_number,
+                row.bill_allocation_reference,
+                row.party_id,
+                str(row.taxable_value),
+                str(row.cgst),
+                str(row.sgst),
+                str(row.igst),
+                str(row.invoice_value),
+                row.due_date.isoformat(),
+                row.job_id,
+            ),
+        )
+        self.conn.commit()
+
+    def all_sales_dn_rows(self, branch_id: str | None = None) -> list[SalesDNRegisterRow]:
+        self.conn.row_factory = sqlite3.Row
+        if branch_id is None:
+            cur = self.conn.execute("SELECT * FROM sales_dn_register ORDER BY invoice_date")
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM sales_dn_register WHERE branch_id=? ORDER BY invoice_date", (branch_id,)
+            )
+        return [
+            SalesDNRegisterRow(
+                branch_id=r["branch_id"],
+                invoice_date=date.fromisoformat(r["invoice_date"]),
+                note_type=NoteType(r["note_type"]),
+                voucher_number=r["voucher_number"],
+                bill_allocation_reference=r["bill_allocation_reference"],
+                party_id=r["party_id"],
+                taxable_value=Decimal(r["taxable_value"]),
+                cgst=Decimal(r["cgst"]),
+                sgst=Decimal(r["sgst"]),
+                igst=Decimal(r["igst"]),
+                invoice_value=Decimal(r["invoice_value"]),
+                due_date=date.fromisoformat(r["due_date"]),
+                job_id=r["job_id"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def append_credit_note_row(self, row: CreditNoteRegisterRow) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO credit_note_register"
+            " (branch_id, cn_date, voucher_number, party_id, cn_amount,"
+            " bill_allocation_reference, classification, reason)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row.branch_id,
+                row.cn_date.isoformat(),
+                row.voucher_number,
+                row.party_id,
+                str(row.cn_amount),
+                row.bill_allocation_reference,
+                row.classification.value,
+                row.reason,
+            ),
+        )
+        self.conn.commit()
+
+    def all_credit_note_rows(self, branch_id: str | None = None) -> list[CreditNoteRegisterRow]:
+        self.conn.row_factory = sqlite3.Row
+        if branch_id is None:
+            cur = self.conn.execute("SELECT * FROM credit_note_register ORDER BY cn_date")
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM credit_note_register WHERE branch_id=? ORDER BY cn_date", (branch_id,)
+            )
+        return [
+            CreditNoteRegisterRow(
+                branch_id=r["branch_id"],
+                cn_date=date.fromisoformat(r["cn_date"]),
+                voucher_number=r["voucher_number"],
+                party_id=r["party_id"],
+                cn_amount=Decimal(r["cn_amount"]),
+                bill_allocation_reference=r["bill_allocation_reference"],
+                classification=RegisterClassification(r["classification"]),
+                reason=r["reason"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def resolve_credit_note_classification(
+        self, branch_id: str, voucher_number: str, party_id: str, classification: RegisterClassification, reason: str
+    ) -> None:
+        """Item 10's human resolution of a Pending Review reference — never
+        called automatically. Confirming Pre-MIS Adjustment here is only
+        the register-side classification flip; the caller is separately
+        responsible for logging the actual balance correction via
+        record_pre_mis_adjustment(), since that is the one sanctioned path
+        to move a party's Pre-MIS Outstanding baseline.
+        """
+        cur = self.conn.execute(
+            "UPDATE credit_note_register SET classification=?, reason=?"
+            " WHERE branch_id=? AND voucher_number=? AND party_id=?",
+            (classification.value, reason, branch_id, voucher_number, party_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"No credit_note_register row for {branch_id}/{voucher_number}/{party_id}")
+        self.conn.commit()
+
+    def append_receipt_journal_rows(self, rows: Iterable[ReceiptJournalRegisterRow]) -> None:
+        for row in rows:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO receipt_journal_register"
+                " (branch_id, txn_date, voucher_type, voucher_number, party_id,"
+                " amount, target_doc_no, classification, narration)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row.branch_id,
+                    row.txn_date.isoformat(),
+                    row.voucher_type,
+                    row.voucher_number,
+                    row.party_id,
+                    str(row.amount),
+                    row.target_doc_no,
+                    row.classification.value,
+                    row.narration,
+                ),
+            )
+        self.conn.commit()
+
+    def all_receipt_journal_rows(self, branch_id: str | None = None) -> list[ReceiptJournalRegisterRow]:
+        self.conn.row_factory = sqlite3.Row
+        if branch_id is None:
+            cur = self.conn.execute("SELECT * FROM receipt_journal_register ORDER BY txn_date")
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM receipt_journal_register WHERE branch_id=? ORDER BY txn_date", (branch_id,)
+            )
+        return [
+            ReceiptJournalRegisterRow(
+                branch_id=r["branch_id"],
+                txn_date=date.fromisoformat(r["txn_date"]),
+                voucher_type=r["voucher_type"],
+                voucher_number=r["voucher_number"],
+                party_id=r["party_id"],
+                amount=Decimal(r["amount"]),
+                target_doc_no=r["target_doc_no"],
+                classification=RegisterClassification(r["classification"]),
+                narration=r["narration"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def resolve_receipt_journal_classification(
+        self, branch_id: str, voucher_number: str, party_id: str, classification: RegisterClassification
+    ) -> None:
+        """Item 10's voucher-level invariant: updates EVERY line of this
+        voucher in one statement, never a single line in isolation — a
+        split classification within one voucher would recreate the exact
+        phantom-imbalance bug this design is meant to close (see
+        ar_mis.registers.build_receipt_journal_register_rows).
+        """
+        cur = self.conn.execute(
+            "UPDATE receipt_journal_register SET classification=?"
+            " WHERE branch_id=? AND voucher_number=? AND party_id=?",
+            (classification.value, branch_id, voucher_number, party_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"No receipt_journal_register rows for {branch_id}/{voucher_number}/{party_id}")
+        self.conn.commit()
+
+    # ---- Invoice Follow-Up (item 7 — the one mutable/upserted register row) --
+
+    def upsert_invoice_follow_up(self, follow_up: InvoiceFollowUp) -> None:
+        self.conn.execute(
+            "INSERT INTO invoice_follow_up"
+            " (branch_id, voucher_number, party_id, ptp_date, ptp_amount,"
+            " next_action, expected_collection_date, updated_by)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(branch_id, voucher_number, party_id) DO UPDATE SET"
+            " ptp_date=excluded.ptp_date, ptp_amount=excluded.ptp_amount,"
+            " next_action=excluded.next_action,"
+            " expected_collection_date=excluded.expected_collection_date,"
+            " updated_by=excluded.updated_by",
+            (
+                follow_up.branch_id,
+                follow_up.voucher_number,
+                follow_up.party_id,
+                follow_up.ptp_date.isoformat() if follow_up.ptp_date else None,
+                str(follow_up.ptp_amount) if follow_up.ptp_amount is not None else None,
+                follow_up.next_action,
+                follow_up.expected_collection_date.isoformat() if follow_up.expected_collection_date else None,
+                follow_up.updated_by,
+            ),
+        )
+        self.conn.commit()
+
+    def get_invoice_follow_up(self, branch_id: str, voucher_number: str, party_id: str) -> InvoiceFollowUp | None:
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute(
+            "SELECT * FROM invoice_follow_up WHERE branch_id=? AND voucher_number=? AND party_id=?",
+            (branch_id, voucher_number, party_id),
+        ).fetchone()
+        if r is None:
+            return None
+        return InvoiceFollowUp(
+            branch_id=r["branch_id"],
+            voucher_number=r["voucher_number"],
+            party_id=r["party_id"],
+            ptp_date=date.fromisoformat(r["ptp_date"]) if r["ptp_date"] else None,
+            ptp_amount=Decimal(r["ptp_amount"]) if r["ptp_amount"] is not None else None,
+            next_action=r["next_action"],
+            expected_collection_date=(
+                date.fromisoformat(r["expected_collection_date"]) if r["expected_collection_date"] else None
+            ),
+            updated_by=r["updated_by"],
+        )
+
+    # ---- FY rollover snapshot (item 4 — append-only, deliberate-action only) --
+
+    def append_fy_rollover_snapshot(self, snapshot: FYRolloverSnapshot) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO fy_rollover_snapshot"
+            " (branch_id, voucher_number, party_id, from_financial_year, to_financial_year,"
+            " open_amount_at_rollover, rolled_over_by, rolled_over_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                snapshot.branch_id,
+                snapshot.voucher_number,
+                snapshot.party_id,
+                snapshot.from_financial_year,
+                snapshot.to_financial_year,
+                str(snapshot.open_amount_at_rollover),
+                snapshot.rolled_over_by,
+                snapshot.rolled_over_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def fy_rollover_snapshots_for_invoice(
+        self, branch_id: str, voucher_number: str, party_id: str
+    ) -> list[FYRolloverSnapshot]:
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute(
+            "SELECT * FROM fy_rollover_snapshot WHERE branch_id=? AND voucher_number=? AND party_id=?"
+            " ORDER BY to_financial_year",
+            (branch_id, voucher_number, party_id),
+        )
+        return [
+            FYRolloverSnapshot(
+                branch_id=r["branch_id"],
+                voucher_number=r["voucher_number"],
+                party_id=r["party_id"],
+                from_financial_year=r["from_financial_year"],
+                to_financial_year=r["to_financial_year"],
+                open_amount_at_rollover=Decimal(r["open_amount_at_rollover"]),
+                rolled_over_by=r["rolled_over_by"],
+                rolled_over_at=date.fromisoformat(r["rolled_over_at"]),
+            )
+            for r in cur.fetchall()
+        ]
