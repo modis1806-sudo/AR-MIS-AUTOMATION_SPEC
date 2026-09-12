@@ -40,10 +40,17 @@ _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+
 
 _NUMERIC_CHARREF = re.compile(r"&#(\d+);|&#x([0-9a-fA-F]+);")
 
-# Raw (non-entity) control bytes illegal in XML 1.0 text content: the C0
-# control range minus tab/newline/carriage-return, plus DEL. Deliberately
-# does not touch \t \n \r, which are legal and meaningful.
-_RAW_CONTROL_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# Raw (non-entity) characters illegal in XML 1.0 text content: the C0
+# control range minus tab/newline/carriage-return, plus DEL, plus the two
+# Unicode noncharacters U+FFFE/U+FFFF that XML 1.0's Char production also
+# excludes (mirrors the upper bound already applied in
+# _is_valid_xml_codepoint for the numeric-reference case, so a raw literal
+# noncharacter is treated the same as one written out as `&#xfffe;`).
+# Deliberately does not touch \t \n \r, which are legal and meaningful.
+# Lone surrogates (U+D800-U+DFFF) are not included: a strict UTF-8 decode
+# (what TallyClient._post uses) cannot produce them in the first place -
+# that byte sequence would already have failed to decode.
+_RAW_CONTROL_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f￾￿]")
 
 
 def _is_valid_xml_codepoint(codepoint: int) -> bool:
