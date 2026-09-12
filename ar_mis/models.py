@@ -94,12 +94,23 @@ class Voucher:
     type names with prefixes/suffixes (e.g. "Sales - Export") that still
     belong to one of the five categories. `raw_voucher_type_name` keeps
     the original name Tally reported, for audit/debugging.
+
+    `party_ledger_name` is Tally's own voucher-level PARTYLEDGERNAME -
+    which specific ledger among `entries` is "the customer", as opposed
+    to a revenue/tax/round-off line. This is genuinely needed, not
+    redundant with each entry's own `party_ledger_name`: a Sales voucher's
+    entries include the customer AND several revenue/tax ledgers, each
+    with their own (different) `party_ledger_name` value naming *that*
+    ledger - there is no other reliable way to tell which entry is the
+    customer without this voucher-level field (see ar_mis.registers,
+    which needs exactly this split to compute Taxable Value).
     """
 
     voucher_type: VoucherType
     voucher_date: date
     voucher_number: str
     branch_id: str
+    party_ledger_name: str = ""
     entries: list[LedgerEntry] = field(default_factory=list)
     raw_voucher_type_name: str = ""
 

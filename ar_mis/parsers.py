@@ -241,6 +241,7 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
                 voucher_date=_parse_tally_date(_text(v_el.find("DATE"))),
                 voucher_number=_text(v_el.find("VOUCHERNUMBER")),
                 branch_id=branch_id,
+                party_ledger_name=_text(v_el.find("PARTYLEDGERNAME")),
                 entries=entries,
                 raw_voucher_type_name=raw_voucher_type_name,
             )
