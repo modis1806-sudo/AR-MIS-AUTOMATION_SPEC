@@ -1,6 +1,6 @@
 """Parses Tally XML responses into ar_mis.models objects.
 
-Two known real-world wrinkles (not hypotheticals):
+Three known real-world wrinkles (not hypotheticals):
 
 1. Tally's XML export is widely reported to emit bare, unescaped `&`
    characters inside text values (e.g. a ledger literally named "A & B
@@ -9,15 +9,21 @@ Two known real-world wrinkles (not hypotheticals):
 2. CONFIRMED against a live TallyPrime instance: Tally emits numeric
    character references to control codepoints that are illegal in XML
    1.0 - e.g. `<GSTCLASS>&#4; Not Applicable</GSTCLASS>` - apparently as
-   an internal placeholder for an unset enum-style field. Python's
-   ElementTree (correctly) refuses to parse these at all
-   (`xml.etree.ElementTree.ParseError: reference to invalid character
-   number`), crashing extraction outright rather than just mis-reading a
-   field. `_ILLEGAL_NUMERIC_CHARREF` strips exactly these references
-   (and no others) before parsing - the field's actual text ("Not
-   Applicable" etc.) survives untouched.
+   an internal placeholder for an unset enum-style field, and crashes
+   ElementTree outright (`reference to invalid character number`) rather
+   than just mis-reading that one field. `_NUMERIC_CHARREF` /
+   `_strip_illegal_charref` strip exactly these references before
+   parsing - the field's real text ("Not Applicable" etc.) survives.
+3. CONFIRMED against the same live instance: Tally is not consistent
+   about *how* it emits an illegal control codepoint - elsewhere in the
+   same export it appears as a raw, literal control byte sitting directly
+   in the text (not written out as `&#N;` at all), which crashes
+   ElementTree differently (`not well-formed (invalid token)`).
+   `_RAW_CONTROL_CHAR` strips these too. Between the two patches, every
+   illegal-control-character form seen in live output is covered without
+   guessing at every individual field that might carry one.
 
-`_sanitize_xml` applies both patches before handing the payload to
+`_sanitize_xml` applies all three patches before handing the payload to
 ElementTree, rather than silently dropping or crashing on affected
 vouchers.
 """
@@ -33,6 +39,11 @@ from ar_mis.models import LedgerEntry, Voucher, VoucherType
 _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
 
 _NUMERIC_CHARREF = re.compile(r"&#(\d+);|&#x([0-9a-fA-F]+);")
+
+# Raw (non-entity) control bytes illegal in XML 1.0 text content: the C0
+# control range minus tab/newline/carriage-return, plus DEL. Deliberately
+# does not touch \t \n \r, which are legal and meaningful.
+_RAW_CONTROL_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _is_valid_xml_codepoint(codepoint: int) -> bool:
@@ -96,7 +107,8 @@ def categorize_voucher_type(raw_voucher_type_name: str) -> VoucherType | None:
 
 def _sanitize_xml(raw: str) -> str:
     without_illegal_charrefs = _NUMERIC_CHARREF.sub(_strip_illegal_charref, raw)
-    return _BARE_AMPERSAND.sub("&amp;", without_illegal_charrefs)
+    without_raw_control_chars = _RAW_CONTROL_CHAR.sub("", without_illegal_charrefs)
+    return _BARE_AMPERSAND.sub("&amp;", without_raw_control_chars)
 
 
 def _parse_tally_date(value: str) -> date:
