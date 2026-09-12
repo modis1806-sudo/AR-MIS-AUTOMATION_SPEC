@@ -436,27 +436,87 @@ definition — which specific granularity to standardize on is a remaining
 open item (see below), not a design question, since it doesn't change how
 the value is computed, only how finely it's binned for display.
 
+## Findings from real sample XML (client-provided, this session)
+
+Client provided seven real exported files from a live company (Speedways
+Logistics): Sales, Credit Note, Receipt, Journal, and Debit Note registers,
+plus a Trial Balance (Sundry Debtors) export and a YTD voucher-wise detail
+export. All seven were UTF-16LE-encoded (a real, generalizable fact about
+Tally's manual "File → Export" output — separate from the live HTTP gateway,
+which the earlier live-testing session confirmed responds in UTF-8). This
+resolves former open item 1.
+
+- **Tax ledger naming (item 2's CGST/SGST/IGST columns) — confirmed.** The
+  actual tax ledgers are bare, exact-match `CGST`, `SGST`, `IGST` — no
+  prefix/suffix variation found across an 8.7MB real Sales register (62
+  distinct ledger names total). Important distinction found in the same
+  data: many *revenue* ledgers are also named with a `_GST` suffix (e.g.
+  `Road Transport Services_GST_18%`, `Handling Services_GST_INTER`,
+  `Other Supporting Services_Non-GST`) — these are taxable/non-taxable
+  income line items, **not** tax ledgers, and a naive "contains GST"
+  substring match (the pattern already used elsewhere in this codebase for
+  voucher-type categorization) would wrongly catch them. Tax-ledger
+  identification must be **exact name match** against `CGST`/`SGST`/`IGST`,
+  not substring. A `Round Off` ledger also appears on real invoices — a
+  small rounding adjustment that is neither tax, party, nor revenue; needs
+  a decision on which total it folds into (see Open Items).
+- **Bill Allocation Reference matching (item 8) — confirmed correct.** In
+  the real Credit Note sample, the voucher's own `REFERENCE` field and the
+  `BILLALLOCATIONS.LIST`'s `NAME` (with `BILLTYPE=Agst Ref`) both carry the
+  same value (`8569/HSLPL/25-26`) — the original invoice's Bill Allocation
+  Reference. This is exactly the field item 8 already specified as the CN
+  Register's "Original Invoice/DN Ref" column. No change needed.
+- **A third `BILLTYPE` value exists: `Advance`** (in addition to the two
+  already designed for, `Agst Ref` and `New Ref`) — found once in the real
+  Receipt register, still carrying a bill reference `NAME` (money received
+  ahead of an invoice being raised for that reference). Conclusion: no
+  special-case handling needed — it flows through the same
+  match-by-(Party, Bill Allocation Reference) logic as any other allocated
+  reference. If the reference matches a tracked invoice, treat it as
+  applied; if not (likely, since the invoice may not exist yet), it
+  correctly lands in the Pending Review exception queue (item 10) like any
+  other unmatched reference — the existing design already covers this
+  without modification.
+- **NEW FINDING requiring a decision — Tally already tracks a per-bill
+  credit period.** Real `BILLALLOCATIONS.LIST` entries carry a
+  `BILLCREDITPERIOD` field (e.g. `<BILLCREDITPERIOD P="30 Days">30
+  Days</BILLCREDITPERIOD>`), tied to that specific bill. This was not known
+  when item 6 (Credit Period lives on Customer Master, a manually-set
+  default) was designed. Using Tally's own per-bill value instead of (or as
+  an override to) a generic Customer Master default would be more accurate
+  for any invoice whose terms were individually negotiated. **Needs a
+  decision — see Open Items.**
+- **CONFIRMED BUG — Manual Upload's parsing does not match what a real
+  manual export produces.** The Trial Balance (`TBDebtors.xml`) and YTD
+  detail (`YTDData.xml`) samples are in Tally's "Display Report" XML shape
+  (`DSPACCNAME`/`DSPACCINFO`/`DSPCLAMT` for the trial balance;
+  `DSPVCHDATE`/`DSPVCHLEDACCOUNT`/`DSPEXPLVCHNUMBER` for the YTD detail) —
+  structurally nothing like the `LEDGER`/`CLOSINGBALANCE` or
+  `TALLYMESSAGE`/`VOUCHER` shapes `parse_ledger_closing_balances()` and
+  `parse_voucher_collection()` expect (confirmed by reading
+  `ar_mis/manual_upload.py`, which calls exactly those two functions on
+  these file uploads). This isn't a hypothetical edge case: Tally's UI
+  "File → Export" simply cannot produce the gateway's Collection/Export
+  Data XML shape at all — that shape only exists via the HTTP/ODBC gateway
+  API. Manual Upload is specifically the fallback for when that gateway is
+  unreachable, so the files a real user uploads through it are *guaranteed*
+  to be in this Display Report shape. As built, Manual Upload would likely
+  fail silently (parse to zero records, not crash) against real exported
+  files rather than process them. **Needs fixing — see Open Items.**
+
 ## Open items — bring next session
 
-1. **Sample XML files** (all five voucher types) — needed to confirm real
-   tax-ledger naming (for CGST/SGST/IGST parsing) and the actual
-   `BILLALLOCATIONS.LIST` shape (New Ref, BILLTYPE, due date field if
-   present) against a real export rather than assumptions. Existing
-   `fixtures/*.xml` only cover Sales and Receipt, plus a mixed-types sample
-   (Payment, Provision Journal, Sales-Export, Stock Journal) — still missing
-   Debit Note, Credit Note, and a plain Journal sample. Client bringing these
-   next.
+1. ~~Sample XML files~~ — resolved, see Findings above.
 2. **Validate the Pre-MIS Classification/exception logic** (item 10) against
-   real data once the sample XML is available — now covers both the Receipt
+   real data now that sample XML is available — now covers both the Receipt
    & Journal Register and the Credit Note Register.
 3. **Final Ageing Bucket granularity** — pick one scheme (the KPI dashboard's
    91-120/121-150/151-180 split vs. the Ageing Matrix reports' combined
    91-180) to standardize across every report.
-4. **Weekly Movement Register storage mechanism** — confirm whether each
-   week's row is a stored, append-only snapshot (kept as-is once written,
-   so the trend reflects real history) or fully recomputed live from current
-   data every time the report is viewed (in which case a later backdated
-   entry could silently change what a past week's row shows).
+4. ~~Weekly Movement Register storage mechanism~~ — **resolved this
+   session: append-only stored history**, not live recompute. Each week's
+   row is written once and kept as-is, so the trend reflects genuine
+   historical fact even if later data would compute a different result.
 5. **Live Tally connectivity / hosting question — parked, not resolved.**
    Client's Tally setup may involve a third-party "Tally on Cloud" style
    host running multiple companies' Tally instances on shared infrastructure
@@ -470,6 +530,19 @@ the value is computed, only how finely it's binned for display.
    (unapplied CN balance + Classification, mirroring the Receipt & Journal
    Register) is confirmed, but the precise column set was drafted by
    inference this session rather than reviewed line-by-line with the client.
+7. **NEW: Credit Period source of truth** — use Tally's own per-bill
+   `BILLCREDITPERIOD` (found in real data, see Findings), the existing
+   Customer-Master-default design (item 6), or the per-bill value as an
+   override when present, falling back to the Customer Master default
+   otherwise? Needs the client's decision.
+8. **NEW: `Round Off` ledger handling** — confirmed present on real
+   invoices (see Findings); decide whether it folds into Taxable Value,
+   into Invoice Value only (after tax), or gets its own column.
+9. **NEW: Manual Upload parsing bug** (see Findings) — `manual_upload.py`
+   needs functions that read Tally's actual Display Report export shape for
+   the Trial Balance and YTD detail files, not the gateway Collection shape
+   it currently assumes. Real sample files now available in this session's
+   history to build/test against.
 
 ## Deferred to a later version (not rejected, not in scope now)
 
