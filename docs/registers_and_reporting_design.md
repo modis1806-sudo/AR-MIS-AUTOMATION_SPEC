@@ -138,6 +138,21 @@ Sales & DN Register needs **both** Voucher Number (display) and Bill
 Allocation Reference (actual matching key) as separate columns — see the
 register table above.
 
+**Important scoping note (confirmed in follow-up discussion):** New Ref must
+never be used to identify or de-duplicate rows *within* the Sales & DN
+Register itself — it is purely a stored lookup column, read only when a
+receipt/CN needs to find which invoice to apply against. The register's own
+row identity (deciding "this is a new invoice, append it" vs. "already
+recorded, don't duplicate it" on re-extraction) is **Branch + Voucher Number
++ Party** (+ Date as a safety check) — never New Ref. Walked through the
+worked example again to confirm: Mr. X's (Voucher 1, New Ref "1") and Mr.
+Y's (Voucher 2, New Ref "1") are obviously two different rows under a
+Voucher-Number-based identity key, so Mr. Y's invoice is never at risk of
+being dropped as a "duplicate" of Mr. X's, even though they share a New Ref
+value. New Ref colliding across parties is only ever a problem for the
+matching direction (item 8's fix above), never for the register's own
+row identity.
+
 Known residual gap this can't fix: if a receipt is recorded against the
 *wrong party's ledger entirely* by a genuine data-entry mistake, and that
 wrong party happens to have their own real bill with the same reference, the
