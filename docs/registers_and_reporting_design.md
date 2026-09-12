@@ -277,6 +277,25 @@ commands.
    session's discussion for the full reasoning; nothing to build here yet,
    and this should not be assumed resolved just because it's parked.
 
+## Deferred to a later version (not rejected, not in scope now)
+
+- **Operational collections workflow** — using the application for day-to-day
+  AR team follow-up: logging follow-up activity/replies, scheduling
+  re-follow-ups, and tracking legal action taken on an invoice/party.
+  Client's explicit call: defer this rather than mix it into the current
+  build. Reasoning discussed: this project has already grown substantially
+  from its original "extract and reconcile" scope (registers, ageing, PTP,
+  pre-MIS exceptions, multi-user roles) without yet validating any of it
+  against a real Tally instance — adding a full collections/legal module on
+  top now risks the reconciliation core never shipping. Nothing about
+  deferring this requires re-architecting anything above; it would sit on
+  top as another invoice-tied log, the same way PTP already does. When this
+  is picked up later, still need answers to: does it replace an existing
+  tool the AR team uses, or run alongside it; does "legal action" need only
+  a status/date/notes field or real case tracking (counsel, hearings, case
+  stage, documents); and is follow-up logged per invoice or per party (one
+  call often covers several invoices).
+
 ## Explicit non-scope / rejected ideas
 
 - **Making every field in every register editable** — rejected; see item 7.
