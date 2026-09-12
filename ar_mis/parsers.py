@@ -250,18 +250,60 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
 
 
 def parse_ledger_closing_balances(raw_xml: str) -> dict[str, Decimal]:
-    """Parses the YTD Sundry Debtors Collection response into
+    """Parses a Trial Balance / Sundry Debtors closing-balance export into
     {ledger_name: closing_balance_as_extracted}. Sign-flip is applied
     downstream, not here.
+
+    Handles two real, structurally unrelated shapes, since which one a
+    given file uses depends on how it left Tally, not anything this
+    codebase controls:
+
+    1. The live gateway's Collection response - `<LEDGER NAME="...">`
+       with a `<CLOSINGBALANCE>` child. What xml_requests.ytd_sundry_debtors_request
+       produces and the original shape this function was written for.
+    2. Tally's own "Display Report" shape - confirmed against a real
+       manually-exported Trial Balance (fixtures/real_samples/TBDebtors.xml,
+       389 parties) - which has no LEDGER element at all. Each party is a
+       `<DSPACCNAME><DSPDISPNAME>name</DSPDISPNAME></DSPACCNAME>` element
+       immediately followed by a sibling
+       `<DSPACCINFO>...<DSPCLAMT><DSPCLAMTA>amount</DSPCLAMTA></DSPCLAMT></DSPACCINFO>`
+       - name and closing balance live in two separate sibling elements,
+       not one. Manual Upload's Trial Balance slot only ever receives
+       this shape in practice (an operator exporting from Tally's UI, not
+       the live gateway), which is what this fix targets.
+
+    The two DSPACCNAME/DSPACCINFO tag streams are paired positionally by
+    document order (confirmed 1:1 alternating in the real sample, with
+    matching counts of every one of the four DSP* tags used here) rather
+    than by any shared key, because Tally's Display Report genuinely
+    doesn't put one on either element - there is nothing else to join on.
+    A blank DSPCLAMTA (confirmed present for a handful of real zero-
+    balance accounts) is treated as "0", not skipped or errored - a
+    zero-balance debtor is a real, meaningful data point for the
+    reconciliation this feeds, not missing data.
     """
     root = ET.fromstring(_sanitize_xml(raw_xml))
-    balances: dict[str, Decimal] = {}
-    for ledger_el in root.iter("LEDGER"):
-        name = ledger_el.get("NAME") or _text(ledger_el.find("NAME"))
-        closing = _text(ledger_el.find("CLOSINGBALANCE"), "0")
-        if name:
-            balances[name] = _parse_decimal_amount(closing)
-    return balances
+    ledger_elements = root.findall(".//LEDGER")
+    if ledger_elements:
+        balances: dict[str, Decimal] = {}
+        for ledger_el in ledger_elements:
+            name = ledger_el.get("NAME") or _text(ledger_el.find("NAME"))
+            closing = _text(ledger_el.find("CLOSINGBALANCE"), "0")
+            if name:
+                balances[name] = _parse_decimal_amount(closing)
+        return balances
+
+    names = [_text(el.find("DSPDISPNAME")) for el in root.iter("DSPACCNAME")]
+    closings = [
+        _text(el.find("DSPCLAMT/DSPCLAMTA"), "0") for el in root.iter("DSPACCINFO")
+    ]
+    if len(names) != len(closings):
+        raise ValueError(
+            f"Trial Balance Display Report has {len(names)} DSPACCNAME entries but "
+            f"{len(closings)} DSPACCINFO entries - cannot pair name to closing balance "
+            "by position when the two streams don't line up 1:1."
+        )
+    return {name: _parse_decimal_amount(closing) for name, closing in zip(names, closings) if name}
 
 
 def parse_currently_loaded_companies(raw_xml: str) -> list[str]:

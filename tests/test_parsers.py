@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from ar_mis.models import VoucherType
 from ar_mis.parsers import (
     _sanitize_xml,
@@ -119,6 +121,30 @@ def test_parse_ledger_closing_balances():
     balances = parse_ledger_closing_balances(raw)
     assert balances["A & B Transport Pvt Ltd"] == Decimal("-425000.00")
     assert balances["Reliable Cargo Movers"] == Decimal("-150000.00")
+
+
+def test_parse_ledger_closing_balances_handles_real_display_report_shape():
+    # Confirmed against a real manually-exported Trial Balance: Tally's
+    # "Display Report" shape has no LEDGER element at all - each party is
+    # a DSPACCNAME/DSPDISPNAME element immediately followed by a sibling
+    # DSPACCINFO/DSPCLAMT/DSPCLAMTA element, paired by document order.
+    raw = (FIXTURES / "real_samples" / "TBDebtors.xml").read_text(encoding="utf-8")
+    balances = parse_ledger_closing_balances(raw)
+    assert len(balances) == 389
+    assert balances["ADINATH GLOBAL CORPORATION"] == Decimal("-113019.00")
+    assert balances["YAKSHARAT INFRACON PRIVATE LIMITED(TRPT)"] == Decimal("-1647890.70")
+    # A blank DSPCLAMTA (a handful of real zero-balance accounts) must
+    # parse as a real 0, not be skipped or raise.
+    zero_balance_parties = [name for name, bal in balances.items() if bal == Decimal("0")]
+    assert len(zero_balance_parties) == 3
+
+
+def test_parse_ledger_closing_balances_display_report_raises_on_mismatched_pair_counts():
+    raw = """<ENVELOPE>
+ <DSPACCNAME><DSPDISPNAME>Only Name, No Info</DSPDISPNAME></DSPACCNAME>
+</ENVELOPE>"""
+    with pytest.raises(ValueError, match="cannot pair name to closing balance"):
+        parse_ledger_closing_balances(raw)
 
 
 def test_parse_currently_loaded_companies():
