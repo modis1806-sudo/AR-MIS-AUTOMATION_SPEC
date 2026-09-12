@@ -372,6 +372,70 @@ between.
   state while viewing the current FY" logic is needed or wanted — that's not
   expected to be a realistic user flow.
 
+### 15. Report catalog — outputs the application must produce (v1)
+
+Cross-checked against the client's current Excel-based reporting so nothing
+already relied upon gets dropped. Important framing for this whole section:
+these Excel reports are **not a spec to reconcile or preserve as-is** — they
+are unreliable precisely because they're Excel, which is the entire reason
+this application is being built. Inconsistencies between them (different
+ageing-bucket granularities, ad hoc thresholds, manual formula-swapping for
+"as of" views) are not open design questions to negotiate; they're the
+problem statement. The app fixes all of them by construction, the same way
+items 1, 7, and 14 already do: one register-derived source of truth, one
+Ageing Bucket definition, one as-of-date mechanism. The list below is scope
+(what must exist), not a spec to audit.
+
+- **AR Snapshot (KPI dashboard).** Outstanding Position (Total AR, Open AR
+  split by FY, Pre-MIS Outstanding, Unapplied Cash, Unapplied CN, Related
+  Party AR shown separately, Rounding Difference), Performance (Overdue AR
+  and its sub-bucket breakdown, Overdue %, Bad Debt Risk >180 Days, Notional
+  Interest Cost, DSO, CEI, PTP Kept Rate), Trend Analysis (Sales Trend and
+  Collection Trend — MIS Period vs Pre-MIS Period — last 4 months), Average
+  Collection Period by branch. Every figure on this dashboard is as-of-date
+  selectable per item 14 — confirmed this session that the Excel version's
+  split between "as on last updated date" and "selected period" sections was
+  itself just the manual Excel workaround for as-of reporting (changing an
+  input cell, recalculating, then reverting the formula by hand). The app
+  replaces that entirely; there is one as-of-date mechanism, not two report
+  categories.
+  - **Notional Interest Cost** — interest rate assumed flat at **10%** for
+    now (confirmed this session), applied over the relevant overdue period.
+- **Branch-wise Ageing Schedule** — one ageing-bucket row per branch plus a
+  total row, all branches.
+- **Ageing Matrix**, both a branch-level summary and a customer-level detail
+  view (Branch, Customer, Grouping, ageing buckets, Total Open), FY-scoped.
+  The customer-level view also ties each customer's register-derived Total
+  Open against Tally's own ledger closing balance (likely sourced the same
+  way as `fixtures/ledger_closing_balances.xml`) as an independent
+  cross-check. The Excel version flagged a break using a ₹500 materiality
+  tolerance — confirmed that threshold was an Excel-only convenience, not
+  something carried into the app as a hardcoded rule. The "Business" column
+  on this view is dropped for now (see Deferred).
+- **Exception Register** — six sub-reports: Unapplied Cash (netted per
+  party, per item 9), Unapplied CN (netted per party, per item 9 extended to
+  CN as decided this session), rows where Total Open Amount is negative,
+  Non-Active debtors (180+ days with no transaction but balance still open),
+  "Against Ref" receipts/journals that don't match any invoice in the
+  register (this is item 10's exception routing by another name), Top 20
+  Overdue Customers.
+- **Weekly Movement Register** — one row per week-ending date: Total AR,
+  Open AR by FY, Pre-MIS Outstanding, Overdue AR and ageing buckets, DSO,
+  CEI, Unapplied Cash, each with a week-over-week trend indicator. This is
+  the concrete, working form of the `weekly_snapshot` table referenced in
+  item 1 — a derived view produced from the registers, not a second data
+  store. Whether each week's row is computed once and stored (so the trend
+  reflects a genuine historical log) or fully recomputed live every time the
+  report is opened is still an open question — see Open Items.
+
+Ageing Bucket granularity was inconsistent across the client's existing
+reports (some split 91–180 into 91-120/121-150/151-180, others use one
+combined 91-180 bucket). Per item 7's single-source-of-truth principle, the
+app computes Ageing Bucket exactly once and every report reads from that same
+definition — which specific granularity to standardize on is a remaining
+open item (see below), not a design question, since it doesn't change how
+the value is computed, only how finely it's binned for display.
+
 ## Open items — bring next session
 
 1. **Sample XML files** (all five voucher types) — needed to confirm real
@@ -380,16 +444,20 @@ between.
    present) against a real export rather than assumptions. Existing
    `fixtures/*.xml` only cover Sales and Receipt, plus a mixed-types sample
    (Payment, Provision Journal, Sales-Export, Stock Journal) — still missing
-   Debit Note, Credit Note, and a plain Journal sample.
+   Debit Note, Credit Note, and a plain Journal sample. Client bringing these
+   next.
 2. **Validate the Pre-MIS Classification/exception logic** (item 10) against
    real data once the sample XML is available — now covers both the Receipt
    & Journal Register and the Credit Note Register.
-3. **Existing AR MIS Dashboard's current report list** — client to share
-   what's currently produced (Exception Register, a single-snapshot "AR
-   Control Board", Weekly Movement Register, and others) so nothing already
-   relied upon gets dropped or missed in the redesign. Only the report names
-   have been given so far, not their actual columns/logic.
-4. **Live Tally connectivity / hosting question — parked, not resolved.**
+3. **Final Ageing Bucket granularity** — pick one scheme (the KPI dashboard's
+   91-120/121-150/151-180 split vs. the Ageing Matrix reports' combined
+   91-180) to standardize across every report.
+4. **Weekly Movement Register storage mechanism** — confirm whether each
+   week's row is a stored, append-only snapshot (kept as-is once written,
+   so the trend reflects real history) or fully recomputed live from current
+   data every time the report is viewed (in which case a later backdated
+   entry could silently change what a past week's row shows).
+5. **Live Tally connectivity / hosting question — parked, not resolved.**
    Client's Tally setup may involve a third-party "Tally on Cloud" style
    host running multiple companies' Tally instances on shared infrastructure
    reachable over the public internet. Real security question (Tally's
@@ -398,7 +466,7 @@ between.
    Windows Server session) before this is discussed further. See prior
    session's discussion for the full reasoning; nothing to build here yet,
    and this should not be assumed resolved just because it's parked.
-5. **Credit Note Register's exact new column names** — the concept
+6. **Credit Note Register's exact new column names** — the concept
    (unapplied CN balance + Classification, mirroring the Receipt & Journal
    Register) is confirmed, but the precise column set was drafted by
    inference this session rather than reviewed line-by-line with the client.
@@ -429,6 +497,8 @@ between.
 - **Collector / Owner assignment columns** on the Sales & DN Register and the
   Receipt & Journal Register — removed for now; no per-invoice/per-voucher
   ownership tracking in v1.
+- **"Business" column** on the customer-level Ageing Matrix / Customer
+  Master — dropped for now.
 
 ## Explicit non-scope / rejected ideas
 
@@ -456,3 +526,6 @@ between.
 - **A report-locking/snapshot feature for as-of-date reporting** — rejected;
   live recompute is always acceptable given how rare backdated entries are
   in practice.
+- **₹500 GL-variance materiality threshold** — this was an Excel-only
+  tolerance for the customer-level AR-GL tie-out check; not adopted as a
+  hardcoded app rule as-is.
