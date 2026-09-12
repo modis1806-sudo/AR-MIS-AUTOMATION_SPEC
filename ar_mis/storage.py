@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -31,7 +31,28 @@ from ar_mis.models import (
     WeeklySnapshotRow,
 )
 
-SCHEMA = """
+# Schema changes must be additive-only — new tables, or new columns via
+# ALTER TABLE ADD COLUMN — never a DROP/recreate of an existing table
+# (design doc item 13). SCHEMA_VERSION is the version this code expects;
+# MIGRATIONS[N] is the executescript text that brings a database from
+# version N-1 to version N, applied in order by Store._run_migrations().
+# Once a version has shipped, its MIGRATIONS entry is frozen — the next
+# schema change is always a NEW higher-numbered entry, never an edit to
+# an existing one, since a real client database may already be sitting
+# at that version.
+#
+# MIGRATIONS[1] is deliberately the *entire* baseline schema, not a diff
+# - every future version builds on it. Its CREATE TABLE statements are
+# all IF NOT EXISTS, so replaying it is always safe even against a
+# database that predates this versioning mechanism entirely (a real
+# deployment here started before PRAGMA user_version was ever set, so
+# such a database is sitting at SQLite's default user_version of 0
+# despite already having this exact table shape — migrating it to
+# version 1 must be a no-op, not an error).
+SCHEMA_VERSION = 1
+
+MIGRATIONS: dict[int, str] = {
+    1: """
 CREATE TABLE IF NOT EXISTS branch_master (
     branch_id TEXT PRIMARY KEY,
     branch_name TEXT NOT NULL,
@@ -116,7 +137,8 @@ CREATE TABLE IF NOT EXISTS voucher_log (
     flipped_amount TEXT NOT NULL,
     UNIQUE (branch_id, party_ledger_name, voucher_type, voucher_number, voucher_date, flipped_amount)
 );
-"""
+""",
+}
 
 
 class Store:
@@ -127,10 +149,56 @@ class Store:
         parent = Path(db_path).parent
         if str(parent) not in ("", "."):
             parent.mkdir(parents=True, exist_ok=True)
+        # Checked before connect() - sqlite3.connect() itself creates the
+        # file if missing, which would make this check always see "exists"
+        # afterwards and wrongly treat a brand-new database as one that
+        # needs backing up (design doc item 13: only an existing database
+        # being migrated needs a backup - there's nothing to protect in a
+        # database that has no data yet).
+        db_file = Path(db_path)
+        is_new_db = db_path == ":memory:" or not db_file.exists() or db_file.stat().st_size == 0
         self.conn = sqlite3.connect(db_path)
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.executescript(SCHEMA)
+        self._run_migrations(db_path, is_new_db)
+
+    def _run_migrations(self, db_path: str, is_new_db: bool) -> None:
+        """Design doc item 13: schema version-sticker migration, run fully
+        automatically at startup whenever PRAGMA user_version is behind
+        this code's SCHEMA_VERSION - no separate button, no step to
+        remember. A backup is taken first, unconditionally, whenever an
+        EXISTING database (is_new_db False) is behind - even if the
+        specific versions being applied turn out to be no-op CREATE TABLE
+        IF NOT EXISTS statements against a database that already has that
+        shape, per the design doc's "regardless" on this point. A brand
+        new database just created for this run skips the backup (nothing
+        to protect yet) and walks every version from 1 up in one go, which
+        leaves it at the exact same shape a migrated database converges
+        on.
+        """
+        current_version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if current_version >= SCHEMA_VERSION:
+            return
+        if not is_new_db:
+            self._backup_before_migration(db_path, current_version)
+        for version in range(current_version + 1, SCHEMA_VERSION + 1):
+            self.conn.executescript(MIGRATIONS[version])
+            self.conn.execute(f"PRAGMA user_version = {version}")
         self.conn.commit()
+
+    def _backup_before_migration(self, db_path: str, from_version: int) -> None:
+        """Uses SQLite's own backup API rather than a raw file copy, so
+        the backup is crash-consistent regardless of this connection's
+        journal/WAL state - this runs before anything in the migration
+        itself has been written, so `self.conn` is exactly the pre-
+        migration database.
+        """
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        backup_path = f"{db_path}.backup-v{from_version}-{timestamp}.db"
+        backup_conn = sqlite3.connect(backup_path)
+        try:
+            self.conn.backup(backup_conn)
+        finally:
+            backup_conn.close()
 
     def close(self) -> None:
         self.conn.close()
