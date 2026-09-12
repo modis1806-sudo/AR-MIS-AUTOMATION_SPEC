@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree as ET
 
 from ar_mis.models import LedgerEntry, Voucher, VoucherType
@@ -81,12 +81,22 @@ def _strip_illegal_charref(match: re.Match) -> str:
 # Tally deployments commonly customize voucher type names with prefixes
 # or suffixes (e.g. "Sales - Export") while the underlying category is
 # unchanged - Section 2.1's five categories, not Tally's literal name.
+#
+# "tax invoice" is a second SALES keyword, not just a suffix variant:
+# confirmed against a real client's data that they run a genuine, separate
+# Tally voucher type literally named "Tax Invoice" (its own numbering
+# series, distinct from their "Sales" type's numbering) alongside "Sales"
+# - both fundamentally the same AR-relevant category. Without this, any
+# company that renamed/added a Sales-equivalent voucher type this way
+# (common post-GST/e-invoicing) would have those vouchers silently
+# excluded entirely, not just mis-labeled.
 _CATEGORY_KEYWORDS: list[tuple[VoucherType, str]] = [
     (VoucherType.CREDIT_NOTE, "credit note"),
     (VoucherType.DEBIT_NOTE, "debit note"),
     (VoucherType.RECEIPT, "receipt"),
     (VoucherType.JOURNAL, "journal"),
     (VoucherType.SALES, "sales"),
+    (VoucherType.SALES, "tax invoice"),
 ]
 
 # "Stock Journal" is Tally's built-in name for an inventory transfer
@@ -123,9 +133,46 @@ def _parse_tally_date(value: str) -> date:
 
 
 def _text(el: ET.Element | None, default: str = "") -> str:
+    """Returns `default` for a missing element, a `None` .text (Tally's
+    shape for a genuinely empty tag like `<AMOUNT></AMOUNT>`), AND a
+    whitespace-only .text (confirmed present in real exports, e.g. an
+    indented-but-content-free `<AMOUNT>\\n</AMOUNT>`) - the last case
+    isn't hypothetical: it crashed Decimal(bill_amount) with
+    ConversionSyntax against a real 8.7MB Sales register before this was
+    caught, because .text was whitespace (not None) and so skipped the
+    original None-only check, stripping down to "" right where a numeric
+    caller expected either a real value or its own explicit default.
+    """
     if el is None or el.text is None:
         return default
-    return el.text.strip()
+    stripped = el.text.strip()
+    return stripped if stripped else default
+
+
+_FOREX_AMOUNT = re.compile(r"=\s*(-?[\d,]+\.?\d*)\s*[^\d\s]*\s*$")
+
+
+def _parse_decimal_amount(raw: str) -> Decimal:
+    """CONFIRMED against real client data: a plain `<AMOUNT>` field is not
+    always a plain number. A company with foreign-currency (forex) ledgers
+    reports those transactions as a formatted display string instead, e.g.
+    `-$6200.00 @ 95.95 ₹/$ = -594890.00 ₹` - the foreign amount,
+    the exchange rate, and the converted home-currency amount all in one
+    field. AR reconciliation needs the home-currency figure (it's what
+    Sundry Debtors' Trial Balance is always stated in, regardless of any
+    individual invoice's billing currency), which is the number
+    immediately after "=". Silently defaulting a forex line to 0 would
+    understate that customer's real receivable - this raises instead of
+    guessing wrong if a genuinely unrecognized amount format shows up.
+    """
+    try:
+        return Decimal(raw)
+    except InvalidOperation:
+        pass
+    match = _FOREX_AMOUNT.search(raw)
+    if match:
+        return Decimal(match.group(1).replace(",", ""))
+    raise ValueError(f"Could not parse amount {raw!r} as a plain number or a forex display string")
 
 
 def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
@@ -138,6 +185,18 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
     voucher type (see xml_requests.voucher_export_request), so this
     function is what actually separates AR-relevant vouchers from
     everything else in the company's books.
+
+    CONFIRMED against real client data (fixtures/real_samples/): Tally
+    does not consistently use one tag name for a voucher's ledger entries.
+    Sales, Credit Note, and Debit Note vouchers from one real company used
+    plain `LEDGERENTRIES.LIST`; Receipt and Journal vouchers from the same
+    export, and every voucher type from a different real company, used
+    `ALLLEDGERENTRIES.LIST`. Checking only the "ALL" form (the original
+    assumption) silently parses real Sales/CN/DN vouchers with zero
+    entries - no amount, no party, no bill allocation - rather than
+    failing loudly. Both tag names are checked; a real voucher has only
+    ever been observed using one or the other, never both, but nothing
+    here assumes that stays true.
     """
     root = ET.fromstring(_sanitize_xml(raw_xml))
     vouchers: list[Voucher] = []
@@ -148,27 +207,31 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
             continue
 
         entries: list[LedgerEntry] = []
-        for le_el in v_el.findall("ALLLEDGERENTRIES.LIST"):
+        ledger_entry_elements = v_el.findall("ALLLEDGERENTRIES.LIST") + v_el.findall("LEDGERENTRIES.LIST")
+        for le_el in ledger_entry_elements:
             party_ledger = _text(le_el.find("LEDGERNAME"))
             raw_amount = _text(le_el.find("AMOUNT"), "0")
             bill_allocs = le_el.findall("BILLALLOCATIONS.LIST")
             if bill_allocs:
                 for bill_el in bill_allocs:
                     bill_name = _text(bill_el.find("NAME")) or None
+                    bill_type = _text(bill_el.find("BILLTYPE")) or None
                     bill_amount = _text(bill_el.find("AMOUNT"), raw_amount)
                     entries.append(
                         LedgerEntry(
                             party_ledger_name=party_ledger,
-                            amount_as_extracted=Decimal(bill_amount),
+                            amount_as_extracted=_parse_decimal_amount(bill_amount),
                             bill_name=bill_name,
+                            bill_type=bill_type,
                         )
                     )
             else:
                 entries.append(
                     LedgerEntry(
                         party_ledger_name=party_ledger,
-                        amount_as_extracted=Decimal(raw_amount),
+                        amount_as_extracted=_parse_decimal_amount(raw_amount),
                         bill_name=None,
+                        bill_type=None,
                     )
                 )
 
@@ -196,7 +259,7 @@ def parse_ledger_closing_balances(raw_xml: str) -> dict[str, Decimal]:
         name = ledger_el.get("NAME") or _text(ledger_el.find("NAME"))
         closing = _text(ledger_el.find("CLOSINGBALANCE"), "0")
         if name:
-            balances[name] = Decimal(closing)
+            balances[name] = _parse_decimal_amount(closing)
     return balances
 
 
