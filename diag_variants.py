@@ -1,9 +1,11 @@
-"""One-off diagnostic: try progressively more complex voucher Collection
-requests against a real Tally instance to find exactly which piece causes
-the silent hang seen with the full voucher_export_request().
+"""Round 2: A and B (flat fields) confirmed working with real voucher data.
+C and D (mixing ALLLEDGERENTRIES.LIST on the same FETCH line as flat fields)
+hang. Testing two hypotheses for why: (E) the LIST field needs its own
+FETCH line, separate from flat fields; (F) this Tally version wants
+LEDGERENTRIES.LIST instead of ALLLEDGERENTRIES.LIST for non-inventory
+vouchers.
 
 Usage: python diag_variants.py "Exact Company Name" 2026-04-01
-Run from inside the project folder (same place you ran pip install -e .).
 """
 import sys
 from datetime import date
@@ -19,12 +21,12 @@ company = escape(company_name)
 
 variants = {}
 
-variants["A: flat fields only, ISINITIALIZE (matches working company-list style)"] = f"""<ENVELOPE>
+variants["E: ALLLEDGERENTRIES.LIST on its own FETCH line, separate from flat fields"] = f"""<ENVELOPE>
  <HEADER>
   <VERSION>1</VERSION>
   <TALLYREQUEST>Export</TALLYREQUEST>
   <TYPE>Collection</TYPE>
-  <ID>ARMIS Diag A</ID>
+  <ID>ARMIS Diag E</ID>
  </HEADER>
  <BODY>
   <DESC>
@@ -36,9 +38,13 @@ variants["A: flat fields only, ISINITIALIZE (matches working company-list style)
    </STATICVARIABLES>
    <TDL>
     <TDLMESSAGE>
-     <COLLECTION NAME="ARMIS Diag A" ISINITIALIZE="Yes">
+     <COLLECTION NAME="ARMIS Diag E" ISINITIALIZE="Yes">
       <TYPE>Voucher</TYPE>
       <FETCH>DATE,VOUCHERNUMBER,VOUCHERTYPENAME</FETCH>
+      <FETCH>ALLLEDGERENTRIES.LIST</FETCH>
+      <FETCH>ALLLEDGERENTRIES.LEDGERNAME</FETCH>
+      <FETCH>ALLLEDGERENTRIES.AMOUNT</FETCH>
+      <FETCH>ALLLEDGERENTRIES.ISDEEMEDPOSITIVE</FETCH>
      </COLLECTION>
     </TDLMESSAGE>
    </TDL>
@@ -46,12 +52,12 @@ variants["A: flat fields only, ISINITIALIZE (matches working company-list style)
  </BODY>
 </ENVELOPE>"""
 
-variants["B: same flat fields, but ISMODIFY=No (matches current code's attribute)"] = f"""<ENVELOPE>
+variants["F: LEDGERENTRIES.LIST instead of ALLLEDGERENTRIES.LIST, own line each"] = f"""<ENVELOPE>
  <HEADER>
   <VERSION>1</VERSION>
   <TALLYREQUEST>Export</TALLYREQUEST>
   <TYPE>Collection</TYPE>
-  <ID>ARMIS Diag B</ID>
+  <ID>ARMIS Diag F</ID>
  </HEADER>
  <BODY>
   <DESC>
@@ -63,67 +69,13 @@ variants["B: same flat fields, but ISMODIFY=No (matches current code's attribute
    </STATICVARIABLES>
    <TDL>
     <TDLMESSAGE>
-     <COLLECTION NAME="ARMIS Diag B" ISMODIFY="No">
+     <COLLECTION NAME="ARMIS Diag F" ISINITIALIZE="Yes">
       <TYPE>Voucher</TYPE>
       <FETCH>DATE,VOUCHERNUMBER,VOUCHERTYPENAME</FETCH>
-     </COLLECTION>
-    </TDLMESSAGE>
-   </TDL>
-  </DESC>
- </BODY>
-</ENVELOPE>"""
-
-variants["C: adds ALLLEDGERENTRIES.LIST (no bill allocations yet)"] = f"""<ENVELOPE>
- <HEADER>
-  <VERSION>1</VERSION>
-  <TALLYREQUEST>Export</TALLYREQUEST>
-  <TYPE>Collection</TYPE>
-  <ID>ARMIS Diag C</ID>
- </HEADER>
- <BODY>
-  <DESC>
-   <STATICVARIABLES>
-    <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
-    <SVFROMDATE>{d}</SVFROMDATE>
-    <SVTODATE>{d}</SVTODATE>
-    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-   </STATICVARIABLES>
-   <TDL>
-    <TDLMESSAGE>
-     <COLLECTION NAME="ARMIS Diag C" ISINITIALIZE="Yes">
-      <TYPE>Voucher</TYPE>
-      <FETCH>DATE,VOUCHERNUMBER,VOUCHERTYPENAME,ALLLEDGERENTRIES.LIST</FETCH>
-      <FETCH>ALLLEDGERENTRIES.LEDGERNAME,ALLLEDGERENTRIES.AMOUNT,ALLLEDGERENTRIES.ISDEEMEDPOSITIVE</FETCH>
-     </COLLECTION>
-    </TDLMESSAGE>
-   </TDL>
-  </DESC>
- </BODY>
-</ENVELOPE>"""
-
-variants["D: full original request (BILLALLOCATIONS.LIST added) -- expected to hang, included for comparison"] = f"""<ENVELOPE>
- <HEADER>
-  <VERSION>1</VERSION>
-  <TALLYREQUEST>Export</TALLYREQUEST>
-  <TYPE>Collection</TYPE>
-  <ID>ARMIS Diag D</ID>
- </HEADER>
- <BODY>
-  <DESC>
-   <STATICVARIABLES>
-    <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
-    <SVFROMDATE>{d}</SVFROMDATE>
-    <SVTODATE>{d}</SVTODATE>
-    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-   </STATICVARIABLES>
-   <TDL>
-    <TDLMESSAGE>
-     <COLLECTION NAME="ARMIS Diag D" ISINITIALIZE="Yes">
-      <TYPE>Voucher</TYPE>
-      <FETCH>DATE,VOUCHERNUMBER,VOUCHERTYPENAME,ALLLEDGERENTRIES.LIST</FETCH>
-      <FETCH>ALLLEDGERENTRIES.LEDGERNAME,ALLLEDGERENTRIES.AMOUNT,ALLLEDGERENTRIES.ISDEEMEDPOSITIVE</FETCH>
-      <FETCH>ALLLEDGERENTRIES.BILLALLOCATIONS.LIST</FETCH>
-      <FETCH>ALLLEDGERENTRIES.BILLALLOCATIONS.NAME,ALLLEDGERENTRIES.BILLALLOCATIONS.AMOUNT</FETCH>
+      <FETCH>LEDGERENTRIES.LIST</FETCH>
+      <FETCH>LEDGERENTRIES.LEDGERNAME</FETCH>
+      <FETCH>LEDGERENTRIES.AMOUNT</FETCH>
+      <FETCH>LEDGERENTRIES.ISDEEMEDPOSITIVE</FETCH>
      </COLLECTION>
     </TDLMESSAGE>
    </TDL>
@@ -141,6 +93,8 @@ for label, body in variants.items():
     print(f"\n=== {label} ===")
     try:
         raw = client._post(body)
-        print(f"RESULT: responded in time. First 300 chars:\n{raw[:300]}")
+        has_ledger = "LEDGERNAME" in raw or "AMOUNT" in raw
+        print(f"RESULT: responded in time. Contains ledger/amount data: {has_ledger}")
+        print(f"Length: {len(raw)} chars. First 2000 chars:\n{raw[:2000]}")
     except Exception as exc:
         print(f"RESULT: FAILED -- {exc}")
