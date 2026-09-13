@@ -57,7 +57,7 @@ from ar_mis.models import (
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -270,6 +270,19 @@ ALTER TABLE invoice_follow_up ADD COLUMN logged_at TEXT;
     4: """
 ALTER TABLE customer_master ADD COLUMN grouping TEXT;
 ALTER TABLE customer_master ADD COLUMN credit_period_days INTEGER NOT NULL DEFAULT 30;
+""",
+    # Client's explicit ask: a viewer of the registers/reports screens
+    # needs to see when the underlying data was actually last pulled -
+    # not the business week_ending a run covers (an operator could run a
+    # backlogged week's extraction well after that week ended), but the
+    # real wall-clock moment. One row per successful (PASS-outcome) run.
+    5: """
+CREATE TABLE IF NOT EXISTS extraction_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    week_ending TEXT NOT NULL,
+    extracted_at TEXT NOT NULL
+);
 """,
 }
 
@@ -913,6 +926,37 @@ class Store:
         if cur.rowcount == 0:
             raise ValueError(f"No receipt_journal_register rows for {branch_id}/{voucher_number}/{party_id}")
         self.conn.commit()
+
+    # ---- Extraction log (freshness indicator for Registers/Reports viewers) --
+
+    def record_extraction_run(self, branch_id: str, week_ending: date, extracted_at: datetime) -> None:
+        """One row per successful (PASS-outcome) extraction run - the real
+        wall-clock moment data was pulled, not `week_ending` (the business
+        period a run covers - an operator can run a backlogged week's
+        extraction well after that week actually ended). This is what a
+        Registers/Reports viewer needs to judge the age of what they're
+        looking at.
+        """
+        self.conn.execute(
+            "INSERT INTO extraction_log (branch_id, week_ending, extracted_at) VALUES (?, ?, ?)",
+            (branch_id, week_ending.isoformat(), extracted_at.isoformat()),
+        )
+        self.conn.commit()
+
+    def last_extraction_at(self, branch_id: str | None = None) -> datetime | None:
+        """Most recent extraction_log timestamp - across every branch when
+        `branch_id` is omitted (the Registers/Reports screens show data
+        consolidated across branches, so their freshness indicator is the
+        oldest-possible truth: "everything you see is at least this
+        fresh"). None if nothing has ever been extracted successfully.
+        """
+        if branch_id is None:
+            row = self.conn.execute("SELECT MAX(extracted_at) FROM extraction_log").fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT MAX(extracted_at) FROM extraction_log WHERE branch_id=?", (branch_id,)
+            ).fetchone()
+        return datetime.fromisoformat(row[0]) if row and row[0] else None
 
     # ---- Invoice Follow-Up (item 7 — the one mutable/upserted register row) --
 

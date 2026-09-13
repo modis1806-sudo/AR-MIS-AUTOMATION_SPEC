@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -486,3 +486,25 @@ def test_fy_rollover_snapshot_round_trips_and_is_append_only(store):
     # create a duplicate row (UNIQUE guard).
     store.append_fy_rollover_snapshot(snapshot)
     assert len(store.fy_rollover_snapshots_for_invoice("B1", "INV001", "ACME")) == 1
+
+
+# ---- Extraction log (freshness indicator) --------------------------------
+
+
+def test_last_extraction_at_is_none_when_nothing_extracted_yet(store):
+    assert store.last_extraction_at() is None
+    assert store.last_extraction_at("B1") is None
+
+
+def test_last_extraction_at_returns_the_most_recent_run(store):
+    store.record_extraction_run("B1", date(2026, 4, 7), datetime(2026, 4, 8, 9, 0, 0))
+    store.record_extraction_run("B1", date(2026, 4, 14), datetime(2026, 4, 15, 10, 30, 0))
+    assert store.last_extraction_at("B1") == datetime(2026, 4, 15, 10, 30, 0)
+
+
+def test_last_extraction_at_across_all_branches_is_the_most_recent_of_any(store):
+    store.record_extraction_run("B1", date(2026, 4, 7), datetime(2026, 4, 8, 9, 0, 0))
+    store.record_extraction_run("B2", date(2026, 4, 7), datetime(2026, 4, 20, 9, 0, 0))
+    assert store.last_extraction_at() == datetime(2026, 4, 20, 9, 0, 0)
+    # Per-branch still returns only that branch's own most recent run.
+    assert store.last_extraction_at("B1") == datetime(2026, 4, 8, 9, 0, 0)

@@ -18,7 +18,7 @@ live run.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from ar_mis.config import BranchConfig, financial_year_start
@@ -45,11 +45,20 @@ def process_branch_data(
     week_ending: date,
     all_vouchers: list[Voucher],
     closing_extracted: dict[str, Decimal],
+    extracted_at: datetime | None = None,
 ) -> BranchRunOutcome:
     """Roll forward, auto-discover new customers, reconcile at zero
     tolerance, and write Layer 2 + the voucher log - but ONLY if every
     party reconciled; a branch that fails reconciliation must not have
     partial/wrong data written into the append-only history.
+
+    `extracted_at` is the real wall-clock moment this run happened (for
+    the Registers/Reports screens' freshness indicator) - defaults to
+    datetime.now() when not supplied, but callers (tests, or a run that
+    needs to be attributed to a specific recorded time) may pass their
+    own rather than have it resolved internally, matching how every
+    other point-in-time value in this codebase is threaded through
+    explicitly.
 
     `closing_extracted` must already be post-sign-flip (Section 2.3),
     matching `all_vouchers`' entries which are still pre-flip (flipped
@@ -122,6 +131,7 @@ def process_branch_data(
             )
 
     register_exceptions = _build_and_persist_registers(store, branch_id, all_vouchers)
+    store.record_extraction_run(branch_id, week_ending, extracted_at or datetime.now())
 
     return BranchRunOutcome(
         branch_id=branch_id,

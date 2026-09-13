@@ -10,7 +10,7 @@ own convention) rather than via XML fixtures, since this module is
 testing the pipeline's own wiring - not parsing, which is already
 covered elsewhere.
 """
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from ar_mis.models import CustomerMasterRecord, LedgerEntry, Voucher, VoucherType
@@ -159,3 +159,26 @@ def test_receipt_voucher_is_persisted_to_receipt_journal_register(store):
     assert len(rj_rows) == 1
     assert rj_rows[0].target_doc_no == "SB/0142"
     assert rj_rows[0].amount == Decimal("50000.00")
+
+
+def test_pass_run_records_extraction_timestamp_for_freshness_indicator(store):
+    store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
+    voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"))
+
+    assert store.last_extraction_at("KOL") is None
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {"A & B Transport": Decimal("125000.00")},
+        extracted_at=datetime(2026, 4, 8, 14, 30, 0),
+    )
+    assert store.last_extraction_at("KOL") == datetime(2026, 4, 8, 14, 30, 0)
+
+
+def test_recon_fail_does_not_record_an_extraction_timestamp(store):
+    store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
+    voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"))
+
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {"A & B Transport": Decimal("999999.00")},
+        extracted_at=datetime(2026, 4, 8, 14, 30, 0),
+    )
+    assert store.last_extraction_at("KOL") is None
