@@ -11,6 +11,7 @@ from ar_mis.models import (
     FYRolloverSnapshot,
     InvoiceFollowUp,
     NoteType,
+    PartyGrouping,
     PreMisAdjustment,
     PTPEntry,
     PTPStatus,
@@ -75,6 +76,54 @@ def test_customer_master_upsert_does_not_touch_pre_mis_outstanding(store):
         CustomerMasterRecord("P1", "Acme Corp Pvt Ltd", "KOL", Decimal("999999.00"))
     )
     assert store.get_opening_balance("P1", "KOL") == Decimal("100000.00")
+
+
+def test_get_customer_master_round_trips_grouping_and_credit_period(store):
+    assert store.get_customer_master("P1", "KOL") is None
+    store.upsert_customer_master(
+        CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("100000.00"),
+                              grouping=PartyGrouping.SUNDRY_DEBTOR, credit_period_days=45)
+    )
+    record = store.get_customer_master("P1", "KOL")
+    assert record.grouping == PartyGrouping.SUNDRY_DEBTOR
+    assert record.credit_period_days == 45
+
+
+def test_new_customer_master_defaults_credit_period_to_30_and_ungrouped(store):
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00")))
+    record = store.get_customer_master("P1", "KOL")
+    assert record.credit_period_days == 30
+    assert record.grouping is None
+
+
+def test_upsert_customer_master_does_not_touch_credit_period_or_grouping_for_existing_party(store):
+    store.upsert_customer_master(
+        CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00"),
+                              grouping=PartyGrouping.RELATED_PARTY, credit_period_days=60)
+    )
+    # Re-sync (e.g. a name change) must not reset these back to defaults -
+    # same protection pre_mis_outstanding already has.
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp Renamed", "KOL", Decimal("0.00")))
+    record = store.get_customer_master("P1", "KOL")
+    assert record.credit_period_days == 60
+    assert record.grouping == PartyGrouping.RELATED_PARTY
+
+
+def test_set_credit_period_days(store):
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00")))
+    store.set_credit_period_days("P1", "KOL", 45)
+    assert store.get_customer_master("P1", "KOL").credit_period_days == 45
+
+
+def test_set_credit_period_days_raises_for_unknown_party(store):
+    with pytest.raises(ValueError, match="No customer_master record"):
+        store.set_credit_period_days("GHOST", "KOL", 45)
+
+
+def test_set_party_grouping(store):
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00")))
+    store.set_party_grouping("P1", "KOL", PartyGrouping.RELATED_PARTY)
+    assert store.get_customer_master("P1", "KOL").grouping == PartyGrouping.RELATED_PARTY
 
 
 def test_pre_mis_adjustment_is_the_only_way_to_move_baseline(store):

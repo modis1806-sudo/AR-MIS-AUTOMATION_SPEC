@@ -28,6 +28,7 @@ from ar_mis.models import (
     FYRolloverSnapshot,
     InvoiceFollowUp,
     NoteType,
+    PartyGrouping,
     PreMisAdjustment,
     PTPEntry,
     PTPStatus,
@@ -56,7 +57,7 @@ from ar_mis.models import (
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -259,6 +260,17 @@ CREATE TABLE IF NOT EXISTS fy_rollover_snapshot (
     3: """
 ALTER TABLE invoice_follow_up ADD COLUMN logged_at TEXT;
 """,
+    # CustomerMasterRecord (models.py) has carried `grouping` and
+    # `credit_period_days` since last night's registers work, but the
+    # actual table never gained the columns - a real gap found while
+    # wiring registers.build_sales_dn_register_row into the pipeline,
+    # which needs credit_period_days to compute Due Date (item 6).
+    # credit_period_days defaults to 30, matching CustomerMasterRecord's
+    # own default.
+    4: """
+ALTER TABLE customer_master ADD COLUMN grouping TEXT;
+ALTER TABLE customer_master ADD COLUMN credit_period_days INTEGER NOT NULL DEFAULT 30;
+""",
 }
 
 
@@ -384,10 +396,15 @@ class Store:
 
     def upsert_customer_master(self, record: CustomerMasterRecord) -> None:
         """Create-or-refresh party reference data. Explicitly does NOT
-        touch pre_mis_outstanding for a party that already exists — that
-        field only moves via record_pre_mis_adjustment. Safe to call every
-        week for master-data sync (name changes etc.) without risking the
-        one field that must never move through this path.
+        touch pre_mis_outstanding, grouping, or credit_period_days for a
+        party that already exists — those fields only move via
+        record_pre_mis_adjustment, set_party_grouping, and
+        set_credit_period_days respectively (item 7's editable-fields
+        list). Safe to call every week for master-data sync (name
+        changes etc.) without risking any of the fields that must never
+        move through this path. A brand-new party gets `record`'s own
+        grouping/credit_period_days (None/30 by default) as its starting
+        point.
         """
         existing = self.conn.execute(
             "SELECT pre_mis_outstanding FROM customer_master WHERE party_id=? AND branch_id=?",
@@ -395,15 +412,66 @@ class Store:
         ).fetchone()
         if existing is None:
             self.conn.execute(
-                "INSERT INTO customer_master (party_id, branch_id, party_name, pre_mis_outstanding)"
-                " VALUES (?, ?, ?, ?)",
-                (record.party_id, record.branch_id, record.party_name, str(record.pre_mis_outstanding)),
+                "INSERT INTO customer_master"
+                " (party_id, branch_id, party_name, pre_mis_outstanding, grouping, credit_period_days)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    record.party_id,
+                    record.branch_id,
+                    record.party_name,
+                    str(record.pre_mis_outstanding),
+                    record.grouping.value if record.grouping else None,
+                    record.credit_period_days,
+                ),
             )
         else:
             self.conn.execute(
                 "UPDATE customer_master SET party_name=? WHERE party_id=? AND branch_id=?",
                 (record.party_name, record.party_id, record.branch_id),
             )
+        self.conn.commit()
+
+    def get_customer_master(self, party_id: str, branch_id: str) -> CustomerMasterRecord | None:
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute(
+            "SELECT * FROM customer_master WHERE party_id=? AND branch_id=?", (party_id, branch_id)
+        ).fetchone()
+        if r is None:
+            return None
+        return CustomerMasterRecord(
+            party_id=r["party_id"],
+            party_name=r["party_name"],
+            branch_id=r["branch_id"],
+            pre_mis_outstanding=Decimal(r["pre_mis_outstanding"]),
+            grouping=PartyGrouping(r["grouping"]) if r["grouping"] else None,
+            credit_period_days=r["credit_period_days"],
+        )
+
+    def set_credit_period_days(self, party_id: str, branch_id: str, credit_period_days: int) -> None:
+        """Item 6/7: the one sanctioned way to change a party's credit
+        period. Per item 6, this only affects invoices built AFTER this
+        call — Due Date is computed once at invoice-build time
+        (registers.compute_due_date) and never retroactively recalculated,
+        so changing this has no effect on any SalesDNRegisterRow already
+        stored.
+        """
+        if not self.customer_master_exists(party_id, branch_id):
+            raise ValueError(f"No customer_master record for {party_id}/{branch_id}")
+        self.conn.execute(
+            "UPDATE customer_master SET credit_period_days=? WHERE party_id=? AND branch_id=?",
+            (credit_period_days, party_id, branch_id),
+        )
+        self.conn.commit()
+
+    def set_party_grouping(self, party_id: str, branch_id: str, grouping: PartyGrouping) -> None:
+        """Item 5/7: the one sanctioned way to classify a party as Sundry
+        Debtor or Related Party."""
+        if not self.customer_master_exists(party_id, branch_id):
+            raise ValueError(f"No customer_master record for {party_id}/{branch_id}")
+        self.conn.execute(
+            "UPDATE customer_master SET grouping=? WHERE party_id=? AND branch_id=?",
+            (grouping.value, party_id, branch_id),
+        )
         self.conn.commit()
 
     def mark_reconciled(self, party_id: str, branch_id: str, reconciled_on: date, reconciled_by: str) -> None:
