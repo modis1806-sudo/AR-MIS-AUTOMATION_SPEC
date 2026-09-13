@@ -346,6 +346,18 @@ class InvoiceFollowUp:
     judgment with no other source of truth to derive it from or replay it
     against. Keyed to the same (branch_id, voucher_number, party_id)
     identity as the SalesDNRegisterRow it follows up on.
+
+    `logged_at` is the date the CURRENT (ptp_date, ptp_amount) pair was
+    set — not row-creation time, and not touched by an edit that only
+    changes next_action/expected_collection_date. This exists for the
+    PTP Kept Rate calculation (design doc item 13): judging whether "the
+    promised amount was paid by the promised date" requires knowing how
+    much was collected on this invoice *since the promise was made*, not
+    the invoice's total-ever-collected figure — otherwise a balance the
+    customer already paid before this promise existed would falsely
+    count toward keeping it. Storage.upsert_invoice_follow_up is
+    responsible for stamping this only when the promise itself actually
+    changes, never on every edit.
     """
 
     branch_id: str
@@ -356,6 +368,7 @@ class InvoiceFollowUp:
     next_action: str = ""
     expected_collection_date: date | None = None
     updated_by: str = ""
+    logged_at: date | None = None
 
 
 @dataclass(frozen=True)

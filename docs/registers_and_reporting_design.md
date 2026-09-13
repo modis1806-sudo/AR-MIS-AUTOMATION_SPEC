@@ -553,11 +553,25 @@ resolves former open item 1.
     the selected reporting date), what percentage were marked Kept rather
     than Broken. A PTP whose promised date hasn't arrived yet is excluded
     entirely — it does not count toward the rate either way.
-12. **NEW, still open: DSO (average days to collect payment) formula** —
-    asked the client to choose between the two common versions (a 90-day
-    trailing window vs. a 12-month trailing window) and the question wasn't
-    clear as put; needs re-explaining in plain terms with a worked example,
-    then a decision, before the KPI dashboard can compute this figure.
+12. ~~DSO (average days to collect payment) formula~~ — **resolved**: Total
+    Open AR (as of the selected reporting date) ÷ average daily sales over
+    the trailing 90 days (i.e. Total Sales in the last 90 days ÷ 90).
+    Client's explicit choice of the 90-day trailing window over a 12-month
+    one, for faster reaction to recent changes in the business.
+13. **NEW, resolved with an implementation note: PTP Kept vs Broken.**
+    Client confirmed: a promise counts as Kept if AT LEAST the promised
+    amount was paid, by the promised date — the invoice's other, unrelated
+    balance being still open does not break that specific promise. This is
+    always derived, never manually marked (there is no status field on
+    InvoiceFollowUp - see item 7). Implementation note this raised: judging
+    "was the promised amount paid" needs a *delta* — how much was collected
+    on this invoice **since the promise was logged**, not the invoice's
+    total-ever-collected figure (which would let an already-paid balance
+    from before the promise falsely count toward it). This requires
+    recording *when* a PTP was logged, which `InvoiceFollowUp` didn't
+    previously carry — added a `logged_at` field for exactly this (a
+    generically useful audit fact regardless, not a new open design
+    question put back to the client).
 
 ## Deferred to a later version (not rejected, not in scope now)
 

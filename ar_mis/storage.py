@@ -56,7 +56,7 @@ from ar_mis.models import (
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -248,6 +248,16 @@ CREATE TABLE IF NOT EXISTS fy_rollover_snapshot (
     rolled_over_at TEXT NOT NULL,
     UNIQUE (branch_id, voucher_number, party_id, to_financial_year)
 );
+""",
+    # PTP Kept Rate (design doc item 13) needs to know when the CURRENT
+    # promise was logged to correctly judge "was the promised amount paid
+    # since the promise was made" - see InvoiceFollowUp.logged_at's
+    # docstring for why a total-ever-collected check would be wrong. This
+    # table already shipped in MIGRATIONS[2] without this column, so per
+    # this module's own frozen-once-shipped rule it's a new ALTER TABLE
+    # here, not an edit to that entry.
+    3: """
+ALTER TABLE invoice_follow_up ADD COLUMN logged_at TEXT;
 """,
 }
 
@@ -838,17 +848,41 @@ class Store:
 
     # ---- Invoice Follow-Up (item 7 — the one mutable/upserted register row) --
 
-    def upsert_invoice_follow_up(self, follow_up: InvoiceFollowUp) -> None:
+    def upsert_invoice_follow_up(self, follow_up: InvoiceFollowUp, today: date) -> None:
+        """`logged_at` is computed here, never taken from `follow_up` as
+        given - it must only move when the (ptp_date, ptp_amount) PROMISE
+        itself changes, not on every edit (e.g. updating next_action
+        alone must leave it untouched), since the PTP Kept Rate
+        calculation (ar_mis.registers) depends on it marking exactly when
+        the current promise started, not merely "row last touched". `today`
+        is threaded in by the caller rather than read from the wall clock
+        here, matching how every other as-of/point-in-time value in this
+        codebase is passed explicitly rather than resolved internally.
+        """
+        existing = self.get_invoice_follow_up(follow_up.branch_id, follow_up.voucher_number, follow_up.party_id)
+        promise_cleared = follow_up.ptp_date is None and follow_up.ptp_amount is None
+        promise_changed = existing is None or (existing.ptp_date, existing.ptp_amount) != (
+            follow_up.ptp_date,
+            follow_up.ptp_amount,
+        )
+        if promise_cleared:
+            logged_at = None
+        elif promise_changed:
+            logged_at = today
+        else:
+            logged_at = existing.logged_at
+
         self.conn.execute(
             "INSERT INTO invoice_follow_up"
             " (branch_id, voucher_number, party_id, ptp_date, ptp_amount,"
-            " next_action, expected_collection_date, updated_by)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            " next_action, expected_collection_date, updated_by, logged_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(branch_id, voucher_number, party_id) DO UPDATE SET"
             " ptp_date=excluded.ptp_date, ptp_amount=excluded.ptp_amount,"
             " next_action=excluded.next_action,"
             " expected_collection_date=excluded.expected_collection_date,"
-            " updated_by=excluded.updated_by",
+            " updated_by=excluded.updated_by,"
+            " logged_at=excluded.logged_at",
             (
                 follow_up.branch_id,
                 follow_up.voucher_number,
@@ -858,6 +892,7 @@ class Store:
                 follow_up.next_action,
                 follow_up.expected_collection_date.isoformat() if follow_up.expected_collection_date else None,
                 follow_up.updated_by,
+                logged_at.isoformat() if logged_at else None,
             ),
         )
         self.conn.commit()
@@ -881,7 +916,35 @@ class Store:
                 date.fromisoformat(r["expected_collection_date"]) if r["expected_collection_date"] else None
             ),
             updated_by=r["updated_by"],
+            logged_at=date.fromisoformat(r["logged_at"]) if r["logged_at"] else None,
         )
+
+    def all_invoice_follow_ups(self, branch_id: str | None = None) -> list[InvoiceFollowUp]:
+        """Every logged follow-up - the input compute_ptp_kept_rate needs
+        (design doc item 13), rather than looking one invoice up at a
+        time.
+        """
+        self.conn.row_factory = sqlite3.Row
+        if branch_id is None:
+            cur = self.conn.execute("SELECT * FROM invoice_follow_up")
+        else:
+            cur = self.conn.execute("SELECT * FROM invoice_follow_up WHERE branch_id=?", (branch_id,))
+        return [
+            InvoiceFollowUp(
+                branch_id=r["branch_id"],
+                voucher_number=r["voucher_number"],
+                party_id=r["party_id"],
+                ptp_date=date.fromisoformat(r["ptp_date"]) if r["ptp_date"] else None,
+                ptp_amount=Decimal(r["ptp_amount"]) if r["ptp_amount"] is not None else None,
+                next_action=r["next_action"],
+                expected_collection_date=(
+                    date.fromisoformat(r["expected_collection_date"]) if r["expected_collection_date"] else None
+                ),
+                updated_by=r["updated_by"],
+                logged_at=date.fromisoformat(r["logged_at"]) if r["logged_at"] else None,
+            )
+            for r in cur.fetchall()
+        ]
 
     # ---- FY rollover snapshot (item 4 — append-only, deliberate-action only) --
 

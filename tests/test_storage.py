@@ -345,7 +345,8 @@ def test_invoice_follow_up_upserts_in_place(store):
             branch_id="B1", voucher_number="INV001", party_id="ACME",
             ptp_date=date(2026, 5, 1), ptp_amount=Decimal("1180.00"),
             next_action="Call customer", updated_by="alice",
-        )
+        ),
+        today=date(2026, 4, 20),
     )
     got = store.get_invoice_follow_up("B1", "INV001", "ACME")
     assert got.next_action == "Call customer"
@@ -356,12 +357,66 @@ def test_invoice_follow_up_upserts_in_place(store):
     # append-only.
     store.upsert_invoice_follow_up(
         InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME",
-                         next_action="Escalated to legal", updated_by="bob")
+                         next_action="Escalated to legal", updated_by="bob"),
+        today=date(2026, 4, 25),
     )
     got2 = store.get_invoice_follow_up("B1", "INV001", "ACME")
     assert got2.next_action == "Escalated to legal"
     assert got2.updated_by == "bob"
     assert got2.ptp_date is None  # cleared, not carried over from the prior upsert
+
+
+def test_invoice_follow_up_logged_at_stamps_only_when_the_promise_changes(store):
+    # First time a promise is logged - logged_at is stamped with today.
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME",
+                         ptp_date=date(2026, 5, 1), ptp_amount=Decimal("60000.00")),
+        today=date(2026, 4, 20),
+    )
+    assert store.get_invoice_follow_up("B1", "INV001", "ACME").logged_at == date(2026, 4, 20)
+
+    # Editing something unrelated to the promise (next_action) must NOT
+    # move logged_at - the PTP Kept Rate calculation depends on this
+    # marking exactly when the CURRENT promise started.
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME",
+                         ptp_date=date(2026, 5, 1), ptp_amount=Decimal("60000.00"),
+                         next_action="Follow up by phone"),
+        today=date(2026, 4, 22),
+    )
+    assert store.get_invoice_follow_up("B1", "INV001", "ACME").logged_at == date(2026, 4, 20)
+
+    # Changing the promise itself (a new PTP amount) re-stamps logged_at
+    # to when the NEW promise was made.
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME",
+                         ptp_date=date(2026, 5, 10), ptp_amount=Decimal("40000.00")),
+        today=date(2026, 4, 26),
+    )
+    assert store.get_invoice_follow_up("B1", "INV001", "ACME").logged_at == date(2026, 4, 26)
+
+    # Clearing the promise entirely clears logged_at too.
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME"),
+        today=date(2026, 5, 15),
+    )
+    assert store.get_invoice_follow_up("B1", "INV001", "ACME").logged_at is None
+
+
+def test_all_invoice_follow_ups_filters_by_branch(store):
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME",
+                         ptp_date=date(2026, 5, 1), ptp_amount=Decimal("1000.00")),
+        today=date(2026, 4, 1),
+    )
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="B2", voucher_number="INV002", party_id="OTHER",
+                         ptp_date=date(2026, 5, 1), ptp_amount=Decimal("2000.00")),
+        today=date(2026, 4, 1),
+    )
+    assert len(store.all_invoice_follow_ups()) == 2
+    assert len(store.all_invoice_follow_ups("B1")) == 1
+    assert store.all_invoice_follow_ups("B1")[0].voucher_number == "INV001"
 
 
 # ---- FY rollover snapshot (item 4) ---------------------------------------

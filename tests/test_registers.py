@@ -5,9 +5,12 @@ from pathlib import Path
 import pytest
 
 from ar_mis.models import (
+    CreditNoteRegisterRow,
     CustomerMasterRecord,
+    InvoiceFollowUp,
     LedgerEntry,
     NoteType,
+    ReceiptJournalRegisterRow,
     RegisterClassification,
     Voucher,
     VoucherType,
@@ -20,8 +23,14 @@ from ar_mis.registers import (
     build_sales_dn_register_row,
     classify_tax_ledger,
     compute_ageing_bucket,
+    compute_collection_efficiency,
+    compute_collections_in_window,
+    compute_dso,
     compute_due_date,
     compute_invoice_position,
+    compute_ptp_kept_rate,
+    compute_ptp_outcome,
+    compute_sales_in_window,
     compute_unapplied_cash_by_party,
     compute_unapplied_cn_by_party,
     is_round_off_ledger,
@@ -542,3 +551,176 @@ def test_full_pipeline_against_real_sample_fixtures():
     # No crash, no silently-zero amounts anywhere in the built registers -
     # every row's own amount field must be a real, parsed Decimal.
     assert all(row.invoice_value != Decimal("0.00") for row in sales_dn_rows)
+
+
+# ---- KPI formulas (design doc item 15) -----------------------------------
+
+
+def _invoice(voucher_number="INV001", invoice_date=date(2026, 1, 1), value=Decimal("1000.00")):
+    return build_sales_dn_register_row(
+        Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=invoice_date, voucher_number=voucher_number,
+            branch_id="B1", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=-value, bill_name=voucher_number, bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales Revenue", amount_as_extracted=value),
+            ],
+        ),
+        CUSTOMER,
+        RegisterBuildExceptions(),
+    )
+
+
+def test_compute_sales_in_window_sums_only_invoices_inside_the_window():
+    rows = [
+        _invoice("INV001", date(2026, 1, 1), Decimal("1000.00")),
+        _invoice("INV002", date(2026, 2, 15), Decimal("500.00")),
+        _invoice("INV003", date(2026, 3, 1), Decimal("2000.00")),  # outside the window
+    ]
+    total = compute_sales_in_window(rows, date(2026, 1, 1), date(2026, 2, 28))
+    assert total == Decimal("1500.00")
+
+
+def test_compute_collections_in_window_excludes_non_current_and_out_of_range():
+    rows = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 10), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("400.00"),
+        ),
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 20), voucher_type="Receipt",
+            voucher_number="R2", party_id="ACME", amount=Decimal("300.00"),
+            classification=RegisterClassification.PENDING_REVIEW,
+        ),
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 3, 1), voucher_type="Receipt",
+            voucher_number="R3", party_id="ACME", amount=Decimal("999.00"),
+        ),
+    ]
+    total = compute_collections_in_window(rows, date(2026, 1, 1), date(2026, 1, 31))
+    assert total == Decimal("400.00")
+
+
+def test_compute_dso_standard_formula():
+    # 90 lakh open AR, 9 lakh sold in the trailing 90 days -> 10/day -> 90 days.
+    dso = compute_dso(total_open_ar=Decimal("9000000"), sales_last_90_days=Decimal("900000"))
+    assert dso == Decimal("900")
+
+
+def test_compute_dso_is_none_when_no_sales_in_window():
+    assert compute_dso(total_open_ar=Decimal("50000"), sales_last_90_days=Decimal("0")) is None
+
+
+def test_compute_collection_efficiency_standard_formula():
+    # Owed = 100000 opening + 50000 new sales = 150000; collected 120000 -> 80%.
+    pct = compute_collection_efficiency(
+        opening_ar=Decimal("100000"), sales_in_period=Decimal("50000"), collected_in_period=Decimal("120000")
+    )
+    assert pct == Decimal("80")
+
+
+def test_compute_collection_efficiency_is_none_when_nothing_was_owed():
+    assert compute_collection_efficiency(Decimal("0"), Decimal("0"), Decimal("0")) is None
+
+
+def test_ptp_outcome_kept_when_promised_amount_paid_since_the_promise_was_logged():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("100000.00"))
+    follow_up = InvoiceFollowUp(
+        branch_id="B1", voucher_number="INV001", party_id="ACME",
+        ptp_date=date(2026, 2, 15), ptp_amount=Decimal("60000.00"), logged_at=date(2026, 2, 1),
+    )
+    receipts = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 2, 10), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("60000.00"), target_doc_no="INV001",
+        ),
+    ]
+    outcome = compute_ptp_outcome(invoice, follow_up, [], receipts)
+    assert outcome.kept is True
+    assert outcome.amount_collected_since_promise == Decimal("60000.00")
+
+
+def test_ptp_outcome_ignores_money_collected_before_the_promise_was_logged():
+    # Client's own worked example scenario, inverted: the invoice already
+    # had SOME payment before the promise existed - that must not count
+    # toward keeping a later, separate promise.
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("100000.00"))
+    follow_up = InvoiceFollowUp(
+        branch_id="B1", voucher_number="INV001", party_id="ACME",
+        ptp_date=date(2026, 2, 15), ptp_amount=Decimal("60000.00"), logged_at=date(2026, 2, 1),
+    )
+    receipts = [
+        # Paid BEFORE the promise was logged - must not count.
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 15), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("50000.00"), target_doc_no="INV001",
+        ),
+        # Paid AFTER logging but short of the promised amount.
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 2, 10), voucher_type="Receipt",
+            voucher_number="R2", party_id="ACME", amount=Decimal("20000.00"), target_doc_no="INV001",
+        ),
+    ]
+    outcome = compute_ptp_outcome(invoice, follow_up, [], receipts)
+    assert outcome.amount_collected_since_promise == Decimal("20000.00")
+    assert outcome.kept is False
+
+
+def test_ptp_outcome_kept_even_though_rest_of_invoice_still_open():
+    # The client's exact worked example: ₹1,00,000 invoice, promise to pay
+    # ₹60,000 by the 15th, exactly ₹60,000 paid, ₹40,000 left open. Kept.
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("100000.00"))
+    follow_up = InvoiceFollowUp(
+        branch_id="B1", voucher_number="INV001", party_id="ACME",
+        ptp_date=date(2026, 1, 15), ptp_amount=Decimal("60000.00"), logged_at=date(2026, 1, 5),
+    )
+    receipts = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 15), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("60000.00"), target_doc_no="INV001",
+        ),
+    ]
+    outcome = compute_ptp_outcome(invoice, follow_up, [], receipts)
+    assert outcome.kept is True
+    position = compute_invoice_position(invoice, [], receipts, as_of=date(2026, 1, 15))
+    assert position.open_amount == Decimal("40000.00")  # the rest is still open, and that's fine
+
+
+def test_ptp_outcome_returns_none_when_no_promise_logged():
+    invoice = _invoice()
+    follow_up = InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME")
+    assert compute_ptp_outcome(invoice, follow_up, [], []) is None
+
+
+def test_ptp_kept_rate_excludes_promises_not_yet_due():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("100000.00"))
+    lookup = {("B1", "INV001", "ACME"): invoice}
+    follow_ups = [
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME",
+                         ptp_date=date(2026, 6, 1), ptp_amount=Decimal("60000.00"), logged_at=date(2026, 5, 1)),
+    ]
+    # as_of is before the promised date - not due yet, must be excluded entirely.
+    rate = compute_ptp_kept_rate(follow_ups, lookup, [], [], as_of=date(2026, 3, 1))
+    assert rate is None
+
+
+def test_ptp_kept_rate_percentage_across_multiple_promises():
+    invoice1 = _invoice("INV001", date(2026, 1, 1), Decimal("100000.00"))
+    invoice2 = _invoice("INV002", date(2026, 1, 1), Decimal("50000.00"))
+    lookup = {("B1", "INV001", "ACME"): invoice1, ("B1", "INV002", "ACME"): invoice2}
+    follow_ups = [
+        # Kept.
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV001", party_id="ACME",
+                         ptp_date=date(2026, 2, 1), ptp_amount=Decimal("100000.00"), logged_at=date(2026, 1, 20)),
+        # Broken - nothing paid.
+        InvoiceFollowUp(branch_id="B1", voucher_number="INV002", party_id="ACME",
+                         ptp_date=date(2026, 2, 1), ptp_amount=Decimal("50000.00"), logged_at=date(2026, 1, 20)),
+    ]
+    receipts = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 25), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("100000.00"), target_doc_no="INV001",
+        ),
+    ]
+    rate = compute_ptp_kept_rate(follow_ups, lookup, [], receipts, as_of=date(2026, 3, 1))
+    assert rate == Decimal("50")

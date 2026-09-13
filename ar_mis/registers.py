@@ -18,6 +18,7 @@ from decimal import Decimal
 from ar_mis.models import (
     CreditNoteRegisterRow,
     CustomerMasterRecord,
+    InvoiceFollowUp,
     LedgerEntry,
     NoteType,
     ReceiptJournalRegisterRow,
@@ -443,3 +444,175 @@ def compute_invoice_position(
         days_past_due=max(days_past_due, 0),
         ageing_bucket=compute_ageing_bucket(days_past_due if is_overdue else 0),
     )
+
+
+# ---------------------------------------------------------------------
+# KPI dashboard formulas (design doc item 15) — every one of these was
+# confirmed explicitly with the client rather than assumed; see design
+# doc items 10 (Collection Efficiency), 12 (DSO), and 13 (PTP Kept Rate).
+# Each function takes already-aggregated inputs rather than raw register
+# lists, so the arithmetic itself stays trivially testable independent of
+# how a caller chooses to aggregate a period or a portfolio.
+# ---------------------------------------------------------------------
+
+
+def compute_sales_in_window(rows: list[SalesDNRegisterRow], window_start: date, window_end: date) -> Decimal:
+    """Sum of invoice_value for every Sales & DN Register row whose
+    invoice_date falls within [window_start, window_end] inclusive - the
+    "new sales" figure both DSO and Collection Efficiency need.
+    """
+    return sum(
+        (row.invoice_value for row in rows if window_start <= row.invoice_date <= window_end),
+        Decimal("0.00"),
+    )
+
+
+def compute_collections_in_window(
+    rows: list[ReceiptJournalRegisterRow], window_start: date, window_end: date
+) -> Decimal:
+    """Sum of amount for every CURRENT-classified Receipt & Journal
+    Register row whose txn_date falls within [window_start, window_end]
+    inclusive - Collection Efficiency's "actually collected" figure.
+    PENDING_REVIEW/PRE_MIS_ADJUSTMENT lines are excluded, matching item
+    9/10's treatment everywhere else in this module - an unresolved or
+    pre-go-live reference isn't a real collection this system can vouch
+    for yet.
+    """
+    return sum(
+        (
+            row.amount
+            for row in rows
+            if window_start <= row.txn_date <= window_end and row.classification == RegisterClassification.CURRENT
+        ),
+        Decimal("0.00"),
+    )
+
+
+def compute_dso(total_open_ar: Decimal, sales_last_90_days: Decimal) -> Decimal | None:
+    """Design doc item 12, client-confirmed formula: Total Open AR ÷
+    average daily sales, where average daily sales is Total Sales over
+    the trailing 90 days ÷ 90 - the 90-day trailing window was the
+    client's explicit choice over a 12-month window, for faster reaction
+    to recent changes in the business. `total_open_ar` and
+    `sales_last_90_days` are caller-supplied aggregates (e.g. summing
+    compute_invoice_position(...).open_amount across every tracked
+    invoice, and compute_sales_in_window over the trailing 90 days)
+    rather than computed here, so this function is pure arithmetic.
+
+    Returns None when there were no sales in the window - the average
+    daily sales figure is undefined (division by zero), not zero.
+    """
+    if sales_last_90_days == 0:
+        return None
+    average_daily_sales = sales_last_90_days / Decimal("90")
+    return total_open_ar / average_daily_sales
+
+
+def compute_collection_efficiency(
+    opening_ar: Decimal, sales_in_period: Decimal, collected_in_period: Decimal
+) -> Decimal | None:
+    """Design doc item 10, client-confirmed formula: what was actually
+    collected during the period, as a percentage of what was owed across
+    the period (opening AR at the start of the period + new sales made
+    during it). Returns None when the denominator is zero - undefined,
+    not 0% or 100%.
+    """
+    denominator = opening_ar + sales_in_period
+    if denominator == 0:
+        return None
+    return (collected_in_period / denominator) * Decimal("100")
+
+
+@dataclass
+class PTPOutcome:
+    """Whether one specific promise was Kept or Broken, and how much was
+    actually collected toward it - always derived, never stored (see
+    InvoiceFollowUp's docstring: there is no status field to read this
+    from instead).
+    """
+
+    kept: bool
+    amount_collected_since_promise: Decimal
+
+
+def compute_ptp_outcome(
+    row: SalesDNRegisterRow,
+    follow_up: InvoiceFollowUp,
+    credit_note_rows: list[CreditNoteRegisterRow],
+    receipt_journal_rows: list[ReceiptJournalRegisterRow],
+) -> PTPOutcome | None:
+    """Design doc item 13, client-confirmed rule: a promise is Kept if AT
+    LEAST the promised amount was collected on THIS invoice, SINCE the
+    promise was logged (`follow_up.logged_at`), by the promised date
+    (`follow_up.ptp_date`) - never the invoice's total-ever-collected
+    figure, which would let a balance the customer already paid *before*
+    this promise even existed falsely count toward keeping it. The rest
+    of the invoice being open (a different, unrelated portion of the
+    balance) does not break this specific promise, per the client's own
+    worked example when confirming this.
+
+    Computed as the difference between receipts_applied as of ptp_date
+    and receipts_applied as of the day before logged_at (so a payment
+    arriving on logged_at itself still counts, but nothing from before
+    the promise existed does) - both via compute_invoice_position, so
+    this stays consistent with every other as-of-date computation in
+    this module rather than re-deriving its own notion of "applied".
+
+    Returns None when there is nothing to judge yet: no promise logged
+    (ptp_date/ptp_amount unset) or no logged_at recorded (shouldn't
+    happen once a promise exists - see Store.upsert_invoice_follow_up -
+    but this function never assumes storage's own invariant held).
+    """
+    if follow_up.ptp_date is None or follow_up.ptp_amount is None or follow_up.logged_at is None:
+        return None
+    position_at_ptp_date = compute_invoice_position(
+        row, credit_note_rows, receipt_journal_rows, as_of=follow_up.ptp_date
+    )
+    day_before_promise = follow_up.logged_at - timedelta(days=1)
+    position_before_promise = compute_invoice_position(
+        row, credit_note_rows, receipt_journal_rows, as_of=day_before_promise
+    )
+    amount_collected_since_promise = position_at_ptp_date.receipts_applied - position_before_promise.receipts_applied
+    return PTPOutcome(
+        kept=amount_collected_since_promise >= follow_up.ptp_amount,
+        amount_collected_since_promise=amount_collected_since_promise,
+    )
+
+
+def compute_ptp_kept_rate(
+    follow_ups: list[InvoiceFollowUp],
+    sales_dn_rows_by_identity: dict[tuple[str, str, str], SalesDNRegisterRow],
+    credit_note_rows: list[CreditNoteRegisterRow],
+    receipt_journal_rows: list[ReceiptJournalRegisterRow],
+    as_of: date,
+) -> Decimal | None:
+    """Design doc item 13, client-confirmed: of every promise whose date
+    has already passed (`ptp_date <= as_of`), what percentage were Kept.
+    A promise not yet due is excluded entirely - it counts toward
+    neither Kept nor Broken, exactly as the client confirmed - and so is
+    one with no PTPOutcome to judge (see compute_ptp_outcome).
+
+    `sales_dn_rows_by_identity` keys each tracked invoice by
+    (branch_id, voucher_number, party_id) - the same identity
+    InvoiceFollowUp is keyed to (see that dataclass's docstring) - so a
+    follow-up can be matched to its invoice without a linear scan; build
+    it once via `{(r.branch_id, r.voucher_number, r.party_id): r for r
+    in sales_dn_rows}`.
+
+    Returns None when there are no eligible (already-past-due) promises
+    at all - undefined, not 0% or 100%.
+    """
+    outcomes: list[PTPOutcome] = []
+    for follow_up in follow_ups:
+        if follow_up.ptp_date is None or follow_up.ptp_date > as_of:
+            continue
+        row = sales_dn_rows_by_identity.get((follow_up.branch_id, follow_up.voucher_number, follow_up.party_id))
+        if row is None:
+            continue
+        outcome = compute_ptp_outcome(row, follow_up, credit_note_rows, receipt_journal_rows)
+        if outcome is not None:
+            outcomes.append(outcome)
+    if not outcomes:
+        return None
+    kept_count = sum(1 for outcome in outcomes if outcome.kept)
+    return (Decimal(kept_count) / Decimal(len(outcomes))) * Decimal("100")
