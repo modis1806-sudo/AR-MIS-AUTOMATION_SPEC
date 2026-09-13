@@ -507,6 +507,33 @@ def test_compute_invoice_position_fully_paid_is_not_overdue():
     assert position.ageing_bucket == "Current"
 
 
+def test_compute_invoice_position_before_invoice_date_contributes_nothing():
+    # Found via a real cross-check building the AR Snapshot dashboard:
+    # an as-of date earlier than the invoice's own invoice_date must not
+    # show the invoice's full value as "open" - it didn't exist yet.
+    invoice = build_sales_dn_register_row(
+        sales_voucher(
+            [
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-1000.00"), bill_name="INV001", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales Revenue", amount_as_extracted=Decimal("1000.00")),
+            ],
+            voucher_date=date(2026, 6, 15),
+        ),
+        CUSTOMER,
+        RegisterBuildExceptions(),
+    )
+    position = compute_invoice_position(invoice, [], [], as_of=date(2026, 6, 14))
+    assert position.open_amount == Decimal("0.00")
+    assert position.linked_cn_amount == Decimal("0.00")
+    assert position.receipts_applied == Decimal("0.00")
+    assert position.is_overdue is False
+    assert position.days_past_due == 0
+
+    # The day it's actually raised, it appears normally.
+    position_on_date = compute_invoice_position(invoice, [], [], as_of=date(2026, 6, 15))
+    assert position_on_date.open_amount == Decimal("1000.00")
+
+
 # ---- End-to-end against real client-exported sample XML ------------------
 
 

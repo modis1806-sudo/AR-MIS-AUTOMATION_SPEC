@@ -410,7 +410,28 @@ def compute_invoice_position(
     classified CN/receipt lines count against Open Amount - a
     PENDING_REVIEW or PRE_MIS_ADJUSTMENT line, by definition, isn't a real
     application against this specific tracked invoice yet.
+
+    An invoice dated AFTER `as_of` didn't exist yet as of that date - it
+    contributes nothing at all (found via a real cross-check while
+    building the AR Snapshot dashboard: without this guard, asking for
+    the position "as of" a date before an invoice's own invoice_date
+    still returned its full invoice_value as Open Amount, silently
+    inflating every portfolio-level total for any as-of-date earlier
+    than the newest invoice on record - which is the common case, not
+    an edge case, every time a report is viewed for an earlier date
+    than "now").
     """
+    if row.invoice_date > as_of:
+        return InvoicePosition(
+            row=row,
+            linked_cn_amount=Decimal("0.00"),
+            receipts_applied=Decimal("0.00"),
+            open_amount=Decimal("0.00"),
+            is_overdue=False,
+            days_past_due=0,
+            ageing_bucket="Current",
+        )
+
     key = (row.party_id, row.bill_allocation_reference)
     linked_cn_amount = sum(
         (
