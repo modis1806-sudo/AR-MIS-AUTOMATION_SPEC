@@ -12,6 +12,7 @@
     <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
   </div>
   <button class="btn secondary" type="submit">Apply</button>
+  <a class="btn" href="{{ url_for('receipt_journal_register_export', as_of=as_of) }}">Export to Excel</a>
 </form>
 
 {% if display_rows %}

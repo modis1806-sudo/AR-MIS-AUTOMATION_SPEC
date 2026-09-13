@@ -499,3 +499,45 @@ def test_credit_note_register_and_receipt_journal_register_render_when_empty(cli
         resp = client.get(path)
         assert resp.status_code == 200
         assert b"No " in resp.data  # the empty-state card text
+
+
+# ---- Excel export -----------------------------------------------------
+
+_XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def test_sales_dn_register_export_downloads_a_workbook(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn/export.xlsx")
+    assert resp.status_code == 200
+    assert resp.mimetype == _XLSX_MIMETYPE
+    assert "Sales_DN_Register" in resp.headers["Content-Disposition"]
+    assert len(resp.data) > 0
+
+
+def test_credit_note_register_export_downloads_a_workbook(client):
+    resp = client.get("/registers/credit-notes/export.xlsx")
+    assert resp.status_code == 200
+    assert resp.mimetype == _XLSX_MIMETYPE
+    assert "Credit_Note_Register" in resp.headers["Content-Disposition"]
+
+
+def test_receipt_journal_register_export_downloads_a_workbook(client):
+    resp = client.get("/registers/receipts-journals/export.xlsx")
+    assert resp.status_code == 200
+    assert resp.mimetype == _XLSX_MIMETYPE
+    assert "Receipt_Journal_Register" in resp.headers["Content-Disposition"]
+
+
+def test_viewer_can_export_registers_to_excel(roleless_client):
+    # Export is a Registers-level, read-only action - a Viewer must be
+    # able to reach it exactly like the on-screen register itself.
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    for path in (
+        "/registers/sales-dn/export.xlsx",
+        "/registers/credit-notes/export.xlsx",
+        "/registers/receipts-journals/export.xlsx",
+    ):
+        resp = roleless_client.get(path)
+        assert resp.status_code == 200
+        assert resp.mimetype == _XLSX_MIMETYPE

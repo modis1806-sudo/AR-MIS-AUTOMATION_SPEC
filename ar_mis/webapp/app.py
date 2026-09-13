@@ -22,12 +22,18 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from functools import wraps
+from io import BytesIO
 
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, redirect, render_template, request, send_file, session, url_for
 
 from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
 from ar_mis.models import RegisterClassification
+from ar_mis.register_export import (
+    build_credit_note_register_workbook,
+    build_receipt_journal_register_workbook,
+    build_sales_dn_register_workbook,
+)
 from ar_mis.registers import (
     build_bill_reference_lookup,
     compute_invoice_position,
@@ -462,16 +468,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         except ValueError:
             return date.today()
 
-    @app.route("/registers/sales-dn")
-    def sales_dn_register():
-        """Design doc item 2's flagship register, item 14's as-of-date
-        mechanism applied: every derived column (Linked CN Amount,
-        Receipts Applied, Open Amount, Overdue Flag, DPD, Ageing Bucket,
-        PTP Status) is recomputed live for the selected `as_of` date, not
-        read from a stored total - changing the date changes what's shown
-        without touching any data.
+    def _build_sales_dn_display_rows(as_of: date):
+        """Shared by the Sales & DN Register's HTML view and its Excel
+        export - both render exactly this data, so a download can never
+        silently drift from what's on screen.
         """
-        as_of = _parse_as_of()
         store = get_store()
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
@@ -505,14 +506,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     "grouping": groupings.get((row.party_id, row.branch_id)),
                 }
             )
+        return display_rows, freshness
 
-        return render_template(
-            "sales_dn_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
-            freshness=freshness,
-        )
-
-    @app.route("/registers/credit-notes")
-    def credit_note_register():
+    def _build_credit_note_display_rows():
         store = get_store()
         rows = store.all_credit_note_rows()
         freshness = _freshness(store.last_extraction_at())
@@ -533,11 +529,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             }
             for row in rows
         ]
-        return render_template("credit_note_register.html", display_rows=display_rows, freshness=freshness)
+        return display_rows, freshness
 
-    @app.route("/registers/receipts-journals")
-    def receipt_journal_register():
-        as_of = _parse_as_of()
+    def _build_receipt_journal_display_rows(as_of: date):
         store = get_store()
         rj_rows = store.all_receipt_journal_rows()
         sales_dn_rows = store.all_sales_dn_rows()
@@ -548,9 +542,74 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         display_rows = [
             {"row": row, "fields": compute_receipt_journal_display_fields(row, lookup, as_of)} for row in rj_rows
         ]
+        return display_rows, freshness
+
+    @app.route("/registers/sales-dn")
+    def sales_dn_register():
+        """Design doc item 2's flagship register, item 14's as-of-date
+        mechanism applied: every derived column (Linked CN Amount,
+        Receipts Applied, Open Amount, Overdue Flag, DPD, Ageing Bucket,
+        PTP Status) is recomputed live for the selected `as_of` date, not
+        read from a stored total - changing the date changes what's shown
+        without touching any data.
+        """
+        as_of = _parse_as_of()
+        display_rows, freshness = _build_sales_dn_display_rows(as_of)
+        return render_template(
+            "sales_dn_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
+            freshness=freshness,
+        )
+
+    @app.route("/registers/sales-dn/export.xlsx")
+    def sales_dn_register_export():
+        as_of = _parse_as_of()
+        display_rows, _ = _build_sales_dn_display_rows(as_of)
+        wb = build_sales_dn_register_workbook(display_rows, as_of)
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True, download_name=f"Sales_DN_Register_{as_of.isoformat()}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    @app.route("/registers/credit-notes")
+    def credit_note_register():
+        display_rows, freshness = _build_credit_note_display_rows()
+        return render_template("credit_note_register.html", display_rows=display_rows, freshness=freshness)
+
+    @app.route("/registers/credit-notes/export.xlsx")
+    def credit_note_register_export():
+        display_rows, _ = _build_credit_note_display_rows()
+        wb = build_credit_note_register_workbook(display_rows)
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True, download_name=f"Credit_Note_Register_{date.today().isoformat()}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    @app.route("/registers/receipts-journals")
+    def receipt_journal_register():
+        as_of = _parse_as_of()
+        display_rows, freshness = _build_receipt_journal_display_rows(as_of)
         return render_template(
             "receipt_journal_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
             freshness=freshness,
+        )
+
+    @app.route("/registers/receipts-journals/export.xlsx")
+    def receipt_journal_register_export():
+        as_of = _parse_as_of()
+        display_rows, _ = _build_receipt_journal_display_rows(as_of)
+        wb = build_receipt_journal_register_workbook(display_rows, as_of)
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True, download_name=f"Receipt_Journal_Register_{as_of.isoformat()}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     @app.route("/reports")

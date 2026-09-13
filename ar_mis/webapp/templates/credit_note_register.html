@@ -6,6 +6,8 @@
 
 {% include "_freshness.html" %}
 
+<p><a class="btn" href="{{ url_for('credit_note_register_export') }}">Export to Excel</a></p>
+
 {% if display_rows %}
 <div class="table-scroll">
 <table>
