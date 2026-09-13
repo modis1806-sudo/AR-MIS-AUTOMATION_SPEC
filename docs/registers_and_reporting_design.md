@@ -642,15 +642,37 @@ resolves former open item 1.
     - meaning the one ingestion path used day-to-day had no defense
     against backdated/edited vouchers at all. Fixed as part of item 16's
     new route.
-18. **NEW, deferred at the client's explicit request: a controlled,
-    audited correction mechanism for backdated entries and bill-
-    misallocation errors.** Once the TB Cross-Check sheet or a YTD drift
-    finding surfaces a real error, actually incorporating the fix into
-    the correct historical week ("manual access for modification," the
-    client's words) is real, new scope - effectively the "Administrator
-    override with audit trail" concept from item 11's original spec,
-    never built. Explicitly not built this session; revisit once the
-    detection/surfacing side (items 15-17) has been used for real.
+18. **NEW, resolved (backdated entries only - bill-misallocation still
+    deferred): a controlled, audited correction mechanism for a YTD drift
+    finding.** Once item 19's drift-finding persistence surfaces a real
+    backdated/edited voucher, a Maker can now "incorporate" it
+    (`ar_mis.drift_correction.incorporate_drift_finding`, wired to
+    `POST /reports/drift-findings/<id>/incorporate`) - deliberately NOT an
+    edit to any existing, already-locked `weekly_snapshot` row, which
+    would break this codebase's append-only principle. Instead the
+    finding's full original voucher (persisted whole for exactly this -
+    see `DriftFinding.voucher`) is replayed through the same
+    `process_branch_data` pipeline every other extraction uses, under a
+    NEW week_ending the Maker picks, keeping the voucher's own real
+    historical date for ageing/DSO - the same "prior period adjustment"
+    pattern real accounting uses: post the correction now, referencing
+    what it corrects, rather than reopening a closed period. Requires
+    that one party's real, Tally-sourced Sundry Debtors closing balance
+    as of the correction week, typed in by the Maker - same trust level
+    as Manual Upload's own Trial Balance file, never invented - because
+    reconciliation is not suspended for a correction; a wrong figure
+    doesn't get silently accepted, it just shows up as a fresh mismatch
+    on the TB Cross-Check sheet. `incorporated` (the fix) and
+    `acknowledged` (item 19's "someone has seen it" note) are two
+    independent, never-conflated signals on the same finding. Maker-only,
+    matching every other write action in this app. Verified end-to-end
+    against real fixture data: the corrected invoice appears on the
+    Sales & DN Register under its true original date, and the party's
+    correction-week row reconciles clean on the TB Cross-Check sheet.
+    Bill-misallocation correction (a receipt pointed at the wrong
+    invoice, surfaced via Negative Open Amount) is a different fix -
+    editing an existing row's reference, not inserting a missing voucher
+    - and remains explicitly out of scope for a future round.
 19. **NEW, resolved: drift findings are now persisted, not just shown
     once.** A finding used to appear only on the result page of the run
     that found it (Manual Upload or Extract & Save) and vanish once that
@@ -660,7 +682,7 @@ resolves former open item 1.
     explicitly acknowledges it. A still-unresolved finding re-detected on
     a later extraction does not spawn a duplicate row (the table's own
     UNIQUE constraint on the finding's identity handles this). Explicitly
-    NOT the correction mechanism deferred in item 18: acknowledging is an
+    NOT the correction mechanism built in item 18: acknowledging is an
     audit note only - who saw it and when - it never touches
     weekly_snapshot or any register.
 

@@ -10,6 +10,7 @@ from ar_mis.models import (
     CustomerMasterRecord,
     FYRolloverSnapshot,
     InvoiceFollowUp,
+    LedgerEntry,
     NoteType,
     PartyGrouping,
     PreMisAdjustment,
@@ -19,6 +20,8 @@ from ar_mis.models import (
     ReceiptJournalRegisterRow,
     RegisterClassification,
     SalesDNRegisterRow,
+    Voucher,
+    VoucherType,
     WeeklyMovementRow,
     WeeklySnapshotRow,
 )
@@ -406,10 +409,14 @@ def test_all_weekly_movement_rows_ordered_oldest_first(store):
     assert [r.week_ending for r in rows] == [date(2026, 9, 12), date(2026, 9, 19)]
 
 
-def _drift_finding(voucher_number="SB/999", party="Acme", amount=Decimal("13000.00"), voucher_date=date(2026, 1, 4)):
+def _drift_finding(voucher_number="SB/999", party="Acme", amount=Decimal("13000.00"), voucher_date=date(2026, 1, 4), branch_id="KOL"):
     return DriftFinding(
         party_ledger_name=party, voucher_type="Sales", voucher_number=voucher_number,
         voucher_date=voucher_date, flipped_amount=amount, attributed_week=date(2026, 1, 5),
+        voucher=Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=voucher_date, voucher_number=voucher_number,
+            branch_id=branch_id, party_ledger_name=party,
+        ),
     )
 
 
@@ -478,6 +485,74 @@ def test_acknowledge_drift_finding(store):
     assert record.acknowledged is True
     assert record.acknowledged_by == "AR Manager - Kolkata"
     assert record.acknowledged_at == datetime(2026, 1, 7, 10, 0)
+
+
+def test_drift_finding_voucher_round_trips_full_entries():
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 4), voucher_number="SB/999",
+        branch_id="KOL", party_ledger_name="Acme", raw_voucher_type_name="Sales - Export",
+        entries=[
+            LedgerEntry(party_ledger_name="Acme", amount_as_extracted=Decimal("-13000.00"), bill_name="SB/999", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("11000.00")),
+            LedgerEntry(party_ledger_name="CGST", amount_as_extracted=Decimal("1000.00")),
+            LedgerEntry(party_ledger_name="SGST", amount_as_extracted=Decimal("1000.00")),
+        ],
+    )
+    from ar_mis.storage import Store
+    raw = Store._serialize_voucher(voucher)
+    restored = Store._deserialize_voucher(raw)
+    assert restored == voucher
+
+
+def test_drift_finding_stores_and_returns_the_full_voucher(store):
+    finding = _drift_finding()
+    store.record_drift_findings("KOL", [finding], datetime(2026, 1, 6, 9, 0))
+    record = store.all_drift_findings()[0]
+    assert record.finding.voucher == finding.voucher
+
+
+def test_get_drift_finding_by_id(store):
+    store.record_drift_findings("KOL", [_drift_finding()], datetime(2026, 1, 6, 9, 0))
+    finding_id = store.all_drift_findings()[0].id
+    record = store.get_drift_finding(finding_id)
+    assert record is not None
+    assert record.id == finding_id
+    assert record.finding.voucher_number == "SB/999"
+
+
+def test_get_drift_finding_returns_none_for_unknown_id(store):
+    assert store.get_drift_finding(999) is None
+
+
+def test_mark_drift_finding_incorporated(store):
+    store.record_drift_findings("KOL", [_drift_finding()], datetime(2026, 1, 6, 9, 0))
+    finding_id = store.all_drift_findings()[0].id
+
+    store.mark_drift_finding_incorporated(finding_id, "AR Manager - Kolkata", datetime(2026, 9, 13, 9, 0), date(2026, 9, 12))
+
+    record = store.get_drift_finding(finding_id)
+    assert record.incorporated is True
+    assert record.incorporated_by == "AR Manager - Kolkata"
+    assert record.incorporated_at == datetime(2026, 9, 13, 9, 0)
+    assert record.incorporated_week_ending == date(2026, 9, 12)
+    # Incorporating is independent of acknowledging.
+    assert record.acknowledged is False
+
+
+def test_has_weekly_snapshot_for_party_week(store):
+    assert store.has_weekly_snapshot_for_party_week("Acme", "KOL", date(2026, 9, 12)) is False
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="Acme", branch_id="KOL", week_ending=date(2026, 9, 12),
+            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    assert store.has_weekly_snapshot_for_party_week("Acme", "KOL", date(2026, 9, 12)) is True
+    # A different party in the same branch/week must not be affected.
+    assert store.has_weekly_snapshot_for_party_week("Beta", "KOL", date(2026, 9, 12)) is False
 
 
 def test_ptp_status_log_tracks_latest_status_per_week(store):

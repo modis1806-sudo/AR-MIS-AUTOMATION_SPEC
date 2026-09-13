@@ -109,6 +109,13 @@ class DriftFinding:
     voucher's date - the week the drift should be attributed to, per the
     spec's requirement to surface "which week and which voucher", not
     just that a mismatch exists somewhere.
+
+    `voucher` is the FULL original Voucher (all entries - party, revenue,
+    tax, round-off lines alike), not just this finding's own summary
+    fields - added this session so a finding can actually be incorporated
+    later (ar_mis.drift_correction) by replaying the exact same voucher
+    through the normal register-building pipeline, rather than needing a
+    second live Tally pull to reconstruct it from scratch.
     """
 
     party_ledger_name: str
@@ -117,6 +124,7 @@ class DriftFinding:
     voucher_date: date
     flipped_amount: Decimal
     attributed_week: date | None
+    voucher: Voucher
 
 
 @dataclass(frozen=True)
@@ -124,16 +132,25 @@ class DriftFindingRecord:
     """A DriftFinding as persisted (Store.record_drift_findings) - found
     and fixed this session: previously a finding was only ever shown once,
     on the result page of the run that found it, then gone. `id` is the
-    drift_finding table's own row id, needed to acknowledge a specific
-    finding later. `discovered_at` is the real wall-clock moment this
-    finding was FIRST detected - a still-unresolved backdated voucher
-    re-appears in isolate_drift's output on every subsequent extraction
-    (nothing here retroactively "fixes" it - see design doc item 18,
-    deliberately deferred), so Store.record_drift_findings only inserts a
-    genuinely new finding once and leaves an already-recorded one alone,
-    rather than spawning a fresh row every week it stays unresolved.
+    drift_finding table's own row id, needed to acknowledge or incorporate
+    a specific finding later. `discovered_at` is the real wall-clock
+    moment this finding was FIRST detected - a still-unresolved backdated
+    voucher re-appears in isolate_drift's output on every subsequent
+    extraction until it's actually incorporated, so
+    Store.record_drift_findings only inserts a genuinely new finding once
+    and leaves an already-recorded one alone, rather than spawning a
+    fresh row every week it stays unresolved.
+
+    Two distinct, independent signals, never conflated:
     `acknowledged` is a human saying "I've seen this" - an audit note
     only, it never touches weekly_snapshot or any register.
+    `incorporated` is the real fix (ar_mis.drift_correction): the missing
+    voucher has actually been written into the registers and
+    weekly_snapshot, under a new correction week. Incorporating does NOT
+    guarantee that party now reconciles clean going forward - it only
+    means this specific missing voucher is now in the system; whether
+    the party's books are fully clean is the TB Reconciliation
+    Cross-Check sheet's job to show, not this flag's.
     """
 
     id: int
@@ -143,6 +160,10 @@ class DriftFindingRecord:
     acknowledged: bool
     acknowledged_by: str | None
     acknowledged_at: datetime | None
+    incorporated: bool
+    incorporated_by: str | None
+    incorporated_at: datetime | None
+    incorporated_week_ending: date | None
 
 
 def ytd_cross_check_party(
@@ -209,6 +230,7 @@ def isolate_drift(
                     voucher_date=voucher.voucher_date,
                     flipped_amount=flipped,
                     attributed_week=attribute_week(voucher.voucher_date, week_boundaries),
+                    voucher=voucher,
                 )
             )
     return findings

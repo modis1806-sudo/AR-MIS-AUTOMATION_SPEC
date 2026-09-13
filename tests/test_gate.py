@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from ar_mis.gate import evaluate_output_gate, may_auto_send
+from ar_mis.models import Voucher, VoucherType
 from ar_mis.orchestration import BranchRunOutcome, ExtractionOutcome, WeeklyCycleReport
 from ar_mis.reconciliation import DriftFinding
 
@@ -53,6 +54,10 @@ def test_ytd_drift_blocks_the_gate_even_if_every_branch_passed():
         voucher_date=date(2026, 1, 4),
         flipped_amount=Decimal("13000000.00"),
         attributed_week=date(2026, 1, 5),
+        voucher=Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 4), voucher_number="SB/999",
+            branch_id="KOL", party_ledger_name="Acme",
+        ),
     )
     status = evaluate_output_gate(report, drift_findings=[finding])
     assert status.clean is False

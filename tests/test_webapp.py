@@ -1022,6 +1022,14 @@ def _seed_drift_finding(client, voucher_number="SB/0099-BACKDATED"):
     finding = DriftFinding(
         party_ledger_name="ACME", voucher_type="Sales", voucher_number=voucher_number,
         voucher_date=date(2026, 3, 1), flipped_amount=Decimal("50000.00"), attributed_week=date(2026, 3, 8),
+        voucher=Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 3, 1), voucher_number=voucher_number,
+            branch_id="KOL", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-50000.00"), bill_name=voucher_number, bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("50000.00")),
+            ],
+        ),
     )
     store.record_drift_findings("KOL", [finding], datetime(2026, 9, 1, 10, 0))
     store.close()
@@ -1089,3 +1097,86 @@ def test_checker_can_view_but_not_acknowledge_drift_findings(roleless_client):
 def test_reports_home_links_to_drift_findings(client):
     resp = client.get("/reports")
     assert b"Backdated Entry Findings" in resp.data
+
+
+def test_maker_can_incorporate_a_finding_and_reconcile_clean(client):
+    _seed_drift_finding(client)  # ACME, SB/0099-BACKDATED, 50000.00, dated 2026-03-01
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    finding_id = store.all_drift_findings()[0].id
+    store.close()
+
+    resp = client.post(
+        f"/reports/drift-findings/{finding_id}/incorporate",
+        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-12", "party_closing_extracted": "50000.00"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"reconciled clean" in resp.data
+    assert b"Incorporated" in resp.data
+    assert b"AR Manager" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    record = store.all_drift_findings()[0]
+    assert record.incorporated is True
+    assert record.incorporated_week_ending == date(2026, 9, 12)
+    rows = store.all_sales_dn_rows("KOL")
+    assert len(rows) == 1
+    assert rows[0].invoice_date == date(2026, 3, 1)
+    store.close()
+
+
+def test_incorporate_with_wrong_closing_still_incorporates_but_flags_mismatch(client):
+    _seed_drift_finding(client)
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    finding_id = store.all_drift_findings()[0].id
+    store.close()
+
+    resp = client.post(
+        f"/reports/drift-findings/{finding_id}/incorporate",
+        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-12", "party_closing_extracted": "999999.00"},
+        follow_redirects=True,
+    )
+    assert b"still shows a difference" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    record = store.all_drift_findings()[0]
+    assert record.incorporated is True  # still incorporated - the voucher is in the system
+    store.close()
+
+
+def test_incorporate_a_second_time_is_refused(client):
+    _seed_drift_finding(client)
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    finding_id = store.all_drift_findings()[0].id
+    store.close()
+
+    client.post(
+        f"/reports/drift-findings/{finding_id}/incorporate",
+        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-12", "party_closing_extracted": "50000.00"},
+    )
+    resp = client.post(
+        f"/reports/drift-findings/{finding_id}/incorporate",
+        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-19", "party_closing_extracted": "50000.00"},
+        follow_redirects=True,
+    )
+    assert b"already incorporated" in resp.data
+
+
+def test_checker_cannot_incorporate_a_finding(roleless_client):
+    _seed_drift_finding(roleless_client)
+    roleless_client.post("/choose-role", data={"role": "checker"})
+
+    from ar_mis.storage import Store
+    store = Store(roleless_client.application.config["DB_PATH"])
+    finding_id = store.all_drift_findings()[0].id
+    store.close()
+
+    resp = roleless_client.post(
+        f"/reports/drift-findings/{finding_id}/incorporate",
+        data={"incorporated_by": "Someone", "week_ending": "2026-09-12", "party_closing_extracted": "50000.00"},
+        follow_redirects=True,
+    )
+    assert b"available for your role" in resp.data

@@ -28,6 +28,7 @@ from ar_mis.models import (
     CustomerMasterRecord,
     FYRolloverSnapshot,
     InvoiceFollowUp,
+    LedgerEntry,
     NoteType,
     PartyGrouping,
     PreMisAdjustment,
@@ -37,6 +38,8 @@ from ar_mis.models import (
     ReceiptJournalRegisterRow,
     RegisterClassification,
     SalesDNRegisterRow,
+    Voucher,
+    VoucherType,
     WeeklyMovementRow,
     WeeklySnapshotRow,
 )
@@ -60,7 +63,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -340,6 +343,23 @@ CREATE TABLE IF NOT EXISTS drift_finding (
     acknowledged_at TEXT,
     UNIQUE(branch_id, party_ledger_name, voucher_type, voucher_number, voucher_date, flipped_amount)
 );
+""",
+    # The correction mechanism for a backdated entry, client's explicit
+    # ask this session: incorporating a finding means replaying its
+    # ORIGINAL voucher (all entries - party, revenue, tax, round-off
+    # lines) through the normal register-building pipeline under a new
+    # correction week, so it needs the full voucher, not just the
+    # summary fields already on this table - stored as JSON since
+    # nothing ever needs to query into it, only reconstruct it whole.
+    # `incorporated` is a distinct, separate signal from `acknowledged`
+    # (added in MIGRATIONS[7]) - see DriftFindingRecord's own docstring
+    # for why the two are never conflated.
+    8: """
+ALTER TABLE drift_finding ADD COLUMN voucher_json TEXT;
+ALTER TABLE drift_finding ADD COLUMN incorporated INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE drift_finding ADD COLUMN incorporated_by TEXT;
+ALTER TABLE drift_finding ADD COLUMN incorporated_at TEXT;
+ALTER TABLE drift_finding ADD COLUMN incorporated_week_ending TEXT;
 """,
 }
 
@@ -1175,28 +1195,74 @@ class Store:
 
     # ---- Drift findings (Section 4.2, backdated entries - persisted) --
 
+    @staticmethod
+    def _serialize_voucher(voucher: Voucher) -> str:
+        return json.dumps(
+            {
+                "voucher_type": voucher.voucher_type.value,
+                "voucher_date": voucher.voucher_date.isoformat(),
+                "voucher_number": voucher.voucher_number,
+                "branch_id": voucher.branch_id,
+                "party_ledger_name": voucher.party_ledger_name,
+                "raw_voucher_type_name": voucher.raw_voucher_type_name,
+                "entries": [
+                    {
+                        "party_ledger_name": e.party_ledger_name,
+                        "amount_as_extracted": str(e.amount_as_extracted),
+                        "bill_name": e.bill_name,
+                        "bill_type": e.bill_type,
+                    }
+                    for e in voucher.entries
+                ],
+            }
+        )
+
+    @staticmethod
+    def _deserialize_voucher(raw: str) -> Voucher:
+        d = json.loads(raw)
+        return Voucher(
+            voucher_type=VoucherType(d["voucher_type"]),
+            voucher_date=date.fromisoformat(d["voucher_date"]),
+            voucher_number=d["voucher_number"],
+            branch_id=d["branch_id"],
+            party_ledger_name=d["party_ledger_name"],
+            raw_voucher_type_name=d.get("raw_voucher_type_name", ""),
+            entries=[
+                LedgerEntry(
+                    party_ledger_name=e["party_ledger_name"],
+                    amount_as_extracted=Decimal(e["amount_as_extracted"]),
+                    bill_name=e.get("bill_name"),
+                    bill_type=e.get("bill_type"),
+                )
+                for e in d["entries"]
+            ],
+        )
+
     def record_drift_findings(self, branch_id: str, findings: list[DriftFinding], discovered_at: datetime) -> int:
         """Persists each finding once - a finding already on record (same
         branch/party/voucher identity, enforced by the drift_finding
         table's UNIQUE constraint) is left untouched via INSERT OR IGNORE,
         since isolate_drift re-detects the same still-unresolved backdated
         voucher on every subsequent extraction until it's actually
-        incorporated (deferred - see design doc item 18); recording it
-        again every run would bury a genuinely new finding under
-        duplicates of an old one. Returns how many of `findings` were
-        genuinely new.
+        incorporated; recording it again every run would bury a genuinely
+        new finding under duplicates of an old one. Returns how many of
+        `findings` were genuinely new. The finding's full original
+        voucher is stored too (see DriftFinding's own docstring) so it
+        can later be replayed by ar_mis.drift_correction without a second
+        live Tally pull.
         """
         new_count = 0
         for f in findings:
             cur = self.conn.execute(
                 "INSERT OR IGNORE INTO drift_finding (branch_id, party_ledger_name, voucher_type,"
-                " voucher_number, voucher_date, flipped_amount, attributed_week, discovered_at, acknowledged)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                " voucher_number, voucher_date, flipped_amount, attributed_week, discovered_at,"
+                " acknowledged, voucher_json, incorporated)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0)",
                 (
                     branch_id, f.party_ledger_name, f.voucher_type, f.voucher_number,
                     f.voucher_date.isoformat(), str(f.flipped_amount),
                     f.attributed_week.isoformat() if f.attributed_week else None,
-                    discovered_at.isoformat(),
+                    discovered_at.isoformat(), self._serialize_voucher(f.voucher),
                 ),
             )
             if cur.rowcount:
@@ -1204,43 +1270,82 @@ class Store:
         self.conn.commit()
         return new_count
 
+    def _drift_finding_record_from_row(self, r: sqlite3.Row) -> DriftFindingRecord:
+        return DriftFindingRecord(
+            id=r["id"],
+            branch_id=r["branch_id"],
+            finding=DriftFinding(
+                party_ledger_name=r["party_ledger_name"],
+                voucher_type=r["voucher_type"],
+                voucher_number=r["voucher_number"],
+                voucher_date=date.fromisoformat(r["voucher_date"]),
+                flipped_amount=Decimal(r["flipped_amount"]),
+                attributed_week=date.fromisoformat(r["attributed_week"]) if r["attributed_week"] else None,
+                voucher=self._deserialize_voucher(r["voucher_json"]),
+            ),
+            discovered_at=datetime.fromisoformat(r["discovered_at"]),
+            acknowledged=bool(r["acknowledged"]),
+            acknowledged_by=r["acknowledged_by"],
+            acknowledged_at=datetime.fromisoformat(r["acknowledged_at"]) if r["acknowledged_at"] else None,
+            incorporated=bool(r["incorporated"]),
+            incorporated_by=r["incorporated_by"],
+            incorporated_at=datetime.fromisoformat(r["incorporated_at"]) if r["incorporated_at"] else None,
+            incorporated_week_ending=date.fromisoformat(r["incorporated_week_ending"]) if r["incorporated_week_ending"] else None,
+        )
+
     def all_drift_findings(self) -> list[DriftFindingRecord]:
         """Every persisted finding, most recently discovered first."""
         self.conn.row_factory = sqlite3.Row
         cur = self.conn.execute("SELECT * FROM drift_finding ORDER BY discovered_at DESC, id DESC")
-        records: list[DriftFindingRecord] = []
-        for r in cur.fetchall():
-            records.append(
-                DriftFindingRecord(
-                    id=r["id"],
-                    branch_id=r["branch_id"],
-                    finding=DriftFinding(
-                        party_ledger_name=r["party_ledger_name"],
-                        voucher_type=r["voucher_type"],
-                        voucher_number=r["voucher_number"],
-                        voucher_date=date.fromisoformat(r["voucher_date"]),
-                        flipped_amount=Decimal(r["flipped_amount"]),
-                        attributed_week=date.fromisoformat(r["attributed_week"]) if r["attributed_week"] else None,
-                    ),
-                    discovered_at=datetime.fromisoformat(r["discovered_at"]),
-                    acknowledged=bool(r["acknowledged"]),
-                    acknowledged_by=r["acknowledged_by"],
-                    acknowledged_at=datetime.fromisoformat(r["acknowledged_at"]) if r["acknowledged_at"] else None,
-                )
-            )
-        return records
+        return [self._drift_finding_record_from_row(r) for r in cur.fetchall()]
+
+    def get_drift_finding(self, finding_id: int) -> DriftFindingRecord | None:
+        self.conn.row_factory = sqlite3.Row
+        row = self.conn.execute("SELECT * FROM drift_finding WHERE id=?", (finding_id,)).fetchone()
+        return self._drift_finding_record_from_row(row) if row else None
 
     def acknowledge_drift_finding(self, finding_id: int, acknowledged_by: str, acknowledged_at: datetime) -> None:
         """Marks a finding as reviewed by a human - an audit note only,
-        never touching weekly_snapshot or any register. The actual
-        correction mechanism for a backdated entry is separate, deferred
-        work (design doc item 18).
+        never touching weekly_snapshot or any register. See
+        ar_mis.drift_correction for the actual correction mechanism.
         """
         self.conn.execute(
             "UPDATE drift_finding SET acknowledged=1, acknowledged_by=?, acknowledged_at=? WHERE id=?",
             (acknowledged_by, acknowledged_at.isoformat(), finding_id),
         )
         self.conn.commit()
+
+    def mark_drift_finding_incorporated(
+        self, finding_id: int, incorporated_by: str, incorporated_at: datetime, week_ending: date
+    ) -> None:
+        """Records that a finding's voucher has been replayed into the
+        registers/weekly_snapshot under `week_ending` - see
+        ar_mis.drift_correction.incorporate_drift_finding, the only
+        caller. This flag says the missing voucher is now in the system;
+        it does NOT claim the party now reconciles clean going forward -
+        that's the TB Reconciliation Cross-Check sheet's own, separate
+        signal.
+        """
+        self.conn.execute(
+            "UPDATE drift_finding SET incorporated=1, incorporated_by=?, incorporated_at=?,"
+            " incorporated_week_ending=? WHERE id=?",
+            (incorporated_by, incorporated_at.isoformat(), week_ending.isoformat(), finding_id),
+        )
+        self.conn.commit()
+
+    def has_weekly_snapshot_for_party_week(self, party_id: str, branch_id: str, week_ending: date) -> bool:
+        """Party-level version of has_weekly_snapshot_for_branch_week -
+        needed by ar_mis.drift_correction, which writes a correction week
+        for ONE party at a time and must refuse a week that party already
+        has a recorded position for, without blocking on other parties in
+        the same branch/week (a normal weekly extraction) that are
+        unrelated to this correction.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM weekly_snapshot WHERE party_id=? AND branch_id=? AND week_ending=? LIMIT 1",
+            (party_id, branch_id, week_ending.isoformat()),
+        ).fetchone()
+        return row is not None
 
     # ---- Invoice Follow-Up (item 7 — the one mutable/upserted register row) --
 

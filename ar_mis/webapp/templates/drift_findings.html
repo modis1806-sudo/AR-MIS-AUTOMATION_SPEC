@@ -2,13 +2,13 @@
 {% block title %}Drift Findings{% endblock %}
 {% block content %}
 <h1>Backdated Entry Findings</h1>
-<p class="subtitle">A voucher found in a fresh, full financial-year Tally pull that no prior weekly extraction ever captured — the sign of a backdated or edited entry. Every finding is kept here permanently, most recent first, until a Maker explicitly acknowledges it. Acknowledging is a note that someone has seen it — it does not change any figure or fix the underlying entry.</p>
+<p class="subtitle">A voucher found in a fresh, full financial-year Tally pull that no prior weekly extraction ever captured — the sign of a backdated or edited entry. Every finding is kept here permanently, most recent first. Acknowledging is just a note that someone has seen it. Incorporating is the actual fix: it replays the voucher into the registers under a new week you choose (never editing the locked historical week) and needs that party's real Sundry Debtors closing balance from Tally as of that date — the same trust level as every other closing figure in this app, not something you invent.</p>
 
 {% include "_freshness.html" %}
 
 <div class="kpi-grid" style="margin-bottom:20px;">
   <div class="kpi-tile">
-    <div class="kpi-label">Outstanding findings</div>
+    <div class="kpi-label">Not yet incorporated</div>
     <div class="kpi-value" style="{{ 'color:#b91c1c;' if outstanding_count else 'color:#166534;' }}">{{ outstanding_count }}</div>
   </div>
 </div>
@@ -19,12 +19,12 @@
     <tr>
       <th>Branch</th><th>Party</th><th>Voucher</th><th>Date</th><th>Amount</th>
       <th>Attributed Week</th><th>Discovered</th><th>Status</th>
-      {% if session.role == "maker" %}<th>Acknowledge</th>{% endif %}
+      {% if session.role == "maker" %}<th>Actions</th>{% endif %}
     </tr>
   </thead>
   <tbody>
   {% for r in records %}
-    <tr {% if not r.acknowledged %}style="background:#fef2f2;"{% endif %}>
+    <tr {% if not r.incorporated %}style="background:#fef2f2;"{% endif %}>
       <td>{{ r.branch_id }}</td>
       <td>{{ r.finding.party_ledger_name }}</td>
       <td>{{ r.finding.voucher_type }} {{ r.finding.voucher_number }}</td>
@@ -33,8 +33,11 @@
       <td>{{ r.finding.attributed_week or 'unassigned' }}</td>
       <td>{{ r.discovered_at.strftime('%d %b %Y, %I:%M %p') }}</td>
       <td>
-        {% if r.acknowledged %}
-          <span class="pill ok">Acknowledged</span>
+        {% if r.incorporated %}
+          <span class="pill ok">Incorporated</span>
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">by {{ r.incorporated_by }} on {{ r.incorporated_at.strftime('%d %b %Y') }}, week ending {{ r.incorporated_week_ending }}</div>
+        {% elif r.acknowledged %}
+          <span class="pill status-active">Acknowledged</span>
           <div style="font-size:11px; color:#6b7280; margin-top:2px;">by {{ r.acknowledged_by }} on {{ r.acknowledged_at.strftime('%d %b %Y') }}</div>
         {% else %}
           <span class="pill fail">Outstanding</span>
@@ -42,11 +45,25 @@
       </td>
       {% if session.role == "maker" %}
       <td>
-        {% if not r.acknowledged %}
-        <form method="post" action="{{ url_for('drift_finding_acknowledge', finding_id=r.id) }}" style="display:flex; gap:6px;">
-          <input name="acknowledged_by" placeholder="Your name" style="width:120px; padding:6px 8px;" required>
-          <button class="btn" type="submit" style="padding:6px 12px; font-size:13px;">Acknowledge</button>
-        </form>
+        {% if not r.incorporated %}
+        <div style="display:flex; flex-direction:column; gap:8px; min-width:220px;">
+          {% if not r.acknowledged %}
+          <form method="post" action="{{ url_for('drift_finding_acknowledge', finding_id=r.id) }}" style="display:flex; gap:6px;">
+            <input name="acknowledged_by" placeholder="Your name" style="width:110px; padding:6px 8px;" required>
+            <button class="btn secondary" type="submit" style="padding:6px 10px; font-size:12px;">Acknowledge</button>
+          </form>
+          {% endif %}
+          <form method="post" action="{{ url_for('drift_finding_incorporate', finding_id=r.id) }}" style="display:flex; flex-direction:column; gap:6px; border-top:1px solid #e5e7eb; padding-top:8px;">
+            <label style="font-size:11px; color:#6b7280;">Week ending
+              <input type="date" name="week_ending" value="{{ default_week_ending }}" style="width:100%; padding:6px 8px;" required>
+            </label>
+            <label style="font-size:11px; color:#6b7280;">{{ r.finding.party_ledger_name }}'s Sundry Debtors closing (Tally), as of that date
+              <input type="text" name="party_closing_extracted" placeholder="e.g. 125000.00" style="width:100%; padding:6px 8px;" required>
+            </label>
+            <input name="incorporated_by" placeholder="Your name" style="padding:6px 8px;" required>
+            <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Incorporate</button>
+          </form>
+        </div>
         {% endif %}
       </td>
       {% endif %}

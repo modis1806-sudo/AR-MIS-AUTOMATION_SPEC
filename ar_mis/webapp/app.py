@@ -22,6 +22,7 @@ is actually sitting at the keyboard. That is accepted, not overlooked.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from functools import wraps
 from io import BytesIO
 
@@ -41,6 +42,11 @@ from ar_mis.exception_register import (
 )
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
 from ar_mis.models import RegisterClassification
+from ar_mis.drift_correction import (
+    DriftFindingAlreadyIncorporated,
+    DriftFindingCorrectionWeekConflict,
+    incorporate_drift_finding,
+)
 from ar_mis.pipeline import process_branch_data
 from ar_mis.reconciliation import isolate_drift
 from ar_mis.reconciliation_report import compute_tb_cross_check_summary
@@ -1000,19 +1006,22 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         session so they no longer vanish once the run that found them is
         over: every finding ever discovered (across Extract & Save,
         Manual Upload, and the CLI alike) is listed here, most recent
-        first, until a Maker explicitly acknowledges it. Acknowledging is
-        an audit note only - it never touches weekly_snapshot or any
-        register; the actual correction mechanism for a backdated entry
-        is separate, deferred work (design doc item 18).
+        first. Two independent actions: acknowledging (an audit note
+        only - "someone has seen this") and incorporating (the actual
+        fix - ar_mis.drift_correction). The headline count tracks
+        incorporation, not acknowledgement - acknowledging a finding
+        doesn't change the fact that Tally and this app still disagree
+        until the voucher is actually incorporated.
         """
         store = get_store()
         records = store.all_drift_findings()
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
-        outstanding_count = sum(1 for r in records if not r.acknowledged)
+        outstanding_count = sum(1 for r in records if not r.incorporated)
         return render_template(
-            "drift_findings.html", records=records, outstanding_count=outstanding_count, freshness=freshness
+            "drift_findings.html", records=records, outstanding_count=outstanding_count, freshness=freshness,
+            default_week_ending=date.today().isoformat(),
         )
 
     @app.route("/reports/drift-findings/<int:finding_id>/acknowledge", methods=["POST"])
@@ -1027,6 +1036,69 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.acknowledge_drift_finding(finding_id, acknowledged_by, datetime.now())
         store.close()
         flash("Finding acknowledged.", "success")
+        return redirect(url_for("drift_findings_report"))
+
+    @app.route("/reports/drift-findings/<int:finding_id>/incorporate", methods=["POST"])
+    @requires_role("maker")
+    def drift_finding_incorporate(finding_id):
+        """The actual correction mechanism, per ar_mis.drift_correction's
+        own docstring: replays the finding's original voucher into the
+        registers under a NEW week the Maker picks - never an edit to an
+        already-locked historical week. Requires that party's real,
+        Tally-sourced Sundry Debtors closing balance as of that date, the
+        same trust level as every other closing_extracted figure in this
+        app; a wrong figure here doesn't get silently accepted - it just
+        shows up as a fresh mismatch on the TB Cross-Check sheet.
+        """
+        store = get_store()
+        finding_record = store.get_drift_finding(finding_id)
+        if finding_record is None:
+            store.close()
+            flash("That finding no longer exists.", "error")
+            return redirect(url_for("drift_findings_report"))
+
+        incorporated_by = request.form.get("incorporated_by", "").strip()
+        raw_week_ending = request.form.get("week_ending", "")
+        raw_closing = request.form.get("party_closing_extracted", "").strip()
+
+        if not incorporated_by:
+            store.close()
+            flash("Enter your name to incorporate a finding.", "error")
+            return redirect(url_for("drift_findings_report"))
+        try:
+            week_ending = date.fromisoformat(raw_week_ending)
+        except ValueError:
+            store.close()
+            flash("Choose a valid week-ending date for the correction.", "error")
+            return redirect(url_for("drift_findings_report"))
+        try:
+            party_closing_extracted = Decimal(raw_closing)
+        except (InvalidOperation, ValueError):
+            store.close()
+            flash("Enter a valid closing balance for this party.", "error")
+            return redirect(url_for("drift_findings_report"))
+
+        branch = store.get_branch(finding_record.branch_id)
+        branch_name = branch.branch_name if branch else finding_record.branch_id
+
+        try:
+            result = incorporate_drift_finding(
+                store, finding_record.branch_id, branch_name, finding_record,
+                week_ending, party_closing_extracted, incorporated_by, datetime.now(),
+            )
+        except (DriftFindingAlreadyIncorporated, DriftFindingCorrectionWeekConflict) as exc:
+            store.close()
+            flash(str(exc), "error")
+            return redirect(url_for("drift_findings_report"))
+
+        store.close()
+        if result.outcome.failed_parties:
+            flash(
+                f"Voucher incorporated under week ending {week_ending.isoformat()}, but this party still "
+                "shows a difference - see the TB Reconciliation Cross-Check sheet.", "error",
+            )
+        else:
+            flash(f"Voucher incorporated under week ending {week_ending.isoformat()} - reconciled clean.", "success")
         return redirect(url_for("drift_findings_report"))
 
     return app
