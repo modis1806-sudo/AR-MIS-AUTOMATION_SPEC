@@ -1,12 +1,15 @@
 """Section 4.4: the output gate.
 
-By the time evaluate_output_gate() runs, a WeeklyCycleReport already
-exists - which means no branch posted a Section 4.1 reconciliation FAIL
-(that raises EscalationRequired and aborts the cycle before any report is
-built; see ar_mis.orchestration). This function catches everything else
-that Section 4 requires but a clean per-branch reconciliation pass
-doesn't by itself guarantee:
+A WeeklyCycleReport no longer halts on a Section 4.1 reconciliation FAIL
+(ar_mis.orchestration was changed this session to never discard data -
+see its own docstring) - which means this function is now the ONLY place
+that catches a reconciliation mismatch and turns it into "not clean",
+alongside everything else Section 4 requires that a clean per-branch
+reconciliation pass doesn't by itself guarantee:
 
+  - one or more parties in an otherwise-successful branch run that
+    didn't reconcile (BranchRunOutcome.failed_parties) - data was still
+    recorded, but the week is not "clean" until a human resolves it.
   - a branch that never got extracted at all after retry (Section 4.3
     final failure) - its parties are simply absent from the week's data,
     which is a gap the report must not paper over as "all good".
@@ -43,6 +46,14 @@ def evaluate_output_gate(
             f"Branch '{branch.branch_name}' failed extraction after retry and is "
             f"excluded from this week's data: {branch.detail}"
         )
+
+    for branch in cycle_report.results:
+        if branch.failed_parties:
+            reasons.append(
+                f"Branch '{branch.branch_name}': {len(branch.failed_parties)} part(y/ies) did not "
+                f"reconcile this week (data was still recorded, not discarded): "
+                + ", ".join(branch.failed_parties)
+            )
 
     for finding in drift_findings or []:
         week_desc = finding.attributed_week.isoformat() if finding.attributed_week else "an unassigned week"

@@ -52,8 +52,11 @@ def test_process_manual_upload_clean_run_writes_snapshot(store):
     assert len(rows) == 2
 
 
-def test_process_manual_upload_recon_fail_writes_nothing(store):
-    # Wrong opening balances (0.00) - will not match the TB closing.
+def test_process_manual_upload_recon_fail_still_writes_data(store):
+    # Wrong opening balances (0.00) - will not match the TB closing. Per
+    # the client's explicit instruction, this no longer withholds data:
+    # the outcome is still PASS, with the mismatched parties reported via
+    # failed_parties, and their weekly_snapshot rows are still written.
     store.upsert_customer_master(
         CustomerMasterRecord("A & B Transport Pvt Ltd", "A & B Transport Pvt Ltd", "KOL", Decimal("0.00"))
     )
@@ -68,8 +71,9 @@ def test_process_manual_upload_recon_fail_writes_nothing(store):
         weekly_voucher_xml={"Sales": sales_xml},
         trial_balance_xml=tb_xml,
     )
-    assert result.outcome.outcome == ExtractionOutcome.RECON_FAIL
-    assert store.weekly_snapshots_for_week(date(2026, 4, 7)) == []
+    assert result.outcome.outcome == ExtractionOutcome.PASS
+    assert result.outcome.failed_parties != []
+    assert len(store.weekly_snapshots_for_week(date(2026, 4, 7))) == 2
 
 
 def test_process_manual_upload_refuses_when_already_recorded(store):

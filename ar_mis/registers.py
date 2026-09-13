@@ -4,10 +4,10 @@ weekly_snapshot as the base of reporting.
 
 This module is deliberately conservative about "confirmed vs. still open"
 in that design doc: it builds exactly what's marked Confirmed, and where a
-detail is explicitly still an open item (e.g. Round Off's exact treatment,
-Ageing Bucket granularity), it makes the most defensible provisional choice
-and says so in a docstring/comment, rather than silently picking one and
-presenting it as settled.
+detail was still an open item at the time (e.g. Ageing Bucket granularity,
+Round Off's exact treatment - both since resolved), it made the most
+defensible provisional choice and said so in a docstring/comment, rather
+than silently picking one and presenting it as settled.
 """
 from __future__ import annotations
 
@@ -38,14 +38,14 @@ from ar_mis.models import (
 # ledger identification is intentionally NOT substring-based.
 _TAX_LEDGER_NAMES = {"cgst": "CGST", "sgst": "SGST", "igst": "IGST"}
 
-# Confirmed present on real invoices. Open item in the design doc: whether
-# Round Off folds into Taxable Value, into Invoice Value only (after tax),
-# or gets its own column. Provisional choice made here: folded into
-# invoice_value after tax, since Round Off is a total-level rounding
-# adjustment to the invoice's grand total, not part of the taxable base a
-# GST return would report - the choice most consistent with how Tally
-# itself displays it (as the final adjusting line before the invoice
-# total). Revisit if the client decides otherwise.
+# Confirmed present on real invoices. Client's explicit, permanent
+# decision this session (Open Item 8 resolved): Round Off folds into
+# invoice_value after tax - never into taxable_value, which must stay
+# GST-clean - AND is also kept on its own visible SalesDNRegisterRow.round_off
+# field, since it's real money that must be auditable in the TB
+# Reconciliation Cross-Check sheet's workings, not silently absorbed with
+# no trace. This is the choice most consistent with how Tally itself
+# displays it (the final adjusting line before the invoice total).
 _ROUND_OFF_LEDGER_NAME = "round off"
 
 # Confirmed against real data: "Advance" carries a real bill reference
@@ -167,6 +167,7 @@ def build_sales_dn_register_row(
         igst=igst,
         invoice_value=invoice_value,
         due_date=compute_due_date(voucher.voucher_date, customer.credit_period_days),
+        round_off=round_off,
     )
 
 

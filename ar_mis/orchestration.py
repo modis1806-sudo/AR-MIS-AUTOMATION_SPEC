@@ -1,21 +1,27 @@
 """Section 2.2: human-in-the-loop multi-branch orchestration.
 
-Two distinct failure modes get two distinct responses, per the spec:
+Technical extraction failure (Tally unreachable, malformed XML, wrong
+company loaded) - Section 4.3 / Section 8 item 2, resolved with the
+client as: skip that branch, flag it clearly, continue with the rest,
+then retry the failed branch(es) once at the end of the run (client's
+explicit follow-up instruction). Only a branch that still fails on that
+retry pass is recorded as a final FAILED branch for the week.
 
-1. Technical extraction failure (Tally unreachable, malformed XML,
-   wrong company loaded) - Section 4.3 / Section 8 item 2, resolved with
-   the client as: skip that branch, flag it clearly, continue with the
-   rest, then retry the failed branch(es) once at the end of the run
-   (client's explicit follow-up instruction). Only a branch that still
-   fails on that retry pass is recorded as a final FAILED branch for the
-   week.
-
-2. A reconciliation gate FAIL (Section 4.1) - the branch extracted fine,
-   but its data didn't tie out for one or more parties. Section 2.2 is
-   explicit here: "operator's only decision: green -> proceed, red ->
-   stop and escalate. No interpretive judgment calls." This is not a
-   skip-and-continue case - it halts the run so bad data can't roll
-   forward into other branches' consolidated view while unresolved.
+A reconciliation gate FAIL (Section 4.1) - one or more parties' data
+didn't tie out - used to be a second, distinct failure mode here: the
+original spec's explicit rule was "operator's only decision: green ->
+proceed, red -> stop and escalate," halting the entire weekly cycle so
+unresolved data couldn't roll forward. **Reversed this session, client's
+explicit instruction: data must never be discarded, and one party's
+mismatch must never block every other party in the branch (or every
+other branch in the run) from having its own good data recorded.**
+ar_mis.pipeline.process_branch_data now always writes and always returns
+PASS; a party that didn't reconcile is reported via
+BranchRunOutcome.failed_parties instead of halting anything, and
+ar_mis.gate.evaluate_output_gate is what now flags it as a reason the
+week isn't "clean" - a report is still produced, just held for manual
+sign-off, exactly like every other non-clean condition it already
+handled.
 """
 from __future__ import annotations
 
@@ -29,7 +35,6 @@ from ar_mis.tally_client import CompanyMismatchError, TallyConnectionError
 
 class ExtractionOutcome(str, Enum):
     PASS = "PASS"
-    RECON_FAIL = "RECON_FAIL"
     EXTRACTION_FAILED = "EXTRACTION_FAILED"
 
 
@@ -51,24 +56,7 @@ class BranchRunOutcome:
     """(voucher_number, reason) pairs this run's registers.py build step
     could not confidently place into a register (registers.
     RegisterBuildExceptions) - e.g. a voucher with no PARTYLEDGERNAME.
-    Populated only on a PASS outcome, since registers are only built
-    once reconciliation clears (see pipeline.process_branch_data).
     """
-
-
-class EscalationRequired(Exception):
-    """Raised to halt the weekly cycle immediately on a Section 4.1
-    reconciliation FAIL, per Section 2.2's "red -> stop and escalate."
-    Carries the offending branch's outcome so the caller can surface it
-    without re-deriving anything.
-    """
-
-    def __init__(self, outcome: BranchRunOutcome):
-        self.outcome = outcome
-        super().__init__(
-            f"Branch '{outcome.branch_name}' failed reconciliation for "
-            f"{len(outcome.failed_parties)} part(y/ies): {outcome.detail}"
-        )
 
 
 @dataclass
@@ -97,9 +85,12 @@ def run_weekly_cycle(
     control-flow logic is testable without a live Tally connection or a
     real database.
 
-    Raises EscalationRequired the instant any branch posts a
-    reconciliation FAIL - remaining branches (including anything still
-    in the retry queue) are left unprocessed, matching Section 2.2.
+    A branch whose data didn't fully reconcile no longer halts anything
+    (see this module's own docstring for the reversal) - every branch in
+    `branches` is always attempted, PASS-with-failed_parties included;
+    only a genuine technical extraction failure (Tally unreachable, wrong
+    company) that still fails after the retry pass is excluded from the
+    week's results.
     """
     results: dict[str, BranchRunOutcome] = {}
     pending = list(branches)
@@ -130,10 +121,13 @@ def run_weekly_cycle(
                 continue
 
             results[branch.branch_id] = outcome
-            if outcome.outcome == ExtractionOutcome.RECON_FAIL:
-                announce(f"[{branch.branch_name}] FAIL - {outcome.detail}")
-                raise EscalationRequired(outcome)
-            announce(f"[{branch.branch_name}] PASS")
+            if outcome.failed_parties:
+                announce(
+                    f"[{branch.branch_name}] PASS WITH EXCEPTIONS - {outcome.detail} "
+                    "(data recorded; see the TB Reconciliation Cross-Check sheet)"
+                )
+            else:
+                announce(f"[{branch.branch_name}] PASS")
 
         pending = next_retry
         attempt += 1

@@ -112,7 +112,12 @@ def test_cli_run_auto_discovers_new_party_without_pre_seeding(tmp_path, monkeypa
     assert any(r[0] == "New party this week" and "Acme" in r[1] for r in exceptions_rows[1:])
 
 
-def test_cli_run_halts_on_reconciliation_mismatch(tmp_path, monkeypatch):
+def test_cli_run_records_data_on_reconciliation_mismatch_but_marks_report_not_clean(tmp_path, monkeypatch):
+    # Reversed this session: a reconciliation mismatch no longer halts
+    # the run or withholds the report - the week's data (including
+    # Acme's, mismatch and all) is recorded, the report is still
+    # generated, and the output gate stamps it UNVALIDATED/NOT CLEAN so
+    # it's held for manual sign-off rather than auto-sent.
     monkeypatch.setattr("ar_mis.pipeline.TallyClient", FakeTallyClientMismatch)
     monkeypatch.setattr("ar_mis.cli.TallyClient", FakeTallyClientMismatch)
 
@@ -126,8 +131,13 @@ def test_cli_run_halts_on_reconciliation_mismatch(tmp_path, monkeypatch):
         week_ending, db_path=db_path, report_dir=str(report_dir), branches=[KOL],
         announce=lambda *_: None, confirm=lambda *_: "",
     )
-    # Section 2.2: a reconciliation FAIL halts the run - no report at all
-    # is produced for this attempt, pending manual investigation.
-    assert exit_code == 1
+    assert exit_code == 2
     report_path = report_dir / f"AR_MIS_{week_ending.isoformat()}.xlsx"
-    assert not report_path.exists()
+    assert report_path.exists()
+    wb = load_workbook(report_path)
+    status_row = [r for r in wb["Summary"].iter_rows(values_only=True) if r and r[0] == "Status"][0]
+    assert status_row[1] == "UNVALIDATED - RECONCILIATION FAILED"
+
+    store = Store(db_path)
+    assert len(store.weekly_snapshots_for_week(week_ending)) == 1
+    store.close()

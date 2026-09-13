@@ -289,8 +289,18 @@ class SalesDNRegisterRow:
     non-party sums into `taxable_value`, with "Round Off" (confirmed
     present on real invoices) folded into `invoice_value` after tax
     rather than into `taxable_value` - see ar_mis.registers for the exact
-    split logic and the note on this being a provisional choice pending
-    the client's confirmation (open item in the design doc).
+    split logic. Confirmed with the client this session: this is the
+    correct, permanent treatment (not provisional) - Round Off is a
+    total-level adjustment to the invoice's grand total exactly as Tally
+    itself treats it, never part of the GST-relevant Taxable Value. Kept
+    as its own visible field (`round_off`) rather than silently absorbed
+    into `invoice_value` with no trace, so the TB Reconciliation
+    Cross-Check sheet's workings are auditable line by line.
+
+    `round_off` defaults to 0.00 (not required) so every existing caller
+    that builds this row directly - test fixtures included - keeps
+    working unchanged; only code that cares about a nonzero Round Off
+    needs to pass it explicitly.
     """
 
     branch_id: str
@@ -306,6 +316,7 @@ class SalesDNRegisterRow:
     invoice_value: Decimal
     due_date: date
     job_id: str | None = None
+    round_off: Decimal = Decimal("0.00")
 
 
 @dataclass(frozen=True)

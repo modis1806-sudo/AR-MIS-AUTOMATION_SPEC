@@ -206,6 +206,115 @@ def test_test_extraction_reports_connection_failure_clearly(client, monkeypatch)
     assert b"Voucher extraction" not in resp.data
 
 
+# ---- Extract & Save (the live-Tally commit path, distinct from the ------
+# ---- diagnostic-only Test Extraction page above) -------------------------
+
+
+class FakeTallyClientForCommit:
+    """Unlike FakeTallyClientOK above (diagnostic-only, never actually
+    parsed into registers), this voucher sets party_ledger_name at the
+    VOUCHER level too - required for build_sales_dn_register_row to
+    attribute it to a customer, per Voucher.party_ledger_name's own
+    docstring.
+    """
+
+    def __init__(self, branch, timeout_seconds=15.0):
+        self.branch = branch
+
+    def confirm_current_company(self):
+        return None
+
+    def fetch_all_voucher_types(self, from_date, to_date):
+        voucher = Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 3), voucher_number="SB/1",
+            branch_id=self.branch.branch_id, party_ledger_name="Acme",
+            entries=[
+                LedgerEntry(party_ledger_name="Acme", amount_as_extracted=Decimal("-1000.00"), bill_name="SB/1", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("1000.00")),
+            ],
+        )
+        return {vt: ([voucher] if vt == VoucherType.SALES else []) for vt in VoucherType}
+
+    def fetch_ytd_sundry_debtors(self, fy_start, as_of):
+        return {"Acme": Decimal("-1000.00")}
+
+
+class FakeTallyClientMismatch(FakeTallyClientForCommit):
+    """Same voucher stream, but the YTD closing balance disagrees with
+    the roll-forward - the reconciliation-mismatch case that must now
+    still write data, just flagged as not clean.
+    """
+
+    def fetch_ytd_sundry_debtors(self, fy_start, as_of):
+        return {"Acme": Decimal("-999.00")}
+
+
+def test_extract_and_save_page_with_no_branches_prompts_to_add_one(client):
+    resp = client.get("/extract-and-save")
+    assert b"Add one in Branch Master" in resp.data
+
+
+def test_extract_and_save_writes_data_and_shows_reconciled_clean(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
+    assert resp.status_code == 200
+    assert b"RECONCILED CLEAN" in resp.data
+    assert b"No YTD drift found" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert len(store.weekly_snapshots_for_week(date(2026, 1, 5))) == 1
+    assert len(store.all_sales_dn_rows("KOL")) == 1
+    store.close()
+
+
+def test_extract_and_save_mismatch_still_writes_data(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientMismatch)
+    _add_branch(client)
+    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
+    assert b"RECONCILIATION MISMATCH" in resp.data
+    assert b"still recorded" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert len(store.weekly_snapshots_for_week(date(2026, 1, 5))) == 1
+    store.close()
+
+
+def test_extract_and_save_refuses_when_already_recorded(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
+    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
+    assert b"NOT PROCESSED" in resp.data
+    assert b"already has recorded data" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert len(store.weekly_snapshots_for_week(date(2026, 1, 5))) == 1
+    store.close()
+
+
+def test_extract_and_save_reports_connection_failure_and_writes_nothing(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientUnreachable)
+    _add_branch(client)
+    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
+    assert b"NOT PROCESSED" in resp.data
+    assert b"Could not reach Tally" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.weekly_snapshots_for_week(date(2026, 1, 5)) == []
+    store.close()
+
+
+def test_checker_cannot_reach_extract_and_save(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.get("/extract-and-save", follow_redirects=True)
+    assert b"available for your role" in resp.data
+
+
 def _seed_customer(client, party_id="P1", party_name="Acme", branch_id="KOL", pre_mis="50000.00"):
     from ar_mis.models import CustomerMasterRecord
     from ar_mis.storage import Store
@@ -364,6 +473,45 @@ def test_manual_upload_clean_run_shows_reconciled_clean(client):
     assert b"RECONCILED CLEAN" in resp.data
 
 
+def test_manual_upload_mismatch_still_writes_data_and_shows_mismatch_badge(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    _add_manual_upload_branch(client)
+    # Deliberately wrong opening balance (999999 instead of the real
+    # 300000) - reconciliation will genuinely fail for this party.
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(
+        CustomerMasterRecord("A & B Transport Pvt Ltd", "A & B Transport Pvt Ltd", "KOL", Decimal("999999.00"))
+    )
+    store.upsert_customer_master(
+        CustomerMasterRecord("Reliable Cargo Movers", "Reliable Cargo Movers", "KOL", Decimal("62500.00"))
+    )
+    store.close()
+
+    sales_xml = (MANUAL_UPLOAD_FIXTURES / "voucher_collection_sales.xml").read_bytes()
+    tb_xml = (MANUAL_UPLOAD_FIXTURES / "ledger_closing_balances.xml").read_bytes()
+
+    resp = client.post(
+        "/manual-upload",
+        data={
+            "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+            "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+            "trial_balance": (BytesIO(tb_xml), "tb.xml"),
+        },
+        content_type="multipart/form-data",
+    )
+    # Per the client's explicit instruction, this is no longer a refusal -
+    # data is recorded for BOTH parties, the mismatch is just flagged.
+    assert b"RECONCILIATION MISMATCH" in resp.data
+    assert b"RECONCILED CLEAN" not in resp.data
+    assert b"still recorded" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    assert len(store.weekly_snapshots_for_week(date(2026, 4, 7))) == 2
+    store.close()
+
+
 def test_manual_upload_refuses_when_already_recorded(client):
     _add_manual_upload_branch(client)
     _seed_manual_upload_openings(client)
@@ -492,6 +640,13 @@ def test_sales_dn_register_respects_as_of_date_query_param(client):
     resp = client.get("/registers/sales-dn?as_of=2026-04-10")
     assert resp.status_code == 200
     assert b"SB/0142" in resp.data
+
+
+def test_sales_dn_register_shows_round_off_column(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b"Round Off" in resp.data
 
 
 def test_credit_note_register_and_receipt_journal_register_render_when_empty(client):
@@ -764,3 +919,91 @@ def test_checker_does_not_see_record_form(roleless_client):
 def test_reports_home_links_to_weekly_movement(client):
     resp = client.get("/reports")
     assert b"Weekly Movement Register" in resp.data
+
+
+# ---- Reports: TB Reconciliation Cross-Check --------------------------------
+
+
+def test_tb_cross_check_renders_with_no_data(client):
+    resp = client.get("/reports/tb-cross-check")
+    assert resp.status_code == 200
+    assert b"TB Reconciliation Cross-Check" in resp.data
+    assert b"No weeks recorded yet" in resp.data
+
+
+def test_tb_cross_check_shows_clean_reconciliation(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/tb-cross-check")
+    assert resp.status_code == 200
+    assert b"A &amp; B Transport" in resp.data or b"A & B Transport" in resp.data
+    assert b"125000.00" in resp.data
+
+
+def test_tb_cross_check_shows_mismatch_and_summary_counts(client, monkeypatch):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "Acme Corp", "KOL", Decimal("0.00")))
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number="SB/0142",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-125000.00"), bill_name="SB/0142", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("125000.00")),
+        ],
+    )
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {"ACME": Decimal("124000.00")})
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check")
+    assert resp.status_code == 200
+    assert b"1000.00" in resp.data  # the difference, shown in full
+    # Two KPI tiles: 1 party currently mismatched, total difference 1000.00.
+    assert resp.data.count(b"kpi-value") >= 2
+
+
+# ---- Reports: Branch Sales + CN + DN Total ---------------------------------
+
+
+def test_branch_totals_renders_with_no_data(client):
+    resp = client.get("/reports/branch-totals")
+    assert resp.status_code == 200
+    assert b"Branch Sales + CN + DN Total" in resp.data
+    assert b"No invoices on record" in resp.data
+
+
+def test_branch_totals_shows_sales_and_all_branches_row(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/branch-totals?period_start=2026-01-01&period_end=2026-12-31")
+    assert resp.status_code == 200
+    assert b"KOL" in resp.data
+    assert b"All Branches" in resp.data
+    assert b"125000.00" in resp.data
+
+
+def test_branch_totals_period_filter_excludes_out_of_range_invoice(client):
+    _run_a_real_extraction(client)  # invoice dated 2026-04-06
+    resp = client.get("/reports/branch-totals?period_start=2026-06-01&period_end=2026-12-31")
+    assert resp.status_code == 200
+    # The branch still shows (it has activity elsewhere), but zero for
+    # this period - the April invoice must not leak into a June-onward window.
+    assert b"KOL" in resp.data
+    assert b"125000.00" not in resp.data
+
+
+def test_branch_totals_reachable_by_checker(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.get("/reports/branch-totals")
+    assert resp.status_code == 200
+
+
+def test_reports_home_links_to_branch_totals(client):
+    resp = client.get("/reports")
+    assert b"Branch Sales + CN + DN Total" in resp.data
+
+
+def test_reports_home_links_to_tb_cross_check(client):
+    resp = client.get("/reports")
+    assert b"TB Reconciliation Cross-Check" in resp.data

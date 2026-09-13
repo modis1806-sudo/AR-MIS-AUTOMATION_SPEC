@@ -29,6 +29,7 @@ def _sales_dn_row():
         voucher_number="INV/001", bill_allocation_reference="INV/001", party_id="GIRIDHAN",
         taxable_value=Decimal("394655.00"), cgst=Decimal("34822.50"), sgst=Decimal("34822.50"),
         igst=Decimal("0.00"), invoice_value=Decimal("464300.00"), due_date=date(2026, 7, 10),
+        round_off=Decimal("0.00"),
     )
 
 
@@ -55,6 +56,7 @@ def test_sales_dn_register_workbook_contains_headers_and_row_values():
     header_row = [c.value for c in ws[3]]
     assert "Voucher No." in header_row
     assert "Ageing Bucket" in header_row
+    assert "Round Off" in header_row
 
     data_row = [c.value for c in ws[4]]
     assert "INV/001" in data_row
@@ -62,6 +64,29 @@ def test_sales_dn_register_workbook_contains_headers_and_row_values():
     assert "Sundry Debtor" in data_row
     assert 264300.0 in data_row
     assert "61-90" in data_row
+
+
+def test_sales_dn_register_workbook_includes_nonzero_round_off():
+    row = SalesDNRegisterRow(
+        branch_id="MUN", invoice_date=date(2026, 6, 10), note_type=NoteType.INVOICE,
+        voucher_number="INV/002", bill_allocation_reference="INV/002", party_id="GIRIDHAN",
+        taxable_value=Decimal("1000.00"), cgst=Decimal("90.00"), sgst=Decimal("90.00"),
+        igst=Decimal("0.00"), invoice_value=Decimal("1179.00"), due_date=date(2026, 7, 10),
+        round_off=Decimal("-1.00"),
+    )
+    position = InvoicePosition(
+        row=row, linked_cn_amount=Decimal("0.00"), receipts_applied=Decimal("0.00"),
+        open_amount=Decimal("1179.00"), is_overdue=False, days_past_due=0, ageing_bucket="Current",
+    )
+    display_rows = [
+        {"row": row, "position": position, "linked_cn_no": "", "follow_up": None,
+         "ptp_status": "", "grouping": None}
+    ]
+    wb = build_sales_dn_register_workbook(display_rows, as_of=date(2026, 9, 12))
+    ws = wb.active
+    header_row = [c.value for c in ws[3]]
+    round_off_col = header_row.index("Round Off") + 1
+    assert ws.cell(row=4, column=round_off_col).value == -1.00
 
 
 def test_credit_note_register_workbook_contains_headers_and_row_values():

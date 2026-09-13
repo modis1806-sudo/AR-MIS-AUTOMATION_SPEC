@@ -173,6 +173,85 @@ def test_latest_weekly_snapshot_closing_by_party_picks_latest_week_per_party(sto
     assert result == {("P1", "KOL"): Decimal("1490.00"), ("P2", "KOL"): Decimal("2000.00")}
 
 
+def test_get_latest_closing_is_none_before_any_week(store):
+    assert store.get_latest_closing("P1", "KOL") is None
+
+
+def test_get_latest_closing_uses_closing_extracted_not_closing_computed(store):
+    # Client's explicit decision this session: next week's opening rolls
+    # forward from Tally's own stated truth (closing_extracted), not this
+    # app's own workings (closing_computed) - so an unresolved
+    # reconciliation difference doesn't silently compound week after
+    # week. This party's week didn't reconcile (computed 1500 vs
+    # extracted 1490), so the next opening must be 1490, not 1500.
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("1500.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1500.00"), closing_extracted=Decimal("1490.00"),
+            reconciled=False, difference=Decimal("10.00"),
+        )
+    )
+    assert store.get_latest_closing("P1", "KOL") == Decimal("1490.00")
+
+
+def test_get_latest_closing_uses_the_most_recent_week(store):
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 12),
+            opening=Decimal("1000.00"), sales=Decimal("500.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1500.00"), closing_extracted=Decimal("1500.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    assert store.get_latest_closing("P1", "KOL") == Decimal("1500.00")
+
+
+def test_all_weekly_snapshot_rows_is_empty_before_any_week(store):
+    assert store.all_weekly_snapshot_rows() == []
+
+
+def test_all_weekly_snapshot_rows_returns_full_history_typed(store):
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P2", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("2000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("2000.00"), closing_extracted=Decimal("2000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("990.00"),
+            reconciled=False, difference=Decimal("10.00"),
+        )
+    )
+    rows = store.all_weekly_snapshot_rows()
+    assert len(rows) == 2
+    # Ordered by party_id first, so P1 (the mismatched one) comes first.
+    assert rows[0].party_id == "P1"
+    assert rows[0].reconciled is False
+    assert rows[0].difference == Decimal("10.00")
+    assert rows[0].closing_extracted == Decimal("990.00")
+    assert rows[1].party_id == "P2"
+    assert rows[1].reconciled is True
+
+
 def test_latest_weekly_snapshot_closing_by_party_respects_as_of_cutoff(store):
     store.append_weekly_snapshot(
         WeeklySnapshotRow(

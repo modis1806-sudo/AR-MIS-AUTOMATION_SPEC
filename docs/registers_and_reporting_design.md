@@ -434,9 +434,26 @@ Ageing Bucket definition, one as-of-date mechanism. The list below is scope
   CEI, Unapplied Cash, each with a week-over-week trend indicator. This is
   the concrete, working form of the `weekly_snapshot` table referenced in
   item 1 — a derived view produced from the registers, not a second data
-  store. Whether each week's row is computed once and stored (so the trend
-  reflects a genuine historical log) or fully recomputed live every time the
-  report is opened is still an open question — see Open Items.
+  store. **Resolved this session (see Open Items): append-only stored
+  history, not live recompute.**
+- **NEW this session — TB Reconciliation Cross-Check.** The client's
+  explicit ask, directly answering "how does a Maker or Checker know the
+  data is correct at all": exposes `weekly_snapshot` itself as its own
+  visible sheet, one row per party per branch per week (full history,
+  mismatches included — see Open Items 15's never-discard reversal), showing
+  Tally's own TB/Sundry Debtors closing balance alongside this app's own
+  workings (Opening + Sales + DN − CN + Receipts + Journals) and the exact
+  difference, with a summary at the top: how many parties currently show
+  an unresolved difference (their most recently recorded week only — a
+  past mismatch since reconciled clean doesn't count) and the total
+  absolute amount.
+- **NEW this session — Branch Sales + CN + DN Total.** A simple, direct
+  per-branch turnover total (Sales + Debit Notes − Credit Notes) for a
+  chosen period, deliberately plain enough to eyeball against Tally's own
+  P&L page. Gross/GST-inclusive by necessity (Credit Note Register rows
+  carry one combined amount, never split into taxable value and tax) — a
+  gap against a tax-exclusive Tally P&L view is the GST portion, not an
+  error in this app's figures.
 
 Ageing Bucket granularity was inconsistent across the client's existing
 reports (some split 91–180 into 91-120/121-150/151-180, others use one
@@ -547,9 +564,12 @@ resolves former open item 1.
    Customer-Master-default design (item 6), or the per-bill value as an
    override when present, falling back to the Customer Master default
    otherwise? Needs the client's decision.
-8. **NEW: `Round Off` ledger handling** — confirmed present on real
-   invoices (see Findings); decide whether it folds into Taxable Value,
-   into Invoice Value only (after tax), or gets its own column.
+8. ~~`Round Off` ledger handling~~ — **resolved this session**: folds
+   into Invoice Value after tax (never into Taxable Value, which must
+   stay GST-clean), AND is kept as its own visible
+   `SalesDNRegisterRow.round_off` column on the Sales & DN Register /
+   its Excel export, so it's auditable in the TB Reconciliation
+   Cross-Check sheet's workings rather than silently absorbed.
 9. ~~Manual Upload parsing bug~~ — **resolved**: `parse_ledger_closing_balances`
    now handles both the gateway Collection shape and Tally's real Display
    Report shape (DSPACCNAME/DSPACCINFO), verified against the real
@@ -588,6 +608,50 @@ resolves former open item 1.
     **Maker/Checker**) is the permanent access-control mechanism, not a
     stopgap. See item 11 above for the full reasoning and what this
     reverses.
+15. **NEW, resolved: reconciliation mismatches never block data from being
+    written — reverses Section 4.1/2.2's original all-or-nothing halt.**
+    Client's explicit instruction: "even if reconciliation does not work,
+    the data must not be thrown away." Previously, one party's mismatch
+    rejected the ENTIRE branch's data for that week (every other party
+    included) and halted the whole weekly cycle (`EscalationRequired`,
+    now removed). Now: every party's data is written regardless of that
+    party's own reconciliation result — `ar_mis.pipeline.process_branch_data`
+    always returns PASS, reporting mismatched parties via
+    `BranchRunOutcome.failed_parties`. `ar_mis.gate.evaluate_output_gate`
+    is now the sole mechanism that turns a mismatch into "not clean" (the
+    CLI's weekly report is still stamped UNVALIDATED and held for manual
+    sign-off — that part is unchanged, only the halt is gone). A party's
+    NEXT week now rolls forward from Tally's own stated closing balance
+    (`closing_extracted`), not this app's own workings
+    (`closing_computed`) — client's explicit choice, so an unresolved gap
+    is a contained, visible flag for that one week rather than something
+    that silently compounds forward. See the new TB Reconciliation
+    Cross-Check sheet (item 15's report catalog) for where a mismatch is
+    actually surfaced to a human.
+16. **NEW, resolved: the webapp had no live-Tally commit action at all —
+    found and fixed this session.** "Test Extraction" is, and remains,
+    diagnostic-only (confirmed connectivity/counts, writes nothing); the
+    only path that ever wrote data through the browser was Manual Upload
+    (file-based). Added a genuine "Extract & Save This Week" route,
+    built the same way Manual Upload is (same `process_branch_data` call,
+    same conflict rule, same Section 4.2 YTD drift check), sourced from a
+    live Tally pull instead of an uploaded file.
+17. **NEW, resolved: the Section 4.2 YTD drift check (backdated-entry
+    detection) was missing from the live extraction path.** It was wired
+    into the CLI batch path and Manual Upload, but never into the webapp
+    - meaning the one ingestion path used day-to-day had no defense
+    against backdated/edited vouchers at all. Fixed as part of item 16's
+    new route. Drift findings are still shown once on that page's result
+    (not yet persisted for later viewing) - see Open Items.
+18. **NEW, deferred at the client's explicit request: a controlled,
+    audited correction mechanism for backdated entries and bill-
+    misallocation errors.** Once the TB Cross-Check sheet or a YTD drift
+    finding surfaces a real error, actually incorporating the fix into
+    the correct historical week ("manual access for modification," the
+    client's words) is real, new scope - effectively the "Administrator
+    override with audit trail" concept from item 11's original spec,
+    never built. Explicitly not built this session; revisit once the
+    detection/surfacing side (items 15-17) has been used for real.
 
 ## Deferred to a later version (not rejected, not in scope now)
 

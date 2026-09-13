@@ -55,11 +55,14 @@
   <div class="card">
     <h2 style="margin-top:0;">
       Result — {{ result.branch.branch_name }} ({{ result.from_date }} to {{ result.to_date }})
-      <span class="pill {{ 'ok' if result.outcome.outcome == 'PASS' else 'fail' }}">
-        {{ 'RECONCILED CLEAN' if result.outcome.outcome == 'PASS' else 'RECONCILIATION FAILED' }}
+      <span class="pill {{ 'ok' if not result.outcome.failed_parties else 'fail' }}">
+        {{ 'RECONCILED CLEAN' if not result.outcome.failed_parties else 'RECONCILIATION MISMATCH' }}
       </span>
     </h2>
     <p>{{ result.outcome.detail }}</p>
+    {% if result.outcome.failed_parties %}
+    <p style="color:#991b1b;">Data was still recorded for every party, mismatch included — see the TB Reconciliation Cross-Check sheet for the exact difference.</p>
+    {% endif %}
 
     {% if result.outcome.new_parties %}
     <p><strong>New parties this run:</strong> {{ result.outcome.new_parties | join(', ') }} (auto-created at Pre-MIS Outstanding = 0)</p>
@@ -80,7 +83,7 @@
       {% endfor %}
       </tbody>
     </table>
-    {% elif result.outcome.outcome == 'PASS' %}
+    {% else %}
     <p style="color:#166534;">No YTD drift found.</p>
     {% endif %}
   </div>

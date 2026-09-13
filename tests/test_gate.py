@@ -30,6 +30,20 @@ def test_final_failed_branch_blocks_the_gate():
     assert may_auto_send(status) is False
 
 
+def test_failed_parties_block_the_gate_even_though_branch_still_passed():
+    # Reversed this session: a reconciliation mismatch no longer halts
+    # the run (ar_mis.orchestration), so this gate is now the only place
+    # that turns it into "not clean" - the branch outcome itself is
+    # still PASS (data was recorded), but failed_parties must still show
+    # up as a reason.
+    outcome = BranchRunOutcome("KOL", "Kolkata", ExtractionOutcome.PASS, "1 of 2 reconciled", ["Acme"])
+    report = WeeklyCycleReport(results=[outcome])
+    status = evaluate_output_gate(report, drift_findings=[])
+    assert status.clean is False
+    assert any("Acme" in r for r in status.reasons)
+    assert may_auto_send(status) is False
+
+
 def test_ytd_drift_blocks_the_gate_even_if_every_branch_passed():
     report = WeeklyCycleReport(results=[_pass("KOL", "Kolkata")])
     finding = DriftFinding(

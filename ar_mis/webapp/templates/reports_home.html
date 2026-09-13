@@ -7,6 +7,18 @@
 {% include "_freshness.html" %}
 
 <div class="card">
+  <h2 style="margin-top:0;">TB Reconciliation Cross-Check</h2>
+  <p>Tally's own Trial Balance closing balance, side by side with this app's own workings, one row per party per branch per week — the answer to "how do I know this data is correct?"</p>
+  <a class="btn" href="{{ url_for('tb_cross_check_report') }}">Open TB Cross-Check</a>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Branch Sales + CN + DN Total</h2>
+  <p>A simple per-branch turnover total for a chosen period, easy to eyeball directly against Tally's own P&amp;L page.</p>
+  <a class="btn" href="{{ url_for('branch_totals_report') }}">Open Branch Totals</a>
+</div>
+
+<div class="card">
   <h2 style="margin-top:0;">AR Snapshot</h2>
   <p>Outstanding position, overdue and ageing, DSO, Collection Efficiency, PTP Kept Rate — the main dashboard.</p>
   <a class="btn" href="{{ url_for('ar_snapshot_report') }}">Open AR Snapshot</a>

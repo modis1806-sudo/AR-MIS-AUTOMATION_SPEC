@@ -67,10 +67,12 @@ def test_pass_run_uses_customer_credit_period_for_due_date(store):
     assert row.due_date == date(2026, 5, 21)  # 2026-04-06 + 45 days
 
 
-def test_recon_fail_writes_no_register_rows(store):
-    # Wrong closing balance - reconciliation must fail, and per the same
-    # "never write partial/wrong data" principle already enforced for
-    # weekly_snapshot, no register rows should be written either.
+def test_recon_fail_still_writes_register_rows_and_weekly_snapshot(store):
+    # Wrong closing balance - reconciliation fails for this party, but
+    # per the client's explicit instruction data must never be discarded:
+    # the invoice-level register rows and the weekly_snapshot row (with
+    # its real, nonzero difference) are still written, for this party AND
+    # any other party in the same branch/week.
     store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
     voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"))
 
@@ -78,8 +80,57 @@ def test_recon_fail_writes_no_register_rows(store):
         store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {"A & B Transport": Decimal("999999.00")}
     )
 
-    assert outcome.outcome == ExtractionOutcome.RECON_FAIL
-    assert store.all_sales_dn_rows("KOL") == []
+    assert outcome.outcome == ExtractionOutcome.PASS
+    assert outcome.failed_parties == ["A & B Transport"]
+    rows = store.all_sales_dn_rows("KOL")
+    assert len(rows) == 1
+    assert rows[0].voucher_number == "SB/0142"
+
+    snapshot_rows = store.weekly_snapshots_for_week(date(2026, 4, 7))
+    assert len(snapshot_rows) == 1
+    assert snapshot_rows[0]["reconciled"] == 0
+    assert Decimal(snapshot_rows[0]["difference"]) != Decimal("0.00")
+
+
+def test_recon_fail_does_not_block_other_parties_in_the_same_branch(store):
+    store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("Clean Party", "Clean Party", "KOL", Decimal("0.00")))
+    bad_voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"))
+    good_voucher = _sales_voucher("SB/0200", "Clean Party", Decimal("50000.00"))
+
+    outcome = process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [bad_voucher, good_voucher],
+        {"A & B Transport": Decimal("999999.00"), "Clean Party": Decimal("50000.00")},
+    )
+
+    assert outcome.outcome == ExtractionOutcome.PASS
+    assert outcome.failed_parties == ["A & B Transport"]
+    # Clean Party's data must be written even though A & B Transport failed.
+    voucher_numbers = {row.voucher_number for row in store.all_sales_dn_rows("KOL")}
+    assert voucher_numbers == {"SB/0142", "SB/0200"}
+
+
+def test_next_week_rolls_forward_from_tally_closing_after_a_mismatch(store):
+    # Week 1: computed 125000 (the sale) but Tally's own YTD closing says
+    # 124000 - a genuine, unresolved 1000 difference. Week 2 must open
+    # from Tally's 124000, not this app's own 125000, so the gap doesn't
+    # silently compound - see Store.get_latest_closing's docstring.
+    store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
+    week1_voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"), voucher_date=date(2026, 4, 6))
+    outcome1 = process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [week1_voucher], {"A & B Transport": Decimal("124000.00")}
+    )
+    assert outcome1.failed_parties == ["A & B Transport"]
+
+    week2_voucher = _sales_voucher("SB/0200", "A & B Transport", Decimal("10000.00"), voucher_date=date(2026, 4, 9))
+    outcome2 = process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 14), [week2_voucher], {"A & B Transport": Decimal("134000.00")}
+    )
+    # 124000 (Tally's week-1 closing) + 10000 (week-2 sale) = 134000 -
+    # reconciles clean, confirming week 2 opened from 124000, not 125000.
+    assert outcome2.failed_parties == []
+    week2_row = store.weekly_snapshots_for_week(date(2026, 4, 14))[0]
+    assert Decimal(week2_row["opening"]) == Decimal("124000.00")
 
 
 def test_credit_note_in_the_same_run_resolves_against_this_runs_own_sales_row(store):
@@ -173,7 +224,10 @@ def test_pass_run_records_extraction_timestamp_for_freshness_indicator(store):
     assert store.last_extraction_at("KOL") == datetime(2026, 4, 8, 14, 30, 0)
 
 
-def test_recon_fail_does_not_record_an_extraction_timestamp(store):
+def test_recon_fail_still_records_an_extraction_timestamp(store):
+    # The extraction genuinely happened and data was written - the
+    # freshness indicator must reflect that, even though this party
+    # didn't reconcile.
     store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
     voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"))
 
@@ -181,4 +235,4 @@ def test_recon_fail_does_not_record_an_extraction_timestamp(store):
         store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {"A & B Transport": Decimal("999999.00")},
         extracted_at=datetime(2026, 4, 8, 14, 30, 0),
     )
-    assert store.last_extraction_at("KOL") is None
+    assert store.last_extraction_at("KOL") == datetime(2026, 4, 8, 14, 30, 0)

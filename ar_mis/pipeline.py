@@ -2,8 +2,9 @@
 into the per-branch runner that ar_mis.orchestration drives.
 
 process_branch_data() is the source-agnostic core: roll-forward,
-auto-discovery of new customers, zero-tolerance reconciliation, and the
-conditional storage writes. It takes already-fetched vouchers and
+auto-discovery of new customers, zero-tolerance reconciliation (real, but
+never a reason to withhold data - see its own docstring), and storage
+writes. It takes already-fetched vouchers and
 closing balances - it doesn't know or care whether they came from a
 live Tally connection (build_branch_runner, below) or a manually
 uploaded XML file (ar_mis.manual_upload). That's deliberate: the
@@ -48,9 +49,21 @@ def process_branch_data(
     extracted_at: datetime | None = None,
 ) -> BranchRunOutcome:
     """Roll forward, auto-discover new customers, reconcile at zero
-    tolerance, and write Layer 2 + the voucher log - but ONLY if every
-    party reconciled; a branch that fails reconciliation must not have
-    partial/wrong data written into the append-only history.
+    tolerance, and write Layer 2 (weekly_snapshot), the voucher log, and
+    the invoice-level registers - for EVERY party, regardless of whether
+    that party's own reconciliation matched.
+
+    This is a deliberate reversal of this module's original all-or-
+    nothing gate: the client's explicit instruction is that data must
+    never be discarded, even when it doesn't tie out. A party's
+    weekly_snapshot row still records the real `reconciled`/`difference`
+    it computed - a mismatch is a fact to surface (see the TB
+    Reconciliation Cross-Check sheet, ar_mis.reconciliation_report),
+    never a reason to withhold that week's data for every OTHER party in
+    the branch too, which is what the old halt-the-whole-branch behavior
+    did. `BranchRunOutcome.failed_parties` still reports which parties
+    didn't reconcile this run, for anything downstream that needs to
+    flag it (ar_mis.gate.evaluate_output_gate, the webapp).
 
     `extracted_at` is the real wall-clock moment this run happened (for
     the Registers/Reports screens' freshness indicator) - defaults to
@@ -83,18 +96,7 @@ def process_branch_data(
     openings = resolve_opening_balances(store, party_names, branch_id)
     movements = aggregate_party_movements(all_vouchers, party_names, openings)
     results = reconcile_all_parties(branch_id, movements, closing_extracted)
-
     failed = [r for r in results if not r.reconciled]
-    if failed:
-        failed_names = ", ".join(r.party_ledger_name for r in failed)
-        return BranchRunOutcome(
-            branch_id=branch_id,
-            branch_name=branch_name,
-            outcome=ExtractionOutcome.RECON_FAIL,
-            detail=f"{len(failed)} part(y/ies) did not reconcile: {failed_names}",
-            failed_parties=[r.party_ledger_name for r in failed],
-            new_parties=new_parties,
-        )
 
     for result in results:
         movement = movements[result.party_ledger_name]
@@ -133,11 +135,21 @@ def process_branch_data(
     register_exceptions = _build_and_persist_registers(store, branch_id, all_vouchers)
     store.record_extraction_run(branch_id, week_ending, extracted_at or datetime.now())
 
+    if failed:
+        detail = (
+            f"{len(results) - len(failed)} of {len(results)} part(y/ies) reconciled; "
+            f"{len(failed)} did not (data recorded, not discarded): "
+            + ", ".join(r.party_ledger_name for r in failed)
+        )
+    else:
+        detail = f"{len(results)} part(y/ies) reconciled clean"
+
     return BranchRunOutcome(
         branch_id=branch_id,
         branch_name=branch_name,
         outcome=ExtractionOutcome.PASS,
-        detail=f"{len(results)} part(y/ies) reconciled clean",
+        detail=detail,
+        failed_parties=[r.party_ledger_name for r in failed],
         new_parties=new_parties,
         register_build_exceptions=register_exceptions.unattributable_party,
     )

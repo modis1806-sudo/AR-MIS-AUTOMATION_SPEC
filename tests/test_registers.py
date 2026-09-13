@@ -112,6 +112,7 @@ def test_build_sales_dn_register_row_splits_taxable_tax_and_round_off():
     assert row.sgst == Decimal("90.00")
     assert row.igst == Decimal("0.00")
     assert row.invoice_value == Decimal("1180.00")
+    assert row.round_off == Decimal("0.00")
     assert row.bill_allocation_reference == "INV001"
     assert row.due_date == date(2026, 5, 10)
     assert exceptions.unattributable_party == []
@@ -130,6 +131,7 @@ def test_build_sales_dn_register_row_round_off_can_reduce_total():
     )
     row = build_sales_dn_register_row(voucher, CUSTOMER, RegisterBuildExceptions())
     assert row.invoice_value == Decimal("1179.00")
+    assert row.round_off == Decimal("-1.00")
 
 
 def test_build_sales_dn_register_row_falls_back_to_voucher_number_when_no_bill_name():

@@ -616,18 +616,28 @@ class Store:
         self.conn.commit()
 
     def get_latest_closing(self, party_id: str, branch_id: str) -> Decimal | None:
-        """Most recent weekly_snapshot.closing_computed for this party/
+        """Most recent weekly_snapshot.closing_extracted for this party/
         branch, or None if no prior week exists yet. This - not
         pre_mis_outstanding - is the correct Opening Balance for every
         week after the first: Section 2.5 fixes the Pre-MIS Outstanding
         baseline itself against weekly recalculation, it does not mean
         every week's roll-forward re-seeds from that one figure. Week 1
         opens from Pre-MIS Outstanding; every week after opens from the
-        prior week's computed closing, exactly like a standard roll-
-        forward bridge.
+        prior week's closing, exactly like a standard roll-forward bridge.
+
+        Deliberately `closing_extracted` (Tally's own stated truth), not
+        `closing_computed` (this app's own workings) - client's explicit
+        decision: since a party is no longer blocked from having its data
+        written when it fails to reconcile (see process_branch_data), an
+        unresolved difference must not silently compound week after week
+        by rolling forward from our own possibly-wrong math. When a party
+        DID reconcile, the two figures are identical by definition, so
+        this changes nothing for the common case - it only matters for a
+        party currently showing a difference on the TB Reconciliation
+        Cross-Check sheet.
         """
         row = self.conn.execute(
-            "SELECT closing_computed FROM weekly_snapshot WHERE party_id=? AND branch_id=?"
+            "SELECT closing_extracted FROM weekly_snapshot WHERE party_id=? AND branch_id=?"
             " ORDER BY week_ending DESC LIMIT 1",
             (party_id, branch_id),
         ).fetchone()
@@ -679,6 +689,37 @@ class Store:
     def append_weekly_snapshots(self, rows: Iterable[WeeklySnapshotRow]) -> None:
         for row in rows:
             self.append_weekly_snapshot(row)
+
+    def all_weekly_snapshot_rows(self) -> list[WeeklySnapshotRow]:
+        """Every weekly_snapshot row ever recorded, fully typed - the TB
+        Reconciliation Cross-Check sheet's own data source (design doc
+        item 15, the user's explicit ask this session), one row per party
+        per branch per week. Ordered by party then branch then week, so
+        one party's own history reads as a contiguous run rather than
+        interleaved with every other party's.
+        """
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute(
+            "SELECT * FROM weekly_snapshot ORDER BY party_id ASC, branch_id ASC, week_ending ASC"
+        )
+        return [
+            WeeklySnapshotRow(
+                party_id=r["party_id"],
+                branch_id=r["branch_id"],
+                week_ending=date.fromisoformat(r["week_ending"]),
+                opening=Decimal(r["opening"]),
+                sales=Decimal(r["sales"]),
+                credit_notes=Decimal(r["credit_notes"]),
+                debit_notes=Decimal(r["debit_notes"]),
+                receipts=Decimal(r["receipts"]),
+                journals=Decimal(r["journals"]),
+                closing_computed=Decimal(r["closing_computed"]),
+                closing_extracted=Decimal(r["closing_extracted"]),
+                reconciled=bool(r["reconciled"]),
+                difference=Decimal(r["difference"]),
+            )
+            for r in cur.fetchall()
+        ]
 
     def has_weekly_snapshot_for_branch_week(self, branch_id: str, week_ending: date) -> bool:
         """True if this branch/week already has any recorded data, from

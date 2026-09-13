@@ -32,7 +32,7 @@ def _autosize(ws: Worksheet) -> None:
 
 _SALES_DN_HEADERS = [
     "Branch", "Date", "Type", "Voucher No.", "Bill Allocation Reference", "Job ID", "Customer",
-    "Grouping", "Taxable Value", "CGST", "SGST", "IGST", "Invoice Value", "Due Date",
+    "Grouping", "Taxable Value", "CGST", "SGST", "IGST", "Round Off", "Invoice Value", "Due Date",
     "Linked CN No.", "Linked CN Amount", "Net Receivable", "Receipts Applied", "Open Amount",
     "Overdue", "DPD", "Ageing Bucket", "PTP Date", "PTP Amount", "PTP Status", "Next Action",
     "Expected Collection Date",
@@ -55,7 +55,7 @@ def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workboo
                 row.branch_id, row.invoice_date, row.note_type.value, row.voucher_number,
                 row.bill_allocation_reference, row.job_id or "", row.party_id, d["grouping"] or "",
                 float(row.taxable_value), float(row.cgst), float(row.sgst), float(row.igst),
-                float(row.invoice_value), row.due_date, d["linked_cn_no"] or "",
+                float(row.round_off), float(row.invoice_value), row.due_date, d["linked_cn_no"] or "",
                 float(pos.linked_cn_amount), float(row.invoice_value - pos.linked_cn_amount),
                 float(pos.receipts_applied), float(pos.open_amount), "Yes" if pos.is_overdue else "No",
                 pos.days_past_due, pos.ageing_bucket,

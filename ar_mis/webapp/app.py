@@ -28,6 +28,7 @@ from io import BytesIO
 from flask import Flask, flash, redirect, render_template, request, send_file, session, url_for
 
 from ar_mis.ageing_matrix import compute_ageing_matrix
+from ar_mis.branch_totals import compute_branch_sales_cn_dn_totals
 from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.dashboard import compute_ar_snapshot, compute_branch_ageing_schedule
 from ar_mis.exception_register import (
@@ -40,6 +41,9 @@ from ar_mis.exception_register import (
 )
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
 from ar_mis.models import RegisterClassification
+from ar_mis.pipeline import process_branch_data
+from ar_mis.reconciliation import isolate_drift
+from ar_mis.reconciliation_report import compute_tb_cross_check_summary
 from ar_mis.register_export import (
     build_credit_note_register_workbook,
     build_receipt_journal_register_workbook,
@@ -54,6 +58,7 @@ from ar_mis.registers import (
     compute_receipt_journal_display_fields,
     financial_year_label,
 )
+from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
 from ar_mis.tally_client import CompanyMismatchError, TallyClient, TallyConnectionError
 from ar_mis.weekly_movement import attach_trends, build_weekly_movement_row
@@ -313,6 +318,123 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "test_extraction.html", branches=branches, result=result,
             default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+        )
+
+    @app.route("/extract-and-save", methods=["GET", "POST"])
+    @requires_role("maker")
+    def extract_and_save():
+        """The genuine live-Tally commit action, missing from this webapp
+        until now - Test Extraction (above) is diagnostic-only and writes
+        nothing; Manual Upload writes data but only from uploaded files.
+        This is the same write path Manual Upload uses
+        (process_branch_data), sourced from a live Tally pull instead,
+        mirroring exactly what ar_mis.pipeline.build_branch_runner (the
+        CLI's own live path) does - including the Section 4.2 YTD full-
+        pull drift check, so a backdated entry is caught here too, not
+        only when running via Manual Upload or the CLI.
+
+        Refuses outright if this branch/week already has recorded data,
+        the same conflict rule Manual Upload enforces - first one in
+        wins, no silent overwrite. `week_ending` is a single date (not a
+        from/to range like the diagnostic Test Extraction page): the
+        7-day window and the Sundry Debtors YTD cutoff are both derived
+        from it, matching the CLI's own weekly cadence, since this data
+        becomes a real weekly_snapshot row, not just a diagnostic count.
+        """
+        store = get_store()
+        branches = store.list_branches()
+        default_week_ending = date.today()
+        result = None
+
+        if request.method == "POST":
+            branch_id = request.form.get("branch_id", "")
+            branch = store.get_branch(branch_id)
+            if branch is None:
+                flash("Select a branch first.", "error")
+                store.close()
+                return render_template(
+                    "extract_and_save.html", branches=branches, result=None,
+                    default_week_ending=default_week_ending.isoformat(),
+                )
+
+            try:
+                week_ending = date.fromisoformat(request.form["week_ending"])
+            except (KeyError, ValueError):
+                flash("Enter a valid week-ending date.", "error")
+                store.close()
+                return render_template(
+                    "extract_and_save.html", branches=branches, result=None,
+                    default_week_ending=default_week_ending.isoformat(),
+                )
+            default_week_ending = week_ending
+
+            if store.has_weekly_snapshot_for_branch_week(branch_id, week_ending):
+                result = {
+                    "branch": branch, "week_ending": week_ending.isoformat(),
+                    "refused": True,
+                    "detail": (
+                        f"Branch '{branch.branch_name}' already has recorded data for the week "
+                        f"ending {week_ending.isoformat()}. Refusing to overwrite - a genuine "
+                        "correction needs a deliberate, separate action."
+                    ),
+                }
+                store.close()
+                return render_template(
+                    "extract_and_save.html", branches=branches, result=result,
+                    default_week_ending=default_week_ending.isoformat(),
+                )
+
+            from_date = week_ending - timedelta(days=6)
+            fy_start = financial_year_start(week_ending)
+            client = TallyClient(branch=branch)
+
+            try:
+                client.confirm_current_company()
+                vouchers_by_type = client.fetch_all_voucher_types(from_date, week_ending)
+                all_vouchers = [v for vs in vouchers_by_type.values() for v in vs]
+                closing_extracted = {
+                    name: flip_sign(balance)
+                    for name, balance in client.fetch_ytd_sundry_debtors(fy_start, week_ending).items()
+                }
+            except (CompanyMismatchError, TallyConnectionError) as exc:
+                result = {
+                    "branch": branch, "week_ending": week_ending.isoformat(),
+                    "refused": True, "detail": f"Extraction failed: {exc}",
+                }
+                store.close()
+                return render_template(
+                    "extract_and_save.html", branches=branches, result=result,
+                    default_week_ending=default_week_ending.isoformat(),
+                )
+
+            outcome = process_branch_data(
+                store, branch.branch_id, branch.branch_name, week_ending, all_vouchers, closing_extracted
+            )
+
+            # Section 4.2: a separate full YTD pull, diffed against
+            # everything ever logged, to catch backdated entries an
+            # incremental weekly pull structurally cannot see.
+            drift_findings = []
+            try:
+                ytd_vouchers_by_type = client.fetch_all_voucher_types(fy_start, week_ending)
+                ytd_vouchers = [v for vs in ytd_vouchers_by_type.values() for v in vs]
+                party_names = set(closing_extracted)
+                logged_keys = {p: store.logged_voucher_keys(branch.branch_id, p) for p in party_names}
+                week_boundaries = store.all_week_endings()
+                drift_findings = isolate_drift(branch.branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
+            except TallyConnectionError as exc:
+                flash(f"Data was saved, but the YTD drift check could not run: {exc}", "error")
+
+            result = {
+                "branch": branch, "week_ending": week_ending.isoformat(),
+                "refused": False, "outcome": outcome, "drift_findings": drift_findings,
+                "fy_start": fy_start.isoformat(),
+            }
+
+        store.close()
+        return render_template(
+            "extract_and_save.html", branches=branches, result=result,
+            default_week_ending=default_week_ending.isoformat(),
         )
 
     @app.route("/discover", methods=["GET", "POST"])
@@ -817,6 +939,59 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         flash(f"Recorded the position as of {week_ending.isoformat()}.", "success")
         return redirect(url_for("weekly_movement_report"))
+
+    @app.route("/reports/tb-cross-check")
+    def tb_cross_check_report():
+        """The client's explicit ask this session: the Trial Balance /
+        Sundry Debtors closing balance this app already extracts from
+        Tally, kept visible in its own sheet - one row per party per
+        branch per week - alongside this app's own workings and the
+        difference between the two, so a Maker or Checker can always see
+        for themselves whether the data is valid, not just trust that it
+        is. Every row already exists in weekly_snapshot (data is never
+        discarded, reconciled or not - see ar_mis.pipeline); this report
+        does no independent computation, only the summary rollup.
+        """
+        store = get_store()
+        rows = store.all_weekly_snapshot_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        summary = compute_tb_cross_check_summary(rows)
+        return render_template(
+            "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness
+        )
+
+    @app.route("/reports/branch-totals")
+    def branch_totals_report():
+        """The client's other explicit ask this session: a plain sum of
+        Sales + Debit Notes - Credit Notes per branch for a chosen
+        period, simple enough to eyeball directly against Tally's own
+        P&L page - see ar_mis.branch_totals for why this is a gross
+        (GST-inclusive) figure, not tax-exclusive turnover.
+        """
+        today = date.today()
+        default_start = financial_year_start(today)
+        try:
+            period_start = date.fromisoformat(request.args.get("period_start", "")) if request.args.get("period_start") else default_start
+        except ValueError:
+            period_start = default_start
+        try:
+            period_end = date.fromisoformat(request.args.get("period_end", "")) if request.args.get("period_end") else today
+        except ValueError:
+            period_end = today
+
+        store = get_store()
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        rows = compute_branch_sales_cn_dn_totals(sales_dn_rows, cn_rows, period_start, period_end)
+        return render_template(
+            "branch_totals.html", rows=rows, freshness=freshness,
+            period_start=period_start.isoformat(), period_end=period_end.isoformat(),
+        )
 
     return app
 

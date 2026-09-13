@@ -22,7 +22,7 @@
     <tr>
       <th>Branch</th><th>Date</th><th>Type</th><th>Voucher No.</th><th>Bill Ref.</th><th>Job ID</th>
       <th>Customer</th><th>Grouping</th><th>Taxable Value</th><th>CGST</th><th>SGST</th><th>IGST</th>
-      <th>Invoice Value</th><th>Due Date</th><th>Linked CN No.</th><th>Linked CN Amt</th>
+      <th>Round Off</th><th>Invoice Value</th><th>Due Date</th><th>Linked CN No.</th><th>Linked CN Amt</th>
       <th>Net Receivable</th><th>Receipts Applied</th><th>Open Amount</th><th>Overdue</th><th>DPD</th>
       <th>Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th>PTP Status</th><th>Next Action</th>
       <th>Expected Collection</th>
@@ -46,6 +46,7 @@
       <td>{{ row.cgst }}</td>
       <td>{{ row.sgst }}</td>
       <td>{{ row.igst }}</td>
+      <td>{{ row.round_off }}</td>
       <td>{{ row.invoice_value }}</td>
       <td>{{ row.due_date }}</td>
       <td>{{ d.linked_cn_no or '—' }}</td>

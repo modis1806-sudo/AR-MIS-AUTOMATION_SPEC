@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}TB Reconciliation Cross-Check{% endblock %}
+{% block content %}
+<h1>TB Reconciliation Cross-Check</h1>
+<p class="subtitle">The Trial Balance / Sundry Debtors closing balance pulled straight from Tally, alongside this app's own workings (Opening + Sales + DN − CN + Receipts + Journals) and the exact difference — one row per party per branch per week, kept forever, mismatches included. Nothing here is ever discarded or overwritten.</p>
+
+{% include "_freshness.html" %}
+
+<div class="kpi-grid" style="margin-bottom:20px;">
+  <div class="kpi-tile">
+    <div class="kpi-label">Parties currently showing a difference</div>
+    <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.parties_with_current_difference else 'color:#166534;' }}">{{ summary.parties_with_current_difference }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Total absolute difference (current)</div>
+    <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.total_current_absolute_difference else 'color:#166534;' }}">{{ "%.2f"|format(summary.total_current_absolute_difference) }}</div>
+  </div>
+</div>
+<p class="subtitle" style="margin-top:-12px;">"Currently" means each party's most recently recorded week only — a past mismatch that has since reconciled clean is not counted here, though it stays visible in the full history below.</p>
+
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Party</th><th>Branch</th><th>Week Ending</th><th>Opening</th><th>Sales</th>
+      <th>Credit Notes</th><th>Debit Notes</th><th>Receipts</th><th>Journals</th>
+      <th>Closing (Workings)</th><th>Closing (TB/Tally)</th><th>Difference</th><th>Reconciled</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr {% if not row.reconciled %}style="background:#fef2f2;"{% endif %}>
+      <td>{{ row.party_id }}</td>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.week_ending }}</td>
+      <td>{{ "%.2f"|format(row.opening) }}</td>
+      <td>{{ "%.2f"|format(row.sales) }}</td>
+      <td>{{ "%.2f"|format(row.credit_notes) }}</td>
+      <td>{{ "%.2f"|format(row.debit_notes) }}</td>
+      <td>{{ "%.2f"|format(row.receipts) }}</td>
+      <td>{{ "%.2f"|format(row.journals) }}</td>
+      <td>{{ "%.2f"|format(row.closing_computed) }}</td>
+      <td>{{ "%.2f"|format(row.closing_extracted) }}</td>
+      <td {% if row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>{{ "%.2f"|format(row.difference) }}</td>
+      <td>{% if row.reconciled %}<span class="pill ok">Yes</span>{% else %}<span class="pill fail">No</span>{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="13" class="empty">No weeks recorded yet — run an extraction first.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

@@ -17,7 +17,7 @@ from datetime import date, timedelta
 
 from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.gate import evaluate_output_gate
-from ar_mis.orchestration import EscalationRequired, run_weekly_cycle
+from ar_mis.orchestration import run_weekly_cycle
 from ar_mis.pipeline import build_branch_runner
 from ar_mis.reconciliation import isolate_drift
 from ar_mis.reporting import generate_report
@@ -44,12 +44,7 @@ def run(
             print("No branches configured. Add at least one in Branch Master before running.")
             return 1
         run_branch = build_branch_runner(store, week_ending, from_date, week_ending)
-        try:
-            cycle_report = run_weekly_cycle(branches, run_branch, announce=announce, confirm=confirm)
-        except EscalationRequired as exc:
-            print(f"HALTED: {exc}")
-            print("Resolve the reconciliation failure before re-running this week's cycle.")
-            return 1
+        cycle_report = run_weekly_cycle(branches, run_branch, announce=announce, confirm=confirm)
 
         # Section 4.2: a separate full YTD pull per branch that completed
         # this cycle, diffed against everything ever logged, to catch
