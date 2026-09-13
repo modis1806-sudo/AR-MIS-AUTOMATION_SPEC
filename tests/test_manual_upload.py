@@ -136,6 +136,14 @@ def test_process_manual_upload_runs_drift_check_when_ytd_file_given(store):
     assert len(result.drift_findings) == 1
     assert result.drift_findings[0].voucher_number == "SB/0099-BACKDATED"
 
+    # Found and fixed this session: the finding must be persisted, not
+    # just shown once on this call's own return value.
+    persisted = store.all_drift_findings()
+    assert len(persisted) == 1
+    assert persisted[0].finding.voucher_number == "SB/0099-BACKDATED"
+    assert persisted[0].branch_id == "KOL"
+    assert persisted[0].acknowledged is False
+
 
 def test_process_manual_upload_skips_drift_check_when_ytd_file_omitted(store):
     _seed_matching_openings(store)

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Drift Findings{% endblock %}
+{% block content %}
+<h1>Backdated Entry Findings</h1>
+<p class="subtitle">A voucher found in a fresh, full financial-year Tally pull that no prior weekly extraction ever captured — the sign of a backdated or edited entry. Every finding is kept here permanently, most recent first, until a Maker explicitly acknowledges it. Acknowledging is a note that someone has seen it — it does not change any figure or fix the underlying entry.</p>
+
+{% include "_freshness.html" %}
+
+<div class="kpi-grid" style="margin-bottom:20px;">
+  <div class="kpi-tile">
+    <div class="kpi-label">Outstanding findings</div>
+    <div class="kpi-value" style="{{ 'color:#b91c1c;' if outstanding_count else 'color:#166534;' }}">{{ outstanding_count }}</div>
+  </div>
+</div>
+
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Branch</th><th>Party</th><th>Voucher</th><th>Date</th><th>Amount</th>
+      <th>Attributed Week</th><th>Discovered</th><th>Status</th>
+      {% if session.role == "maker" %}<th>Acknowledge</th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in records %}
+    <tr {% if not r.acknowledged %}style="background:#fef2f2;"{% endif %}>
+      <td>{{ r.branch_id }}</td>
+      <td>{{ r.finding.party_ledger_name }}</td>
+      <td>{{ r.finding.voucher_type }} {{ r.finding.voucher_number }}</td>
+      <td>{{ r.finding.voucher_date }}</td>
+      <td>{{ "%.2f"|format(r.finding.flipped_amount) }}</td>
+      <td>{{ r.finding.attributed_week or 'unassigned' }}</td>
+      <td>{{ r.discovered_at.strftime('%d %b %Y, %I:%M %p') }}</td>
+      <td>
+        {% if r.acknowledged %}
+          <span class="pill ok">Acknowledged</span>
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">by {{ r.acknowledged_by }} on {{ r.acknowledged_at.strftime('%d %b %Y') }}</div>
+        {% else %}
+          <span class="pill fail">Outstanding</span>
+        {% endif %}
+      </td>
+      {% if session.role == "maker" %}
+      <td>
+        {% if not r.acknowledged %}
+        <form method="post" action="{{ url_for('drift_finding_acknowledge', finding_id=r.id) }}" style="display:flex; gap:6px;">
+          <input name="acknowledged_by" placeholder="Your name" style="width:120px; padding:6px 8px;" required>
+          <button class="btn" type="submit" style="padding:6px 12px; font-size:13px;">Acknowledge</button>
+        </form>
+        {% endif %}
+      </td>
+      {% endif %}
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="empty">No backdated entries found yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

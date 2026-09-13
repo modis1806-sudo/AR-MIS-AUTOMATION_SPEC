@@ -22,6 +22,7 @@ from ar_mis.models import (
     WeeklyMovementRow,
     WeeklySnapshotRow,
 )
+from ar_mis.reconciliation import DriftFinding
 from ar_mis.storage import SCHEMA_VERSION, Store
 
 
@@ -403,6 +404,80 @@ def test_all_weekly_movement_rows_ordered_oldest_first(store):
     store.record_weekly_movement(_weekly_movement_row(date(2026, 9, 12), total_ar=Decimal("100000.00")))
     rows = store.all_weekly_movement_rows()
     assert [r.week_ending for r in rows] == [date(2026, 9, 12), date(2026, 9, 19)]
+
+
+def _drift_finding(voucher_number="SB/999", party="Acme", amount=Decimal("13000.00"), voucher_date=date(2026, 1, 4)):
+    return DriftFinding(
+        party_ledger_name=party, voucher_type="Sales", voucher_number=voucher_number,
+        voucher_date=voucher_date, flipped_amount=amount, attributed_week=date(2026, 1, 5),
+    )
+
+
+def test_record_drift_findings_then_read_back(store):
+    finding = _drift_finding()
+    new_count = store.record_drift_findings("KOL", [finding], datetime(2026, 1, 6, 9, 0))
+    assert new_count == 1
+
+    records = store.all_drift_findings()
+    assert len(records) == 1
+    r = records[0]
+    assert r.branch_id == "KOL"
+    assert r.finding.voucher_number == "SB/999"
+    assert r.finding.party_ledger_name == "Acme"
+    assert r.finding.flipped_amount == Decimal("13000.00")
+    assert r.finding.attributed_week == date(2026, 1, 5)
+    assert r.discovered_at == datetime(2026, 1, 6, 9, 0)
+    assert r.acknowledged is False
+    assert r.acknowledged_by is None
+    assert r.acknowledged_at is None
+
+
+def test_record_drift_findings_ignores_an_already_recorded_finding(store):
+    finding = _drift_finding()
+    first_count = store.record_drift_findings("KOL", [finding], datetime(2026, 1, 6, 9, 0))
+    # Same still-unresolved finding re-detected on a later extraction -
+    # must not spawn a second row.
+    second_count = store.record_drift_findings("KOL", [finding], datetime(2026, 1, 13, 9, 0))
+    assert first_count == 1
+    assert second_count == 0
+    assert len(store.all_drift_findings()) == 1
+    # The original discovery time is preserved, not overwritten.
+    assert store.all_drift_findings()[0].discovered_at == datetime(2026, 1, 6, 9, 0)
+
+
+def test_record_drift_findings_distinguishes_different_findings(store):
+    f1 = _drift_finding(voucher_number="SB/001")
+    f2 = _drift_finding(voucher_number="SB/002")
+    count = store.record_drift_findings("KOL", [f1, f2], datetime(2026, 1, 6, 9, 0))
+    assert count == 2
+    assert len(store.all_drift_findings()) == 2
+
+
+def test_record_drift_findings_same_voucher_different_branch_is_distinct(store):
+    finding = _drift_finding()
+    store.record_drift_findings("KOL", [finding], datetime(2026, 1, 6, 9, 0))
+    count = store.record_drift_findings("MUM", [finding], datetime(2026, 1, 6, 9, 0))
+    assert count == 1
+    assert len(store.all_drift_findings()) == 2
+
+
+def test_all_drift_findings_orders_most_recent_first(store):
+    store.record_drift_findings("KOL", [_drift_finding(voucher_number="SB/001")], datetime(2026, 1, 6, 9, 0))
+    store.record_drift_findings("KOL", [_drift_finding(voucher_number="SB/002")], datetime(2026, 1, 13, 9, 0))
+    records = store.all_drift_findings()
+    assert [r.finding.voucher_number for r in records] == ["SB/002", "SB/001"]
+
+
+def test_acknowledge_drift_finding(store):
+    store.record_drift_findings("KOL", [_drift_finding()], datetime(2026, 1, 6, 9, 0))
+    finding_id = store.all_drift_findings()[0].id
+
+    store.acknowledge_drift_finding(finding_id, "AR Manager - Kolkata", datetime(2026, 1, 7, 10, 0))
+
+    record = store.all_drift_findings()[0]
+    assert record.acknowledged is True
+    assert record.acknowledged_by == "AR Manager - Kolkata"
+    assert record.acknowledged_at == datetime(2026, 1, 7, 10, 0)
 
 
 def test_ptp_status_log_tracks_latest_status_per_week(store):

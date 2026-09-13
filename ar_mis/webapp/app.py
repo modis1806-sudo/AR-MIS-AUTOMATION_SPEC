@@ -422,6 +422,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 logged_keys = {p: store.logged_voucher_keys(branch.branch_id, p) for p in party_names}
                 week_boundaries = store.all_week_endings()
                 drift_findings = isolate_drift(branch.branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
+                store.record_drift_findings(branch.branch_id, drift_findings, datetime.now())
             except TallyConnectionError as exc:
                 flash(f"Data was saved, but the YTD drift check could not run: {exc}", "error")
 
@@ -992,6 +993,41 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "branch_totals.html", rows=rows, freshness=freshness,
             period_start=period_start.isoformat(), period_end=period_end.isoformat(),
         )
+
+    @app.route("/reports/drift-findings")
+    def drift_findings_report():
+        """Section 4.2's backdated-entry findings, found and fixed this
+        session so they no longer vanish once the run that found them is
+        over: every finding ever discovered (across Extract & Save,
+        Manual Upload, and the CLI alike) is listed here, most recent
+        first, until a Maker explicitly acknowledges it. Acknowledging is
+        an audit note only - it never touches weekly_snapshot or any
+        register; the actual correction mechanism for a backdated entry
+        is separate, deferred work (design doc item 18).
+        """
+        store = get_store()
+        records = store.all_drift_findings()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        outstanding_count = sum(1 for r in records if not r.acknowledged)
+        return render_template(
+            "drift_findings.html", records=records, outstanding_count=outstanding_count, freshness=freshness
+        )
+
+    @app.route("/reports/drift-findings/<int:finding_id>/acknowledge", methods=["POST"])
+    @requires_role("maker")
+    def drift_finding_acknowledge(finding_id):
+        acknowledged_by = request.form.get("acknowledged_by", "").strip()
+        if not acknowledged_by:
+            flash("Enter your name to acknowledge a finding.", "error")
+            return redirect(url_for("drift_findings_report"))
+
+        store = get_store()
+        store.acknowledge_drift_finding(finding_id, acknowledged_by, datetime.now())
+        store.close()
+        flash("Finding acknowledged.", "success")
+        return redirect(url_for("drift_findings_report"))
 
     return app
 

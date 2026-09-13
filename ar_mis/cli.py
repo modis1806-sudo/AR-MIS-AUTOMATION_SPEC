@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.gate import evaluate_output_gate
@@ -61,9 +61,9 @@ def run(
             party_names = set(closing_extracted)
             logged_keys = {p: store.logged_voucher_keys(branch.branch_id, p) for p in party_names}
             week_boundaries = store.all_week_endings()
-            drift_findings.extend(
-                isolate_drift(branch.branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
-            )
+            branch_findings = isolate_drift(branch.branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
+            store.record_drift_findings(branch.branch_id, branch_findings, datetime.now())
+            drift_findings.extend(branch_findings)
 
         gate_status = evaluate_output_gate(cycle_report, drift_findings)
         new_parties = [

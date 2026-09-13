@@ -1007,3 +1007,85 @@ def test_reports_home_links_to_branch_totals(client):
 def test_reports_home_links_to_tb_cross_check(client):
     resp = client.get("/reports")
     assert b"TB Reconciliation Cross-Check" in resp.data
+
+
+# ---- Reports: Backdated Entry (Drift) Findings -----------------------------
+
+
+def _seed_drift_finding(client, voucher_number="SB/0099-BACKDATED"):
+    from datetime import datetime
+
+    from ar_mis.reconciliation import DriftFinding
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    finding = DriftFinding(
+        party_ledger_name="ACME", voucher_type="Sales", voucher_number=voucher_number,
+        voucher_date=date(2026, 3, 1), flipped_amount=Decimal("50000.00"), attributed_week=date(2026, 3, 8),
+    )
+    store.record_drift_findings("KOL", [finding], datetime(2026, 9, 1, 10, 0))
+    store.close()
+
+
+def test_drift_findings_renders_with_no_data(client):
+    resp = client.get("/reports/drift-findings")
+    assert resp.status_code == 200
+    assert b"Backdated Entry Findings" in resp.data
+    assert b"No backdated entries found yet" in resp.data
+
+
+def test_drift_findings_shows_outstanding_finding_and_count(client):
+    _seed_drift_finding(client)
+    resp = client.get("/reports/drift-findings")
+    assert resp.status_code == 200
+    assert b"SB/0099-BACKDATED" in resp.data
+    assert b"Outstanding" in resp.data
+    assert b"50000.00" in resp.data
+
+
+def test_maker_can_acknowledge_a_finding(client):
+    _seed_drift_finding(client)
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    finding_id = store.all_drift_findings()[0].id
+    store.close()
+
+    resp = client.post(
+        f"/reports/drift-findings/{finding_id}/acknowledge",
+        data={"acknowledged_by": "AR Manager"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Acknowledged" in resp.data
+    assert b"AR Manager" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    record = store.all_drift_findings()[0]
+    assert record.acknowledged is True
+    assert record.acknowledged_by == "AR Manager"
+    store.close()
+
+
+def test_checker_can_view_but_not_acknowledge_drift_findings(roleless_client):
+    _seed_drift_finding(roleless_client)
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.get("/reports/drift-findings")
+    assert resp.status_code == 200
+    assert b"Acknowledge" not in resp.data  # no button/form for a Checker
+
+    from ar_mis.storage import Store
+    store = Store(roleless_client.application.config["DB_PATH"])
+    finding_id = store.all_drift_findings()[0].id
+    store.close()
+
+    resp = roleless_client.post(
+        f"/reports/drift-findings/{finding_id}/acknowledge",
+        data={"acknowledged_by": "Someone"},
+        follow_redirects=True,
+    )
+    assert b"available for your role" in resp.data
+
+
+def test_reports_home_links_to_drift_findings(client):
+    resp = client.get("/reports")
+    assert b"Backdated Entry Findings" in resp.data

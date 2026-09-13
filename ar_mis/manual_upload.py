@@ -33,10 +33,10 @@ equivalent "just overwrite it" path for weekly figures by design).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 from ar_mis.models import Voucher
-from ar_mis.orchestration import BranchRunOutcome, ExtractionOutcome
+from ar_mis.orchestration import BranchRunOutcome
 from ar_mis.parsers import parse_ledger_closing_balances, parse_voucher_collection
 from ar_mis.pipeline import process_branch_data
 from ar_mis.reconciliation import DriftFinding, isolate_drift
@@ -90,12 +90,16 @@ def process_manual_upload(
 
     outcome = process_branch_data(store, branch_id, branch_name, to_date, all_vouchers, closing_extracted)
 
+    # data is now always written (see process_branch_data's own docstring
+    # for this session's never-discard reversal), so this only needs to
+    # gate on whether a YTD file was actually supplied.
     drift_findings: list[DriftFinding] = []
-    if outcome.outcome == ExtractionOutcome.PASS and ytd_voucher_xml.strip():
+    if ytd_voucher_xml.strip():
         ytd_vouchers = parse_voucher_collection(ytd_voucher_xml, branch_id)
         party_names = set(closing_extracted)
         logged_keys = {party: store.logged_voucher_keys(branch_id, party) for party in party_names}
         week_boundaries = store.all_week_endings()
         drift_findings = isolate_drift(branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
+        store.record_drift_findings(branch_id, drift_findings, datetime.now())
 
     return ManualUploadResult(outcome=outcome, drift_findings=drift_findings)

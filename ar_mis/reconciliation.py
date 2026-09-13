@@ -12,7 +12,7 @@ in a way that could pass while a party-level check fails.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from ar_mis.models import Voucher
@@ -117,6 +117,32 @@ class DriftFinding:
     voucher_date: date
     flipped_amount: Decimal
     attributed_week: date | None
+
+
+@dataclass(frozen=True)
+class DriftFindingRecord:
+    """A DriftFinding as persisted (Store.record_drift_findings) - found
+    and fixed this session: previously a finding was only ever shown once,
+    on the result page of the run that found it, then gone. `id` is the
+    drift_finding table's own row id, needed to acknowledge a specific
+    finding later. `discovered_at` is the real wall-clock moment this
+    finding was FIRST detected - a still-unresolved backdated voucher
+    re-appears in isolate_drift's output on every subsequent extraction
+    (nothing here retroactively "fixes" it - see design doc item 18,
+    deliberately deferred), so Store.record_drift_findings only inserts a
+    genuinely new finding once and leaves an already-recorded one alone,
+    rather than spawning a fresh row every week it stays unresolved.
+    `acknowledged` is a human saying "I've seen this" - an audit note
+    only, it never touches weekly_snapshot or any register.
+    """
+
+    id: int
+    branch_id: str
+    finding: DriftFinding
+    discovered_at: datetime
+    acknowledged: bool
+    acknowledged_by: str | None
+    acknowledged_at: datetime | None
 
 
 def ytd_cross_check_party(

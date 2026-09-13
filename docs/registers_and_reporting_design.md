@@ -641,8 +641,7 @@ resolves former open item 1.
     into the CLI batch path and Manual Upload, but never into the webapp
     - meaning the one ingestion path used day-to-day had no defense
     against backdated/edited vouchers at all. Fixed as part of item 16's
-    new route. Drift findings are still shown once on that page's result
-    (not yet persisted for later viewing) - see Open Items.
+    new route.
 18. **NEW, deferred at the client's explicit request: a controlled,
     audited correction mechanism for backdated entries and bill-
     misallocation errors.** Once the TB Cross-Check sheet or a YTD drift
@@ -652,6 +651,18 @@ resolves former open item 1.
     override with audit trail" concept from item 11's original spec,
     never built. Explicitly not built this session; revisit once the
     detection/surfacing side (items 15-17) has been used for real.
+19. **NEW, resolved: drift findings are now persisted, not just shown
+    once.** A finding used to appear only on the result page of the run
+    that found it (Manual Upload or Extract & Save) and vanish once that
+    page was gone. Now every finding, from every path (CLI, Manual
+    Upload, Extract & Save alike), is written to a new `drift_finding`
+    table and stays visible on its own report page until a Maker
+    explicitly acknowledges it. A still-unresolved finding re-detected on
+    a later extraction does not spawn a duplicate row (the table's own
+    UNIQUE constraint on the finding's identity handles this). Explicitly
+    NOT the correction mechanism deferred in item 18: acknowledging is an
+    audit note only - who saw it and when - it never touches
+    weekly_snapshot or any register.
 
 ## Deferred to a later version (not rejected, not in scope now)
 
