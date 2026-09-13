@@ -396,9 +396,9 @@ def test_unapplied_cn_nets_per_party_and_excludes_allocated():
 
 @pytest.mark.parametrize(
     "dpd,expected",
-    [(0, "Not Due"), (-5, "Not Due"), (1, "0-30"), (30, "0-30"), (31, "31-60"),
+    [(0, "Current"), (-5, "Current"), (1, "1-30"), (30, "1-30"), (31, "31-60"),
      (60, "31-60"), (61, "61-90"), (90, "61-90"), (91, "91-120"), (120, "91-120"),
-     (121, "121-150"), (150, "121-150"), (151, "151-180"), (180, "151-180"), (181, "180+")],
+     (121, "121-150"), (150, "121-150"), (151, "151-180"), (180, "151-180"), (181, "181+")],
 )
 def test_compute_ageing_bucket(dpd, expected):
     assert compute_ageing_bucket(dpd) == expected
@@ -492,7 +492,7 @@ def test_compute_invoice_position_fully_paid_is_not_overdue():
     position = compute_invoice_position(invoice, [], receipt_rows, as_of=date(2026, 5, 1))
     assert position.open_amount == Decimal("0.00")
     assert position.is_overdue is False
-    assert position.ageing_bucket == "Not Due"
+    assert position.ageing_bucket == "Current"
 
 
 # ---- End-to-end against real client-exported sample XML ------------------

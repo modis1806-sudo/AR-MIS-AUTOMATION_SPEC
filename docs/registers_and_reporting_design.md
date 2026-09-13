@@ -510,9 +510,11 @@ resolves former open item 1.
 2. **Validate the Pre-MIS Classification/exception logic** (item 10) against
    real data now that sample XML is available — now covers both the Receipt
    & Journal Register and the Credit Note Register.
-3. **Final Ageing Bucket granularity** — pick one scheme (the KPI dashboard's
-   91-120/121-150/151-180 split vs. the Ageing Matrix reports' combined
-   91-180) to standardize across every report.
+3. ~~Final Ageing Bucket granularity~~ — **resolved: client's explicit
+   scheme**, standardized across every report:
+   `Current, 1-30, 31-60, 61-90, 91-120, 121-150, 151-180, 181+`
+   (Current = within credit period; every band after that is days past
+   the due date.) Implemented in `ar_mis.registers.compute_ageing_bucket`.
 4. ~~Weekly Movement Register storage mechanism~~ — **resolved this
    session: append-only stored history**, not live recompute. Each week's
    row is written once and kept as-is, so the trend reflects genuine
@@ -538,11 +540,24 @@ resolves former open item 1.
 8. **NEW: `Round Off` ledger handling** — confirmed present on real
    invoices (see Findings); decide whether it folds into Taxable Value,
    into Invoice Value only (after tax), or gets its own column.
-9. **NEW: Manual Upload parsing bug** (see Findings) — `manual_upload.py`
-   needs functions that read Tally's actual Display Report export shape for
-   the Trial Balance and YTD detail files, not the gateway Collection shape
-   it currently assumes. Real sample files now available in this session's
-   history to build/test against.
+9. ~~Manual Upload parsing bug~~ — **resolved**: `parse_ledger_closing_balances`
+   now handles both the gateway Collection shape and Tally's real Display
+   Report shape (DSPACCNAME/DSPACCINFO), verified against the real
+   `fixtures/real_samples/TBDebtors.xml` (389 parties).
+10. **NEW, resolved: Collection Efficiency (%) formula** — client confirmed
+    the standard version: (opening balance at the start of the period + new
+    sales during the period) compared against what was actually collected
+    during the period, shown as a percentage.
+11. **NEW, resolved: PTP Kept Rate formula** — client confirmed the standard
+    version: of all promised-payment dates that have already passed (as of
+    the selected reporting date), what percentage were marked Kept rather
+    than Broken. A PTP whose promised date hasn't arrived yet is excluded
+    entirely — it does not count toward the rate either way.
+12. **NEW, still open: DSO (average days to collect payment) formula** —
+    asked the client to choose between the two common versions (a 90-day
+    trailing window vs. a 12-month trailing window) and the question wasn't
+    clear as put; needs re-explaining in plain terms with a worked example,
+    then a decision, before the KPI dashboard can compute this figure.
 
 ## Deferred to a later version (not rejected, not in scope now)
 

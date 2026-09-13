@@ -355,17 +355,18 @@ def compute_unapplied_cn_by_party(rows: list[CreditNoteRegisterRow]) -> dict[str
 
 
 def compute_ageing_bucket(days_past_due: int) -> str:
-    """Provisional granularity, per the design doc's open item: the
-    client's own existing reports disagree on this (some split 91-180
-    into 91-120/121-150/151-180, others use one combined 91-180 bucket).
-    Using the finer split here since it's easy to collapse a finer bucket
-    into a coarser one for display but not the reverse - revisit once the
-    client picks one scheme.
+    """CONFIRMED scheme (client's own explicit specification, resolving
+    the design doc's former open item): the finer 91-180 split this
+    function already used provisionally turned out to be exactly right -
+    only the exact labels below are the client's own wording, not a
+    guess:
+
+        Current, 1-30, 31-60, 61-90, 91-120, 121-150, 151-180, 181+
     """
     if days_past_due <= 0:
-        return "Not Due"
+        return "Current"
     if days_past_due <= 30:
-        return "0-30"
+        return "1-30"
     if days_past_due <= 60:
         return "31-60"
     if days_past_due <= 90:
@@ -376,7 +377,7 @@ def compute_ageing_bucket(days_past_due: int) -> str:
         return "121-150"
     if days_past_due <= 180:
         return "151-180"
-    return "180+"
+    return "181+"
 
 
 @dataclass
