@@ -22,9 +22,16 @@ from datetime import date
 from decimal import Decimal
 
 from ar_mis.config import BranchConfig, financial_year_start
-from ar_mis.models import CustomerMasterRecord, Voucher, WeeklySnapshotRow
+from ar_mis.models import CustomerMasterRecord, Voucher, VoucherType, WeeklySnapshotRow
 from ar_mis.orchestration import BranchRunOutcome, ExtractionOutcome
 from ar_mis.reconciliation import reconcile_all_parties
+from ar_mis.registers import (
+    RegisterBuildExceptions,
+    build_bill_reference_lookup,
+    build_credit_note_register_row,
+    build_receipt_journal_register_rows,
+    build_sales_dn_register_row,
+)
 from ar_mis.rollforward import aggregate_party_movements, resolve_opening_balances
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
@@ -114,13 +121,64 @@ def process_branch_data(
                 flipped_amount=flip_sign(entry.amount_as_extracted),
             )
 
+    register_exceptions = _build_and_persist_registers(store, branch_id, all_vouchers)
+
     return BranchRunOutcome(
         branch_id=branch_id,
         branch_name=branch_name,
         outcome=ExtractionOutcome.PASS,
         detail=f"{len(results)} part(y/ies) reconciled clean",
         new_parties=new_parties,
+        register_build_exceptions=register_exceptions.unattributable_party,
     )
+
+
+def _build_and_persist_registers(
+    store: Store, branch_id: str, all_vouchers: list[Voucher]
+) -> RegisterBuildExceptions:
+    """Builds and persists the Sales & DN, Credit Note, and Receipt &
+    Journal registers (docs/registers_and_reporting_design.md items 1-2)
+    from this run's vouchers - only ever called after reconciliation has
+    already cleared (see process_branch_data), matching the same
+    "never write partial/wrong data" principle already enforced for
+    weekly_snapshot and voucher_log.
+
+    Sales & DN rows are built and persisted FIRST, then the bill-
+    reference lookup is built from the branch's ENTIRE tracked history
+    (store.all_sales_dn_rows(branch_id), not just this run's rows) -
+    a Credit Note or Receipt/Journal voucher in this week's data commonly
+    references an invoice from a prior week, and item 8's composite-key
+    matching only works if the lookup can see it.
+    """
+    exceptions = RegisterBuildExceptions()
+
+    for voucher in all_vouchers:
+        if voucher.voucher_type not in (VoucherType.SALES, VoucherType.DEBIT_NOTE):
+            continue
+        customer = store.get_customer_master(voucher.party_ledger_name, branch_id) if voucher.party_ledger_name else None
+        if customer is None:
+            reason = (
+                "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer"
+                if not voucher.party_ledger_name
+                else f"No customer_master record for '{voucher.party_ledger_name}'"
+            )
+            exceptions.unattributable_party.append((voucher.voucher_number, reason))
+            continue
+        row = build_sales_dn_register_row(voucher, customer, exceptions)
+        if row is not None:
+            store.append_sales_dn_row(row)
+
+    lookup = build_bill_reference_lookup(store.all_sales_dn_rows(branch_id))
+
+    for voucher in all_vouchers:
+        if voucher.voucher_type == VoucherType.CREDIT_NOTE:
+            row = build_credit_note_register_row(voucher, lookup, exceptions)
+            if row is not None:
+                store.append_credit_note_row(row)
+        elif voucher.voucher_type in (VoucherType.RECEIPT, VoucherType.JOURNAL):
+            store.append_receipt_journal_rows(build_receipt_journal_register_rows(voucher, lookup, exceptions))
+
+    return exceptions
 
 
 def build_branch_runner(store: Store, week_ending: date, from_date: date, to_date: date):

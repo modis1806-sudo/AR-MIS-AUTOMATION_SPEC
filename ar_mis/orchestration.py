@@ -47,6 +47,13 @@ class BranchRunOutcome:
     but it's worth a human noticing, so it's still surfaced separately in
     the report's Exceptions section rather than blended into Party Detail.
     """
+    register_build_exceptions: list[tuple[str, str]] = field(default_factory=list)
+    """(voucher_number, reason) pairs this run's registers.py build step
+    could not confidently place into a register (registers.
+    RegisterBuildExceptions) - e.g. a voucher with no PARTYLEDGERNAME.
+    Populated only on a PASS outcome, since registers are only built
+    once reconciliation clears (see pipeline.process_branch_data).
+    """
 
 
 class EscalationRequired(Exception):
