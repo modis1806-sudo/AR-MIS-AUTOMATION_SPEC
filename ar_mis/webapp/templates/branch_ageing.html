@@ -27,8 +27,8 @@
   {% for row in rows %}
     <tr {% if row.branch_id == "All Branches" %}style="font-weight:700; background:#f9fafb;"{% endif %}>
       <td>{{ row.branch_id }}</td>
-      {% for bucket in bucket_order %}<td>{{ "%.2f"|format(row.buckets[bucket]) }}</td>{% endfor %}
-      <td>{{ "%.2f"|format(row.total) }}</td>
+      {% for bucket in bucket_order %}<td>{{ row.buckets[bucket]|inr }}</td>{% endfor %}
+      <td>{{ row.total|inr }}</td>
     </tr>
   {% endfor %}
   </tbody>

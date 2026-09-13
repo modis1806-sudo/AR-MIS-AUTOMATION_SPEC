@@ -18,32 +18,32 @@
 <div class="kpi-grid">
   <div class="kpi-tile">
     <div class="kpi-label">Total AR</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.total_ar) }}</div>
+    <div class="kpi-value">{{ snapshot.total_ar|inr }}</div>
     <div class="kpi-caption">Open invoices + Pre-MIS Outstanding</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Pre-MIS Outstanding</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.pre_mis_outstanding) }}</div>
+    <div class="kpi-value">{{ snapshot.pre_mis_outstanding|inr }}</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Sundry Debtor AR</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.sundry_debtor_ar) }}</div>
+    <div class="kpi-value">{{ snapshot.sundry_debtor_ar|inr }}</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Related Party AR</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.related_party_ar) }}</div>
+    <div class="kpi-value">{{ snapshot.related_party_ar|inr }}</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Unapplied Cash</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.unapplied_cash) }}</div>
+    <div class="kpi-value">{{ snapshot.unapplied_cash|inr }}</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Unapplied CN</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.unapplied_cn) }}</div>
+    <div class="kpi-value">{{ snapshot.unapplied_cn|inr }}</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Rounding Difference</div>
-    <div class="kpi-value">{% if snapshot.rounding_difference is not none %}{{ "%.2f"|format(snapshot.rounding_difference) }}{% else %}—{% endif %}</div>
+    <div class="kpi-value">{% if snapshot.rounding_difference is not none %}{{ snapshot.rounding_difference|inr }}{% else %}—{% endif %}</div>
     <div class="kpi-caption">Registers total vs. last weekly run</div>
   </div>
 </div>
@@ -53,7 +53,7 @@
   <thead><tr><th>Open AR by Financial Year</th><th>Amount</th></tr></thead>
   <tbody>
   {% for fy, amount in snapshot.open_ar_by_fy.items() | sort %}
-    <tr><td>{{ fy }}</td><td>{{ "%.2f"|format(amount) }}</td></tr>
+    <tr><td>{{ fy }}</td><td>{{ amount|inr }}</td></tr>
   {% else %}
     <tr><td colspan="2" class="empty">No open invoices on record.</td></tr>
   {% endfor %}
@@ -65,16 +65,16 @@
 <div class="kpi-grid">
   <div class="kpi-tile {% if snapshot.overdue_pct and snapshot.overdue_pct > 50 %}warn{% endif %}">
     <div class="kpi-label">Overdue AR</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.overdue_ar) }}</div>
+    <div class="kpi-value">{{ snapshot.overdue_ar|inr }}</div>
     <div class="kpi-caption">{% if snapshot.overdue_pct is not none %}{{ "%.1f"|format(snapshot.overdue_pct) }}% of Total AR{% else %}—{% endif %}</div>
   </div>
   <div class="kpi-tile critical">
     <div class="kpi-label">Bad Debt Risk (181+ days)</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.bad_debt_risk_180_plus) }}</div>
+    <div class="kpi-value">{{ snapshot.bad_debt_risk_180_plus|inr }}</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Notional Interest Cost</div>
-    <div class="kpi-value">{{ "%.2f"|format(snapshot.notional_interest_cost) }}</div>
+    <div class="kpi-value">{{ snapshot.notional_interest_cost|inr }}</div>
     <div class="kpi-caption">At 10% p.a. on overdue balances</div>
   </div>
   <div class="kpi-tile">
@@ -99,7 +99,7 @@
   <thead><tr><th>Overdue AR by Ageing Bucket</th><th>Amount</th></tr></thead>
   <tbody>
   {% for bucket in ["1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"] %}
-    <tr><td>{{ bucket }}</td><td>{{ "%.2f"|format(snapshot.overdue_by_bucket.get(bucket, 0)) }}</td></tr>
+    <tr><td>{{ bucket }}</td><td>{{ snapshot.overdue_by_bucket.get(bucket, 0)|inr }}</td></tr>
   {% endfor %}
   </tbody>
 </table>

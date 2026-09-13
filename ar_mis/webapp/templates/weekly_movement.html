@@ -40,30 +40,30 @@
   {% for d in display_rows %}
     <tr>
       <td>{{ d.row.week_ending }}</td>
-      <td>{{ "%.2f"|format(d.row.total_ar) }}
+      <td>{{ d.row.total_ar|inr }}
         {% if d.total_ar_trend == "up" %}<span class="trend trend-up">&#9650;</span>
         {% elif d.total_ar_trend == "down" %}<span class="trend trend-down">&#9660;</span>
         {% elif d.total_ar_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
       </td>
-      <td>{% for fy, amt in d.row.open_ar_by_fy.items()|sort %}{{ fy }}: {{ "%.2f"|format(amt) }}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</td>
-      <td>{{ "%.2f"|format(d.row.pre_mis_outstanding) }}</td>
-      <td>{{ "%.2f"|format(d.row.overdue_ar) }}
+      <td>{% for fy, amt in d.row.open_ar_by_fy.items()|sort %}{{ fy }}: {{ amt|inr }}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</td>
+      <td>{{ d.row.pre_mis_outstanding|inr }}</td>
+      <td>{{ d.row.overdue_ar|inr }}
         {% if d.overdue_ar_trend == "up" %}<span class="trend trend-up">&#9650;</span>
         {% elif d.overdue_ar_trend == "down" %}<span class="trend trend-down">&#9660;</span>
         {% elif d.overdue_ar_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
       </td>
-      <td>{% for bucket, amt in d.row.overdue_by_bucket.items()|sort %}{{ bucket }}: {{ "%.2f"|format(amt) }}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</td>
-      <td>{{ "%.2f"|format(d.row.dso) if d.row.dso is not none else '—' }}
+      <td>{% for bucket, amt in d.row.overdue_by_bucket.items()|sort %}{{ bucket }}: {{ amt|inr }}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</td>
+      <td>{{ d.row.dso|inr if d.row.dso is not none else '—' }}
         {% if d.dso_trend == "up" %}<span class="trend trend-up">&#9650;</span>
         {% elif d.dso_trend == "down" %}<span class="trend trend-down">&#9660;</span>
         {% elif d.dso_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
       </td>
-      <td>{{ "%.2f"|format(d.row.collection_efficiency) if d.row.collection_efficiency is not none else '—' }}
+      <td>{{ d.row.collection_efficiency|inr if d.row.collection_efficiency is not none else '—' }}
         {% if d.collection_efficiency_trend == "up" %}<span class="trend trend-up">&#9650;</span>
         {% elif d.collection_efficiency_trend == "down" %}<span class="trend trend-down">&#9660;</span>
         {% elif d.collection_efficiency_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
       </td>
-      <td>{{ "%.2f"|format(d.row.unapplied_cash) }}
+      <td>{{ d.row.unapplied_cash|inr }}
         {% if d.unapplied_cash_trend == "up" %}<span class="trend trend-up">&#9650;</span>
         {% elif d.unapplied_cash_trend == "down" %}<span class="trend trend-down">&#9660;</span>
         {% elif d.unapplied_cash_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}

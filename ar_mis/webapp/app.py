@@ -68,6 +68,7 @@ from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
 from ar_mis.tally_client import CompanyMismatchError, TallyClient, TallyConnectionError
 from ar_mis.weekly_movement import attach_trends, build_weekly_movement_row
+from ar_mis.webapp.formatting import format_inr
 
 ROLES = {
     "maker": "Maker",
@@ -79,6 +80,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     app = Flask(__name__)
     app.config["DB_PATH"] = db_path
     app.secret_key = "ar-mis-local-tool"  # localhost-only internal tool; no session security needed
+
+    # Every amount in this app is Indian Rupees - client's explicit ask:
+    # group digits the Indian way (1,23,45,678.00), not the Western
+    # 3-digit grouping "%.2f" or a bare Decimal would otherwise produce,
+    # which forces a reader to count digits to tell a lakh from a crore.
+    app.jinja_env.filters["inr"] = format_inr
 
     def get_store() -> Store:
         return Store(app.config["DB_PATH"])

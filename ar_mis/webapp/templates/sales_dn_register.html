@@ -42,23 +42,23 @@
       <td>{{ row.job_id or '—' }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ d.grouping or '—' }}</td>
-      <td>{{ row.taxable_value }}</td>
-      <td>{{ row.cgst }}</td>
-      <td>{{ row.sgst }}</td>
-      <td>{{ row.igst }}</td>
-      <td>{{ row.round_off }}</td>
-      <td>{{ row.invoice_value }}</td>
+      <td>{{ row.taxable_value|inr }}</td>
+      <td>{{ row.cgst|inr }}</td>
+      <td>{{ row.sgst|inr }}</td>
+      <td>{{ row.igst|inr }}</td>
+      <td>{{ row.round_off|inr }}</td>
+      <td>{{ row.invoice_value|inr }}</td>
       <td>{{ row.due_date }}</td>
       <td>{{ d.linked_cn_no or '—' }}</td>
-      <td>{{ pos.linked_cn_amount }}</td>
-      <td>{{ row.invoice_value - pos.linked_cn_amount }}</td>
-      <td>{{ pos.receipts_applied }}</td>
-      <td>{{ pos.open_amount }}</td>
+      <td>{{ pos.linked_cn_amount|inr }}</td>
+      <td>{{ (row.invoice_value - pos.linked_cn_amount)|inr }}</td>
+      <td>{{ pos.receipts_applied|inr }}</td>
+      <td>{{ pos.open_amount|inr }}</td>
       <td>{% if pos.is_overdue %}<span class="pill fail">Yes</span>{% else %}<span class="pill ok">No</span>{% endif %}</td>
       <td>{{ pos.days_past_due }}</td>
       <td>{{ pos.ageing_bucket }}</td>
       <td>{{ fu.ptp_date if fu else '' or '—' }}</td>
-      <td>{{ fu.ptp_amount if fu else '' or '—' }}</td>
+      <td>{{ (fu.ptp_amount|inr) if (fu and fu.ptp_amount is not none) else '—' }}</td>
       <td>
         {% if d.ptp_status == 'Kept' %}<span class="pill status-kept">Kept</span>
         {% elif d.ptp_status == 'Broken' %}<span class="pill status-broken">Broken</span>

@@ -17,7 +17,7 @@
     <tr>
       <td>{{ r['party_name'] }}</td>
       <td>{{ r['branch_id'] }}</td>
-      <td>{{ r['pre_mis_outstanding'] }}</td>
+      <td>{{ r['pre_mis_outstanding']|inr }}</td>
       <td>{% if r['last_reconciled_on'] %}{{ r['last_reconciled_on'] }}{% else %}<span class="pill fail">Never</span>{% endif %}</td>
       <td>{{ r['last_reconciled_by'] or '—' }}</td>
       {% if session.role == "maker" %}

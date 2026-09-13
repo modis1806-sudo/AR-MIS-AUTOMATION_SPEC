@@ -29,7 +29,7 @@
       <td>{{ r.finding.party_ledger_name }}</td>
       <td>{{ r.finding.voucher_type }} {{ r.finding.voucher_number }}</td>
       <td>{{ r.finding.voucher_date }}</td>
-      <td>{{ "%.2f"|format(r.finding.flipped_amount) }}</td>
+      <td>{{ r.finding.flipped_amount|inr }}</td>
       <td>{{ r.finding.attributed_week or 'unassigned' }}</td>
       <td>{{ r.discovered_at.strftime('%d %b %Y, %I:%M %p') }}</td>
       <td>

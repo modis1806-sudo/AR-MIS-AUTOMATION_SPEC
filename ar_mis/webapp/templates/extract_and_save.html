@@ -60,7 +60,7 @@
           <td>{{ f.party_ledger_name }}</td>
           <td>{{ f.voucher_type }} {{ f.voucher_number }}</td>
           <td>{{ f.voucher_date }}</td>
-          <td>{{ f.flipped_amount }}</td>
+          <td>{{ f.flipped_amount|inr }}</td>
           <td>{{ f.attributed_week or 'unassigned' }}</td>
         </tr>
       {% endfor %}

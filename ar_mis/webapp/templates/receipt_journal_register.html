@@ -38,8 +38,8 @@
       <td>{{ row.party_id }}</td>
       <td>{% if row.target_doc_no %}Against Ref{% else %}Unapplied{% endif %}</td>
       <td>{{ row.target_doc_no or '—' }}</td>
-      <td>{{ row.amount if row.target_doc_no else '—' }}</td>
-      <td>{{ row.amount if not row.target_doc_no else '—' }}</td>
+      <td>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
+      <td>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
       <td>
         {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
         {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>

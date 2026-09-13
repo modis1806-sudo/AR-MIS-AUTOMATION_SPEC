@@ -712,7 +712,7 @@ def test_ar_snapshot_shows_real_figures_after_an_extraction(client):
     _run_a_real_extraction(client)
     resp = client.get("/reports/ar-snapshot?as_of=2026-09-12")
     assert resp.status_code == 200
-    assert b"125000.00" in resp.data  # Total AR from the one seeded invoice
+    assert b"1,25,000.00" in resp.data  # Total AR from the one seeded invoice, Indian-grouped
 
 
 def test_ar_snapshot_reachable_by_checker_not_by_extraction_routes(roleless_client):
@@ -780,7 +780,7 @@ def test_exception_register_shows_unapplied_cash_after_a_real_extraction(client)
     resp = client.get("/reports/exceptions?as_of=2026-04-15")
     assert resp.status_code == 200
     assert b"ACME" in resp.data
-    assert b"5000.00" in resp.data
+    assert b"5,000.00" in resp.data
 
 
 def test_exception_register_reachable_by_checker(roleless_client):
@@ -819,7 +819,7 @@ def test_ageing_matrix_shows_tally_cross_check_difference_after_extraction(clien
     assert resp.status_code == 200
     # process_branch_data reconciled exactly (125000.00 extracted == computed),
     # so the cross-check difference must show as zero, not blank/omitted.
-    assert b"125000.00" in resp.data
+    assert b"1,25,000.00" in resp.data
 
 
 def test_ageing_matrix_fy_filter_narrows_customer_rows(client):
@@ -936,7 +936,7 @@ def test_tb_cross_check_shows_clean_reconciliation(client):
     resp = client.get("/reports/tb-cross-check")
     assert resp.status_code == 200
     assert b"A &amp; B Transport" in resp.data or b"A & B Transport" in resp.data
-    assert b"125000.00" in resp.data
+    assert b"1,25,000.00" in resp.data
 
 
 def test_tb_cross_check_shows_mismatch_and_summary_counts(client, monkeypatch):
@@ -959,7 +959,7 @@ def test_tb_cross_check_shows_mismatch_and_summary_counts(client, monkeypatch):
 
     resp = client.get("/reports/tb-cross-check")
     assert resp.status_code == 200
-    assert b"1000.00" in resp.data  # the difference, shown in full
+    assert b"1,000.00" in resp.data  # the difference, shown in full
     # Two KPI tiles: 1 party currently mismatched, total difference 1000.00.
     assert resp.data.count(b"kpi-value") >= 2
 
@@ -980,7 +980,7 @@ def test_branch_totals_shows_sales_and_all_branches_row(client):
     assert resp.status_code == 200
     assert b"KOL" in resp.data
     assert b"All Branches" in resp.data
-    assert b"125000.00" in resp.data
+    assert b"1,25,000.00" in resp.data
 
 
 def test_branch_totals_period_filter_excludes_out_of_range_invoice(client):
@@ -990,7 +990,7 @@ def test_branch_totals_period_filter_excludes_out_of_range_invoice(client):
     # The branch still shows (it has activity elsewhere), but zero for
     # this period - the April invoice must not leak into a June-onward window.
     assert b"KOL" in resp.data
-    assert b"125000.00" not in resp.data
+    assert b"1,25,000.00" not in resp.data
 
 
 def test_branch_totals_reachable_by_checker(roleless_client):
@@ -1048,7 +1048,7 @@ def test_drift_findings_shows_outstanding_finding_and_count(client):
     assert resp.status_code == 200
     assert b"SB/0099-BACKDATED" in resp.data
     assert b"Outstanding" in resp.data
-    assert b"50000.00" in resp.data
+    assert b"50,000.00" in resp.data
 
 
 def test_maker_can_acknowledge_a_finding(client):

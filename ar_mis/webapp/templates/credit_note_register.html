@@ -26,8 +26,8 @@
       <td>{{ row.party_id }}</td>
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.bill_allocation_reference or '—' }}</td>
-      <td>{{ row.cn_amount }}</td>
-      <td>{{ d.unapplied_amount if d.unapplied_amount is not none else '—' }}</td>
+      <td>{{ row.cn_amount|inr }}</td>
+      <td>{{ d.unapplied_amount|inr if d.unapplied_amount is not none else '—' }}</td>
       <td>
         {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
         {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>

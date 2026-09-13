@@ -20,7 +20,7 @@
   <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
   <tbody>
   {% for row in unapplied_cash %}
-    <tr><td>{{ row.party_id }}</td><td>{{ "%.2f"|format(row.amount) }}</td></tr>
+    <tr><td>{{ row.party_id }}</td><td>{{ row.amount|inr }}</td></tr>
   {% else %}
     <tr><td colspan="2" class="empty">Nothing unapplied.</td></tr>
   {% endfor %}
@@ -34,7 +34,7 @@
   <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
   <tbody>
   {% for row in unapplied_cn %}
-    <tr><td>{{ row.party_id }}</td><td>{{ "%.2f"|format(row.amount) }}</td></tr>
+    <tr><td>{{ row.party_id }}</td><td>{{ row.amount|inr }}</td></tr>
   {% else %}
     <tr><td colspan="2" class="empty">Nothing unapplied.</td></tr>
   {% endfor %}
@@ -52,8 +52,8 @@
       <td>{{ d.row.branch_id }}</td>
       <td>{{ d.row.voucher_number }}</td>
       <td>{{ d.row.party_id }}</td>
-      <td>{{ "%.2f"|format(d.row.invoice_value) }}</td>
-      <td>{{ "%.2f"|format(d.open_amount) }}</td>
+      <td>{{ d.row.invoice_value|inr }}</td>
+      <td>{{ d.open_amount|inr }}</td>
     </tr>
   {% else %}
     <tr><td colspan="5" class="empty">None found.</td></tr>
@@ -71,7 +71,7 @@
     <tr>
       <td>{{ row.branch_id }}</td>
       <td>{{ row.party_id }}</td>
-      <td>{{ "%.2f"|format(row.total_open) }}</td>
+      <td>{{ row.total_open|inr }}</td>
       <td>{{ row.last_transaction_date }}</td>
       <td>{{ row.days_since_last_transaction }}</td>
     </tr>
@@ -94,7 +94,7 @@
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ row.voucher_date }}</td>
-      <td>{{ "%.2f"|format(row.amount) }}</td>
+      <td>{{ row.amount|inr }}</td>
       <td>{{ row.attempted_reference or '—' }}</td>
     </tr>
   {% else %}
@@ -110,7 +110,7 @@
   <thead><tr><th>Branch</th><th>Party</th><th>Overdue Amount</th></tr></thead>
   <tbody>
   {% for row in top_overdue %}
-    <tr><td>{{ row.branch_id }}</td><td>{{ row.party_id }}</td><td>{{ "%.2f"|format(row.overdue_amount) }}</td></tr>
+    <tr><td>{{ row.branch_id }}</td><td>{{ row.party_id }}</td><td>{{ row.overdue_amount|inr }}</td></tr>
   {% else %}
     <tr><td colspan="3" class="empty">No overdue customers.</td></tr>
   {% endfor %}

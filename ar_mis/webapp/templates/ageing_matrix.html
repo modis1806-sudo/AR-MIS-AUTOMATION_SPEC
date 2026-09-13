@@ -37,8 +37,8 @@
   {% for row in branch_rows %}
     <tr {% if row.branch_id == "All Branches" %}style="font-weight:700; background:#f9fafb;"{% endif %}>
       <td>{{ row.branch_id }}</td>
-      {% for bucket in bucket_order %}<td>{{ "%.2f"|format(row.buckets[bucket]) }}</td>{% endfor %}
-      <td>{{ "%.2f"|format(row.total) }}</td>
+      {% for bucket in bucket_order %}<td>{{ row.buckets[bucket]|inr }}</td>{% endfor %}
+      <td>{{ row.total|inr }}</td>
     </tr>
   {% endfor %}
   </tbody>
@@ -65,11 +65,11 @@
       <td>{{ row.branch_id }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ row.grouping or '—' }}</td>
-      {% for bucket in bucket_order %}<td>{{ "%.2f"|format(row.buckets[bucket]) }}</td>{% endfor %}
-      <td>{{ "%.2f"|format(row.total_open) }}</td>
-      <td>{{ "%.2f"|format(row.tally_closing_balance) if row.tally_closing_balance is not none else 'No Tally figure on record' }}</td>
+      {% for bucket in bucket_order %}<td>{{ row.buckets[bucket]|inr }}</td>{% endfor %}
+      <td>{{ row.total_open|inr }}</td>
+      <td>{{ row.tally_closing_balance|inr if row.tally_closing_balance is not none else 'No Tally figure on record' }}</td>
       <td {% if row.difference is not none and row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>
-        {{ "%.2f"|format(row.difference) if row.difference is not none else '—' }}
+        {{ row.difference|inr if row.difference is not none else '—' }}
       </td>
     </tr>
   {% else %}

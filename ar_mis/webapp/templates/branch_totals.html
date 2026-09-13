@@ -29,10 +29,10 @@
   {% for row in rows %}
     <tr {% if row.branch_id == "All Branches" %}style="font-weight:700; background:#f9fafb;"{% endif %}>
       <td>{{ row.branch_id }}</td>
-      <td>{{ "%.2f"|format(row.sales_total) }}</td>
-      <td>{{ "%.2f"|format(row.debit_note_total) }}</td>
-      <td>{{ "%.2f"|format(row.credit_note_total) }}</td>
-      <td>{{ "%.2f"|format(row.net_total) }}</td>
+      <td>{{ row.sales_total|inr }}</td>
+      <td>{{ row.debit_note_total|inr }}</td>
+      <td>{{ row.credit_note_total|inr }}</td>
+      <td>{{ row.net_total|inr }}</td>
     </tr>
   {% else %}
     <tr><td colspan="5" class="empty">No invoices on record for this period.</td></tr>
