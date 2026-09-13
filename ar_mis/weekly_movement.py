@@ -5,7 +5,7 @@ the portfolio's big numbers over time so a trend is visible, not just a
 single as-of-date snapshot.
 
 Resolved this session (design doc Open Item 4): **append-only stored
-history**, not live recompute. A Preparer explicitly records the current
+history**, not live recompute. A Maker explicitly records the current
 position as a given week's row (ar_mis.storage.Store.record_weekly_movement),
 and that row is kept exactly as computed forever after - even if a later
 correction to the underlying data would produce a different answer for

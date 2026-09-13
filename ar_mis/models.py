@@ -189,7 +189,7 @@ class WeeklyMovementRow:
     """Design doc item 15's Weekly Movement Register — one row per
     week-ending date, portfolio-wide (every branch combined, matching
     Total AR's own scope on the AR Snapshot dashboard). Append-only
-    stored history (Open Item 4's resolution): a Preparer explicitly
+    stored history (Open Item 4's resolution): a Maker explicitly
     records the current position as a given week's row, and it is kept
     exactly as computed forever after — never silently recomputed, even
     if later corrections would change the answer. `recorded_at` is the

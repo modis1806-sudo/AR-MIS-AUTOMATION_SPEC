@@ -87,13 +87,13 @@
     <a class="brand" href="{{ url_for('home') }}">AR MIS Pipeline</a>
     {% if session.role %}
     <div class="role-indicator">
-      Viewing as <strong>{{ "Preparer" if session.role == "preparer" else "Viewer" }}</strong>
+      Viewing as <strong>{{ "Maker" if session.role == "maker" else "Checker" }}</strong>
       <a href="{{ url_for('choose_role') }}">Switch</a>
     </div>
     {% endif %}
   </div>
   <nav class="grouped">
-    {% if session.role == "preparer" %}
+    {% if session.role == "maker" %}
     <div>
       <span class="nav-group-label">Extraction</span>
       <a href="{{ url_for('branches_list') }}">Branch Master</a>

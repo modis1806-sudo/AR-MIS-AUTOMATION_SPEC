@@ -6,7 +6,7 @@
 
 {% include "_freshness.html" %}
 
-{% if session.role == "preparer" %}
+{% if session.role == "maker" %}
 <div class="card" style="margin-bottom:20px;">
   <h2 style="margin-top:0;">Record this week's position</h2>
   <p>Computes the current portfolio position as of the date below and locks it in as that week's row. A week already recorded can't be recorded again.</p>

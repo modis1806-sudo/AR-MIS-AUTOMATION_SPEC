@@ -281,18 +281,28 @@ lump-sum Pre-MIS Outstanding baseline per party, never individually.
 ### 11. Multi-user access, roles, and audit trail
 
 The tool will be used by the client's team member initially, then handed to
-the full AR team after a couple of months of success. This means **real
-login/authentication with roles is required** — not a single-user toggle.
-Two roles: AR team members (day-to-day register use, PTP entry, filtering)
-and Administrator (override capability for genuinely unanticipated data
-situations).
+the full AR team after a couple of months of success. This originally meant
+**real login/authentication with roles is required** — not a single-user
+toggle — with two roles: AR team members (day-to-day register use, PTP
+entry, filtering) and Administrator (override capability for genuinely
+unanticipated data situations), and a non-negotiable requirement that every
+administrator override be logged (who, when, which field, old value, new
+value, ideally a reason).
 
-**Non-negotiable:** every administrator override is logged — who (which
-logged-in user), when, which field, old value, new value, and ideally a
-reason. A silent, untraceable override recreates the exact hole this system
-exists to close. This is new scope beyond what exists today (currently zero
-authentication — anyone with access to the machine has full access to
-everything).
+**Superseded — client's explicit, permanent decision:** password-based
+login is deliberately left out of this project, full stop, not deferred as
+future work. In its place: a two-role session picker with no password
+behind it — **Maker** (full access: Extraction, Registers, Reports) and
+**Checker** (Registers and Reports only, read-only, no Extraction) — a
+rename of what shipped earlier this session as "Preparer/Viewer." Anyone
+with access to the machine can still pick either role themselves; that is
+an accepted consequence of this decision, not an oversight. This reverses
+the "non-negotiable" real-login requirement above — recorded here rather
+than silently dropped, per this document's own standard for anything a
+prior decision changes. The Administrator-override/audit-trail concept
+above was never built and remains out of scope; if a real override feature
+is added later it still needs its own audit trail regardless of how login
+is handled.
 
 ### 12. Deployment/packaging
 
@@ -572,6 +582,12 @@ resolves former open item 1.
     previously carry — added a `logged_at` field for exactly this (a
     generically useful audit fact regardless, not a new open design
     question put back to the client).
+14. **NEW, resolved: password-based login is permanently out of scope,
+    superseding item 11.** Client's explicit call: no password, ever — the
+    session-based role picker (renamed this session from Preparer/Viewer to
+    **Maker/Checker**) is the permanent access-control mechanism, not a
+    stopgap. See item 11 above for the full reasoning and what this
+    reverses.
 
 ## Deferred to a later version (not rejected, not in scope now)
 

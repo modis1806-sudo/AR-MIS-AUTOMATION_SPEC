@@ -288,7 +288,7 @@ CREATE TABLE IF NOT EXISTS extraction_log (
 """,
     # Design doc item 15's Weekly Movement Register, resolved this session
     # as append-only stored history (Open Item 4): each week's row is
-    # computed once, by a Preparer explicitly recording the current
+    # computed once, by a Maker explicitly recording the current
     # portfolio position, and kept as-is forever after - never silently
     # recomputed or overwritten, which is exactly what week_ending as the
     # PRIMARY KEY enforces (a second attempt to record the same week fails

@@ -6,7 +6,7 @@
 
 {% include "_freshness.html" %}
 
-{% if session.role == "preparer" %}
+{% if session.role == "maker" %}
 <div class="card">
   <h2 style="margin-top:0;">Status</h2>
   <p>{{ branch_count }} branch(es) configured in Branch Master.</p>
@@ -29,7 +29,7 @@
 {% else %}
 <div class="card">
   <h2 style="margin-top:0;">Registers &amp; Reports</h2>
-  <p>Extraction is handled by your team's preparer. From here you can look at the registers themselves or the reports built from them.</p>
+  <p>Extraction is handled by your team's maker. From here you can look at the registers themselves or the reports built from them.</p>
   <a class="btn" href="{{ url_for('sales_dn_register') }}">Sales &amp; DN Register</a>
   <a class="btn secondary" href="{{ url_for('reports_home') }}">Reports</a>
 </div>

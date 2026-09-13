@@ -1,22 +1,23 @@
 """Local web application: Extraction (Branch Master, Test Extraction,
-Discover Companies, Manual Upload - all Preparer-only), Registers (the
+Discover Companies, Manual Upload - all Maker-only), Registers (the
 Sales & DN, Credit Note, and Receipt & Journal registers plus Customer
-Master, viewable by anyone), and Reports (still a placeholder - the
-report catalog itself, docs/registers_and_reporting_design.md item 15,
-is separately pending).
+Master, viewable by anyone), and Reports (the full report catalog,
+docs/registers_and_reporting_design.md item 15).
 
 Runs on localhost only, matching the spec's LAN-only/no-cloud-dependency
 framing - this is an internal single-operator tool, not a public service.
 
-Role gating is a deliberate PLACEHOLDER, not real security (client's
-explicit choice - see docs/registers_and_reporting_design.md's role
-decision): a role picker sets a plain session value with no password
-behind it, so it hides the Extraction section from a Viewer (you/CFO)
-in the UI and blocks its routes server-side, but anyone with access to
-this machine can still pick "Preparer" themselves. Real login (item 11,
-"non-negotiable" once the full AR team is using this) is separate,
-later work - this only needs to hold up while it's the client's own
-team testing on a private machine.
+Role gating uses a plain session value with no password behind it - a
+Maker/Checker picker, not real authentication. This is a **permanent**
+decision, not a stopgap awaiting a later login system: the client
+explicitly chose to leave password-based login out of the project (see
+docs/registers_and_reporting_design.md's Open Items, which also records
+that this deliberately supersedes item 11's original "real login is
+non-negotiable" requirement). It hides the Extraction section from a
+Checker (you/CFO) in the UI and blocks its routes server-side, so a
+Checker genuinely cannot reach Extraction - but anyone with access to
+this machine can still pick "Maker" themselves, since nothing checks who
+is actually sitting at the keyboard. That is accepted, not overlooked.
 """
 from __future__ import annotations
 
@@ -58,8 +59,8 @@ from ar_mis.tally_client import CompanyMismatchError, TallyClient, TallyConnecti
 from ar_mis.weekly_movement import attach_trends, build_weekly_movement_row
 
 ROLES = {
-    "preparer": "Preparer",
-    "viewer": "Viewer",
+    "maker": "Maker",
+    "checker": "Checker",
 }
 
 
@@ -90,11 +91,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         }
 
     def requires_role(role: str):
-        """Route-level enforcement of the role placeholder described in
-        this module's docstring - the nav already hides Extraction links
-        from a Viewer, but a link being hidden is not the same as a route
+        """Route-level enforcement of the role gating described in this
+        module's docstring - the nav already hides Extraction links from
+        a Checker, but a link being hidden is not the same as a route
         being blocked, and the client was explicit that Extraction must
-        not be reachable by a Viewer at all, not just tucked out of the
+        not be reachable by a Checker at all, not just tucked out of the
         menu.
         """
 
@@ -137,7 +138,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template("home.html", branch_count=branch_count, freshness=freshness)
 
     @app.route("/branches")
-    @requires_role("preparer")
+    @requires_role("maker")
     def branches_list():
         store = get_store()
         branches = store.list_branches()
@@ -145,7 +146,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template("branches_list.html", branches=branches)
 
     @app.route("/branches/new", methods=["GET", "POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def branch_new():
         if request.method == "POST":
             branch_id = request.form.get("branch_id", "").strip()
@@ -184,7 +185,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template("branch_form.html", branch=None, prefill=prefill)
 
     @app.route("/branches/<branch_id>/edit", methods=["GET", "POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def branch_edit(branch_id):
         store = get_store()
         existing = store.get_branch(branch_id)
@@ -216,7 +217,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template("branch_form.html", branch=existing)
 
     @app.route("/branches/<branch_id>/delete", methods=["POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def branch_delete(branch_id):
         store = get_store()
         store.delete_branch(branch_id)
@@ -225,7 +226,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return redirect(url_for("branches_list"))
 
     @app.route("/test-extraction", methods=["GET", "POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def test_extraction():
         store = get_store()
         branches = store.list_branches()
@@ -315,7 +316,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         )
 
     @app.route("/discover", methods=["GET", "POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def discover_companies():
         """Asks Tally what companies are open right now, so a company name
         can be picked rather than typed from memory - the source of a real
@@ -361,7 +362,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         )
 
     @app.route("/customers/reconcile", methods=["POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def customers_reconcile():
         party_id = request.form.get("party_id", "")
         branch_id = request.form.get("branch_id", "")
@@ -391,7 +392,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return raw.decode("utf-16")
 
     @app.route("/manual-upload", methods=["GET", "POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def manual_upload():
         store = get_store()
         branches = store.list_branches()
@@ -764,7 +765,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def weekly_movement_report():
         """Design doc item 15's fifth report - unlike every other report in
         this app, this one does NOT recompute live: it lists whatever weeks
-        a Preparer has explicitly recorded (append-only, Open Item 4's
+        a Maker has explicitly recorded (append-only, Open Item 4's
         resolution), oldest first, with a week-over-week trend indicator
         next to each top-line figure.
         """
@@ -780,10 +781,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         )
 
     @app.route("/reports/weekly-movement/record", methods=["POST"])
-    @requires_role("preparer")
+    @requires_role("maker")
     def weekly_movement_record():
         """Recording a week is a one-way door by design (append-only
-        history, per WeeklyMovementRow's own docstring) - a Preparer picks
+        history, per WeeklyMovementRow's own docstring) - a Maker picks
         the week_ending to record, the current portfolio position as of
         that date is computed exactly like the AR Snapshot dashboard does,
         and it's then locked in. A week already recorded is refused with a

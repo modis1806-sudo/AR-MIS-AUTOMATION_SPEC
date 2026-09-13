@@ -16,16 +16,16 @@ from ar_mis.webapp.app import create_app
 
 @pytest.fixture
 def client(tmp_path):
-    # Pre-selects the Preparer role so every existing test here (written
+    # Pre-selects the Maker role so every existing test here (written
     # before role gating existed) keeps exercising full access, exactly
-    # as it did before - role-gating behavior itself (a Viewer being
+    # as it did before - role-gating behavior itself (a Checker being
     # blocked, the picker, the switcher) has its own dedicated tests
     # below using a client that does NOT pre-select a role.
     app = create_app(db_path=str(tmp_path / "webapp.db"))
     app.config["TESTING"] = True
     with app.test_client() as c:
         with c.session_transaction() as sess:
-            sess["role"] = "preparer"
+            sess["role"] = "maker"
         yield c
 
 
@@ -395,35 +395,35 @@ def test_roleless_visitor_is_redirected_to_choose_role(roleless_client):
     assert b"Who&#39;s using this?" in resp.data or b"Who's using this?" in resp.data
 
 
-def test_choosing_preparer_grants_extraction_access(roleless_client):
-    resp = roleless_client.post("/choose-role", data={"role": "preparer"}, follow_redirects=True)
+def test_choosing_maker_grants_extraction_access(roleless_client):
+    resp = roleless_client.post("/choose-role", data={"role": "maker"}, follow_redirects=True)
     assert resp.status_code == 200
     resp = roleless_client.get("/branches")
     assert resp.status_code == 200
 
 
-def test_choosing_viewer_blocks_extraction_routes(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_choosing_checker_blocks_extraction_routes(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     for path in ("/branches", "/test-extraction", "/discover", "/manual-upload"):
         resp = roleless_client.get(path, follow_redirects=True)
         assert resp.status_code == 200
         assert b"isn&#39;t available for your role" in resp.data or b"isn't available for your role" in resp.data
 
 
-def test_viewer_can_reach_registers_and_reports(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_checker_can_reach_registers_and_reports(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     for path in ("/customers", "/registers/sales-dn", "/registers/credit-notes", "/registers/receipts-journals", "/reports"):
         resp = roleless_client.get(path)
         assert resp.status_code == 200
 
-    # The nav itself must not even offer the Extraction links to a Viewer.
+    # The nav itself must not even offer the Extraction links to a Checker.
     resp = roleless_client.get("/")
     assert b"Branch Master" not in resp.data
     assert b"Test Extraction" not in resp.data
 
 
-def test_viewer_cannot_mark_a_customer_reconciled(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_checker_cannot_mark_a_customer_reconciled(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.post(
         "/customers/reconcile", data={"party_id": "P1", "branch_id": "KOL", "reconciled_by": "CFO"},
         follow_redirects=True,
@@ -431,7 +431,7 @@ def test_viewer_cannot_mark_a_customer_reconciled(roleless_client):
     assert b"isn&#39;t available for your role" in resp.data or b"isn't available for your role" in resp.data
 
 
-def test_preparer_sees_extraction_links_in_nav(client):
+def test_maker_sees_extraction_links_in_nav(client):
     resp = client.get("/")
     assert b"Branch Master" in resp.data
     assert b"Test Extraction" in resp.data
@@ -529,10 +529,10 @@ def test_receipt_journal_register_export_downloads_a_workbook(client):
     assert "Receipt_Journal_Register" in resp.headers["Content-Disposition"]
 
 
-def test_viewer_can_export_registers_to_excel(roleless_client):
-    # Export is a Registers-level, read-only action - a Viewer must be
+def test_checker_can_export_registers_to_excel(roleless_client):
+    # Export is a Registers-level, read-only action - a Checker must be
     # able to reach it exactly like the on-screen register itself.
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+    roleless_client.post("/choose-role", data={"role": "checker"})
     for path in (
         "/registers/sales-dn/export.xlsx",
         "/registers/credit-notes/export.xlsx",
@@ -560,8 +560,8 @@ def test_ar_snapshot_shows_real_figures_after_an_extraction(client):
     assert b"125000.00" in resp.data  # Total AR from the one seeded invoice
 
 
-def test_ar_snapshot_reachable_by_viewer_not_by_extraction_routes(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_ar_snapshot_reachable_by_checker_not_by_extraction_routes(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/ar-snapshot")
     assert resp.status_code == 200
 
@@ -628,8 +628,8 @@ def test_exception_register_shows_unapplied_cash_after_a_real_extraction(client)
     assert b"5000.00" in resp.data
 
 
-def test_exception_register_reachable_by_viewer(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_exception_register_reachable_by_checker(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/exceptions")
     assert resp.status_code == 200
 
@@ -698,8 +698,8 @@ def test_ageing_matrix_fy_filter_narrows_customer_rows(client):
     assert b"BETA" not in resp_fy27.data
 
 
-def test_ageing_matrix_reachable_by_viewer(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_ageing_matrix_reachable_by_checker(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/ageing-matrix")
     assert resp.status_code == 200
 
@@ -719,7 +719,7 @@ def test_weekly_movement_renders_with_no_data(client):
     assert b"No weeks recorded yet" in resp.data
 
 
-def test_preparer_can_record_a_week(client):
+def test_maker_can_record_a_week(client):
     _run_a_real_extraction(client)
     resp = client.post("/reports/weekly-movement/record", data={"week_ending": "2026-09-12"}, follow_redirects=True)
     assert resp.status_code == 200
@@ -740,8 +740,8 @@ def test_recording_the_same_week_twice_is_refused(client):
     store.close()
 
 
-def test_viewer_cannot_record_a_week(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_checker_cannot_record_a_week(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.post(
         "/reports/weekly-movement/record", data={"week_ending": "2026-09-12"}, follow_redirects=True
     )
@@ -749,14 +749,14 @@ def test_viewer_cannot_record_a_week(roleless_client):
     assert b"available for your role" in resp.data
 
 
-def test_weekly_movement_reachable_by_viewer(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_weekly_movement_reachable_by_checker(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/weekly-movement")
     assert resp.status_code == 200
 
 
-def test_viewer_does_not_see_record_form(roleless_client):
-    roleless_client.post("/choose-role", data={"role": "viewer"})
+def test_checker_does_not_see_record_form(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/weekly-movement")
     assert b"Record this week's position" not in resp.data
 
