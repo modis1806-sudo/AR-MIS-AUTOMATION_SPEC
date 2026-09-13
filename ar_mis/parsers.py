@@ -90,6 +90,16 @@ def _strip_illegal_charref(match: re.Match) -> str:
 # company that renamed/added a Sales-equivalent voucher type this way
 # (common post-GST/e-invoicing) would have those vouchers silently
 # excluded entirely, not just mis-labeled.
+#
+# "transport invoice" is a third, found the same way: confirmed against
+# Speedways' own real one-week export that 154 of 171 real Sales vouchers
+# that week (90%) used this exact voucher type name - their own renaming
+# of Sales for a logistics business - with the rest split under "Sales
+# 26-27" (already caught by the "sales" keyword above). Structurally
+# confirmed as a genuine outward sales invoice (customer debit + CGST/SGST
+# + a real bill reference), not a different category that happens to share
+# the word "invoice" - this is deliberately NOT a bare "invoice" keyword,
+# which would also wrongly catch an inward Purchase Invoice.
 _CATEGORY_KEYWORDS: list[tuple[VoucherType, str]] = [
     (VoucherType.CREDIT_NOTE, "credit note"),
     (VoucherType.DEBIT_NOTE, "debit note"),
@@ -97,6 +107,7 @@ _CATEGORY_KEYWORDS: list[tuple[VoucherType, str]] = [
     (VoucherType.JOURNAL, "journal"),
     (VoucherType.SALES, "sales"),
     (VoucherType.SALES, "tax invoice"),
+    (VoucherType.SALES, "transport invoice"),
 ]
 
 # "Stock Journal" is Tally's built-in name for an inventory transfer
@@ -201,6 +212,18 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
     root = ET.fromstring(_sanitize_xml(raw_xml))
     vouchers: list[Voucher] = []
     for v_el in root.iter("VOUCHER"):
+        # A cancelled voucher never happened, by definition, in Tally's own
+        # accounting - it must never count towards AR movement, exactly
+        # like an irrelevant voucher type below. Confirmed against real
+        # Speedways data: 9 real cancelled Sales vouchers in one week's
+        # export, each retained by Tally as a stub with empty ledger
+        # entries. Skipped here explicitly rather than relying on that
+        # emptiness to accidentally fall out downstream - a cancelled
+        # voucher that still carried its original entries would otherwise
+        # be silently counted as a real sale.
+        if _text(v_el.find("ISCANCELLED")).strip().lower() == "yes":
+            continue
+
         raw_voucher_type_name = _text(v_el.find("VOUCHERTYPENAME"))
         voucher_type = categorize_voucher_type(raw_voucher_type_name)
         if voucher_type is None:

@@ -57,6 +57,27 @@ def test_categorize_voucher_type_returns_none_for_irrelevant_types():
     assert categorize_voucher_type("") is None
 
 
+def test_categorize_voucher_type_matches_tax_invoice_as_sales():
+    # Confirmed against a real client's data: a genuine, separate Tally
+    # voucher type literally named "Tax Invoice" (own numbering series)
+    # is the same AR category as Sales.
+    assert categorize_voucher_type("Tax Invoice") == VoucherType.SALES
+
+
+def test_categorize_voucher_type_matches_transport_invoice_as_sales():
+    # Confirmed against Speedways' own real export: 90% of one week's
+    # real Sales vouchers used this exact custom voucher type name -
+    # silently dropped entirely before this keyword was added.
+    assert categorize_voucher_type("Transport Invoice") == VoucherType.SALES
+
+
+def test_categorize_voucher_type_does_not_match_bare_invoice():
+    # "transport invoice"/"tax invoice" are specific keywords, not a
+    # broad "invoice" substring - a Purchase Invoice must never be
+    # miscategorized as a Sales voucher just for containing that word.
+    assert categorize_voucher_type("Purchase Invoice") is None
+
+
 def test_sanitize_xml_fixes_bare_ampersand():
     raw = "<LEDGERNAME>Ramesh & Sons</LEDGERNAME>"
     fixed = _sanitize_xml(raw)
@@ -114,6 +135,46 @@ def test_parse_voucher_collection_keeps_custom_named_ar_types_and_skips_irreleva
     assert by_number["JV/0009"].raw_voucher_type_name == "Provision Journal"
     assert "PAY/0011" not in by_number
     assert "SJ/0004" not in by_number
+
+
+def test_parse_voucher_collection_skips_cancelled_vouchers():
+    # Confirmed against real Speedways data: 9 real Sales vouchers in one
+    # week's export were cancelled in Tally (ISCANCELLED=Yes) - a
+    # cancelled voucher never happened and must never count as AR
+    # movement, even if it still carried real ledger entries.
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260406</DATE>
+  <VOUCHERNUMBER>SB/0001</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <ISCANCELLED>Yes</ISCANCELLED>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Acme Corp</LEDGERNAME>
+   <AMOUNT>-1000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Sales Revenue</LEDGERNAME>
+   <AMOUNT>1000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+ <VOUCHER>
+  <DATE>20260406</DATE>
+  <VOUCHERNUMBER>SB/0002</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <ISCANCELLED>No</ISCANCELLED>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Acme Corp</LEDGERNAME>
+   <AMOUNT>-2000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Sales Revenue</LEDGERNAME>
+   <AMOUNT>2000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="KOL")
+    assert len(vouchers) == 1
+    assert vouchers[0].voucher_number == "SB/0002"
 
 
 def test_parse_ledger_closing_balances():
