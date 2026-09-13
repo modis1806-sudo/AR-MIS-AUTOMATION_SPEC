@@ -28,6 +28,14 @@ from flask import Flask, flash, redirect, render_template, request, send_file, s
 
 from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.dashboard import compute_ar_snapshot, compute_branch_ageing_schedule
+from ar_mis.exception_register import (
+    compute_negative_open_amount_invoices,
+    compute_non_active_debtors,
+    compute_top_overdue_customers,
+    compute_unapplied_cash_exceptions,
+    compute_unapplied_cn_exceptions,
+    compute_unresolved_references,
+)
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
 from ar_mis.models import RegisterClassification
 from ar_mis.register_export import (
@@ -666,6 +674,41 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         bucket_order = ["Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
         return render_template(
             "branch_ageing.html", rows=rows, bucket_order=bucket_order, as_of=as_of.isoformat(), freshness=freshness
+        )
+
+    @app.route("/reports/exceptions")
+    def exception_register_report():
+        """Design doc item 15's six sub-reports in one screen - the
+        situations this whole design exists to surface rather than bury
+        in a total: money sitting unapplied, an invoice overpaid, a
+        customer gone quiet while still owing money, a reference nobody
+        resolved, and who's most worth chasing right now.
+        """
+        as_of = _parse_as_of()
+        store = get_store()
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        unapplied_cash = compute_unapplied_cash_exceptions(rj_rows)
+        unapplied_cn = compute_unapplied_cn_exceptions(cn_rows)
+        negative_open = compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of)
+        non_active = compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of)
+        unresolved = compute_unresolved_references(cn_rows, rj_rows)
+        top_overdue = compute_top_overdue_customers(sales_dn_rows, cn_rows, rj_rows, as_of)
+
+        return render_template(
+            "exception_register.html",
+            as_of=as_of.isoformat(),
+            freshness=freshness,
+            unapplied_cash=unapplied_cash,
+            unapplied_cn=unapplied_cn,
+            negative_open=negative_open,
+            non_active=non_active,
+            unresolved=unresolved,
+            top_overdue=top_overdue,
         )
 
     return app

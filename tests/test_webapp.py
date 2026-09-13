@@ -585,3 +585,55 @@ def test_reports_home_links_to_both_new_reports(client):
     assert resp.status_code == 200
     assert b"AR Snapshot" in resp.data
     assert b"Branch-wise Ageing Schedule" in resp.data
+
+
+# ---- Reports: Exception Register ------------------------------------------
+
+
+def test_exception_register_renders_with_no_data(client):
+    resp = client.get("/reports/exceptions")
+    assert resp.status_code == 200
+    assert b"Exception Register" in resp.data
+    assert b"Nothing unapplied" in resp.data
+
+
+def test_exception_register_shows_unapplied_cash_after_a_real_extraction(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "Acme Corp", "KOL", Decimal("0.00")))
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number="SB/0142",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-125000.00"), bill_name="SB/0142", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("125000.00")),
+        ],
+    )
+    receipt = Voucher(
+        voucher_type=VoucherType.RECEIPT, voucher_date=date(2026, 4, 10), voucher_number="RCPT/01",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("5000.00"), bill_name="RCPT/01", bill_type="New Ref")],
+    )
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [voucher, receipt], {"ACME": Decimal("120000.00")},
+    )
+    store.close()
+
+    resp = client.get("/reports/exceptions?as_of=2026-04-15")
+    assert resp.status_code == 200
+    assert b"ACME" in resp.data
+    assert b"5000.00" in resp.data
+
+
+def test_exception_register_reachable_by_viewer(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    resp = roleless_client.get("/reports/exceptions")
+    assert resp.status_code == 200
+
+
+def test_reports_home_links_to_exception_register(client):
+    resp = client.get("/reports")
+    assert b"Exception Register" in resp.data

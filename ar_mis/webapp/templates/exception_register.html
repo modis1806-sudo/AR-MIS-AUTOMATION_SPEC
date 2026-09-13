@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Exception Register{% endblock %}
+{% block content %}
+<h1>Exception Register</h1>
+<p class="subtitle">Six lists of things worth a human's attention — nothing here is folded silently into any other total.</p>
+
+{% include "_freshness.html" %}
+
+<form class="as-of-form" method="get">
+  <div>
+    <label for="as_of">Show position as of</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
+<div class="section-heading">Unapplied Cash (net per party)</div>
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
+  <tbody>
+  {% for row in unapplied_cash %}
+    <tr><td>{{ row.party_id }}</td><td>{{ "%.2f"|format(row.amount) }}</td></tr>
+  {% else %}
+    <tr><td colspan="2" class="empty">Nothing unapplied.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Unapplied Credit Notes (net per party)</div>
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
+  <tbody>
+  {% for row in unapplied_cn %}
+    <tr><td>{{ row.party_id }}</td><td>{{ "%.2f"|format(row.amount) }}</td></tr>
+  {% else %}
+    <tr><td colspan="2" class="empty">Nothing unapplied.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Negative Open Amount (overpaid / over-credited invoices)</div>
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Branch</th><th>Voucher No.</th><th>Customer</th><th>Invoice Value</th><th>Open Amount</th></tr></thead>
+  <tbody>
+  {% for d in negative_open %}
+    <tr>
+      <td>{{ d.row.branch_id }}</td>
+      <td>{{ d.row.voucher_number }}</td>
+      <td>{{ d.row.party_id }}</td>
+      <td>{{ "%.2f"|format(d.row.invoice_value) }}</td>
+      <td>{{ "%.2f"|format(d.open_amount) }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">None found.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Non-Active Debtors (180+ days silent, balance still open)</div>
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Branch</th><th>Party</th><th>Total Open</th><th>Last Transaction</th><th>Days Silent</th></tr></thead>
+  <tbody>
+  {% for row in non_active %}
+    <tr>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{{ "%.2f"|format(row.total_open) }}</td>
+      <td>{{ row.last_transaction_date }}</td>
+      <td>{{ row.days_since_last_transaction }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">None found.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Unresolved References (Against Ref that didn't match any tracked invoice)</div>
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Source</th><th>Branch</th><th>Voucher No.</th><th>Party</th><th>Date</th><th>Amount</th><th>Attempted Reference</th></tr></thead>
+  <tbody>
+  {% for row in unresolved %}
+    <tr>
+      <td>{{ row.source }}</td>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.voucher_number }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{{ row.voucher_date }}</td>
+      <td>{{ "%.2f"|format(row.amount) }}</td>
+      <td>{{ row.attempted_reference or '—' }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="empty">Nothing unresolved.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Top 20 Overdue Customers</div>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Branch</th><th>Party</th><th>Overdue Amount</th></tr></thead>
+  <tbody>
+  {% for row in top_overdue %}
+    <tr><td>{{ row.branch_id }}</td><td>{{ row.party_id }}</td><td>{{ "%.2f"|format(row.overdue_amount) }}</td></tr>
+  {% else %}
+    <tr><td colspan="3" class="empty">No overdue customers.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

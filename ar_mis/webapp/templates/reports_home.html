@@ -19,7 +19,13 @@
 </div>
 
 <div class="card">
+  <h2 style="margin-top:0;">Exception Register</h2>
+  <p>Six lists in one place: unapplied cash, unapplied credit notes, negative open amounts, non-active debtors, unresolved references, and your top 20 overdue customers.</p>
+  <a class="btn" href="{{ url_for('exception_register_report') }}">Open Exception Register</a>
+</div>
+
+<div class="card">
   <h2 style="margin-top:0;">Coming next</h2>
-  <p>Ageing Matrix (customer-level detail with the Tally closing-balance cross-check), Exception Register (unapplied cash/CN, negative balances, non-active debtors, unresolved references, top overdue customers), and the Weekly Movement Register are still to be built.</p>
+  <p>Ageing Matrix (customer-level detail with the Tally closing-balance cross-check) and the Weekly Movement Register are still to be built.</p>
 </div>
 {% endblock %}
