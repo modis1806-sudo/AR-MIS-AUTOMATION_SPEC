@@ -19,6 +19,7 @@ from ar_mis.models import (
     ReceiptJournalRegisterRow,
     RegisterClassification,
     SalesDNRegisterRow,
+    WeeklyMovementRow,
     WeeklySnapshotRow,
 )
 from ar_mis.storage import SCHEMA_VERSION, Store
@@ -259,6 +260,70 @@ def test_weekly_snapshot_is_append_only(store):
     # append-only means a correction is a new week, not a mutated row.
     with pytest.raises(Exception):
         store.append_weekly_snapshot(row)
+
+
+def _weekly_movement_row(week_ending, total_ar=Decimal("100000.00")):
+    return WeeklyMovementRow(
+        week_ending=week_ending,
+        recorded_at=datetime(2026, 9, 12, 10, 0),
+        total_ar=total_ar,
+        open_ar_by_fy={"2026-27": total_ar},
+        pre_mis_outstanding=Decimal("5000.00"),
+        overdue_ar=Decimal("20000.00"),
+        overdue_by_bucket={"1-30": Decimal("20000.00")},
+        dso=Decimal("42.50"),
+        collection_efficiency=Decimal("77.25"),
+        unapplied_cash=Decimal("1500.00"),
+    )
+
+
+def test_record_weekly_movement_then_read_back(store):
+    store.record_weekly_movement(_weekly_movement_row(date(2026, 9, 12)))
+    rows = store.all_weekly_movement_rows()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.week_ending == date(2026, 9, 12)
+    assert row.recorded_at == datetime(2026, 9, 12, 10, 0)
+    assert row.total_ar == Decimal("100000.00")
+    assert row.open_ar_by_fy == {"2026-27": Decimal("100000.00")}
+    assert row.pre_mis_outstanding == Decimal("5000.00")
+    assert row.overdue_ar == Decimal("20000.00")
+    assert row.overdue_by_bucket == {"1-30": Decimal("20000.00")}
+    assert row.dso == Decimal("42.50")
+    assert row.collection_efficiency == Decimal("77.25")
+    assert row.unapplied_cash == Decimal("1500.00")
+
+
+def test_weekly_movement_handles_none_dso_and_collection_efficiency(store):
+    row = _weekly_movement_row(date(2026, 9, 12))
+    row = WeeklyMovementRow(**{**row.__dict__, "dso": None, "collection_efficiency": None})
+    store.record_weekly_movement(row)
+    stored = store.all_weekly_movement_rows()[0]
+    assert stored.dso is None
+    assert stored.collection_efficiency is None
+
+
+def test_weekly_movement_is_append_only(store):
+    store.record_weekly_movement(_weekly_movement_row(date(2026, 9, 12)))
+    # Recording the same week twice must fail, not silently overwrite -
+    # this is the entire mechanism that makes the history genuinely
+    # historical rather than a live recompute in disguise.
+    with pytest.raises(Exception):
+        store.record_weekly_movement(_weekly_movement_row(date(2026, 9, 12)))
+
+
+def test_has_weekly_movement_for_week(store):
+    assert store.has_weekly_movement_for_week(date(2026, 9, 12)) is False
+    store.record_weekly_movement(_weekly_movement_row(date(2026, 9, 12)))
+    assert store.has_weekly_movement_for_week(date(2026, 9, 12)) is True
+    assert store.has_weekly_movement_for_week(date(2026, 9, 19)) is False
+
+
+def test_all_weekly_movement_rows_ordered_oldest_first(store):
+    store.record_weekly_movement(_weekly_movement_row(date(2026, 9, 19), total_ar=Decimal("120000.00")))
+    store.record_weekly_movement(_weekly_movement_row(date(2026, 9, 12), total_ar=Decimal("100000.00")))
+    rows = store.all_weekly_movement_rows()
+    assert [r.week_ending for r in rows] == [date(2026, 9, 12), date(2026, 9, 19)]
 
 
 def test_ptp_status_log_tracks_latest_status_per_week(store):

@@ -14,6 +14,7 @@ the point.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -36,6 +37,7 @@ from ar_mis.models import (
     ReceiptJournalRegisterRow,
     RegisterClassification,
     SalesDNRegisterRow,
+    WeeklyMovementRow,
     WeeklySnapshotRow,
 )
 
@@ -57,7 +59,7 @@ from ar_mis.models import (
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -282,6 +284,33 @@ CREATE TABLE IF NOT EXISTS extraction_log (
     branch_id TEXT NOT NULL,
     week_ending TEXT NOT NULL,
     extracted_at TEXT NOT NULL
+);
+""",
+    # Design doc item 15's Weekly Movement Register, resolved this session
+    # as append-only stored history (Open Item 4): each week's row is
+    # computed once, by a Preparer explicitly recording the current
+    # portfolio position, and kept as-is forever after - never silently
+    # recomputed or overwritten, which is exactly what week_ending as the
+    # PRIMARY KEY enforces (a second attempt to record the same week fails
+    # loudly rather than replacing history). The KPI fields are the same
+    # ones ar_mis.dashboard.compute_ar_snapshot already computes; this
+    # table only adds the point-in-time persistence that module
+    # deliberately doesn't do. dict-shaped fields (by FY, by ageing
+    # bucket) are stored as JSON text - there's no need for a normalized
+    # table when nothing ever queries into those keys directly, only
+    # displays them whole.
+    6: """
+CREATE TABLE IF NOT EXISTS weekly_movement (
+    week_ending TEXT PRIMARY KEY,
+    total_ar TEXT NOT NULL,
+    open_ar_by_fy_json TEXT NOT NULL,
+    pre_mis_outstanding TEXT NOT NULL,
+    overdue_ar TEXT NOT NULL,
+    overdue_by_bucket_json TEXT NOT NULL,
+    dso TEXT,
+    collection_efficiency TEXT,
+    unapplied_cash TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
 );
 """,
 }
@@ -1013,6 +1042,67 @@ class Store:
                 "SELECT MAX(extracted_at) FROM extraction_log WHERE branch_id=?", (branch_id,)
             ).fetchone()
         return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+    # ---- Weekly Movement Register (design doc item 15, append-only) ----
+
+    def record_weekly_movement(self, row: WeeklyMovementRow) -> None:
+        """Records one week's portfolio-wide KPI snapshot, once. The
+        week_ending PRIMARY KEY means a second attempt for the same week
+        raises sqlite3.IntegrityError rather than silently overwriting -
+        append-only history is the entire point (see WeeklyMovementRow's
+        docstring); a genuine correction is the caller's problem to solve
+        some other way, not this method's to paper over.
+        """
+        self.conn.execute(
+            "INSERT INTO weekly_movement (week_ending, total_ar, open_ar_by_fy_json,"
+            " pre_mis_outstanding, overdue_ar, overdue_by_bucket_json, dso,"
+            " collection_efficiency, unapplied_cash, recorded_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row.week_ending.isoformat(),
+                str(row.total_ar),
+                json.dumps({k: str(v) for k, v in row.open_ar_by_fy.items()}),
+                str(row.pre_mis_outstanding),
+                str(row.overdue_ar),
+                json.dumps({k: str(v) for k, v in row.overdue_by_bucket.items()}),
+                str(row.dso) if row.dso is not None else None,
+                str(row.collection_efficiency) if row.collection_efficiency is not None else None,
+                str(row.unapplied_cash),
+                row.recorded_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def has_weekly_movement_for_week(self, week_ending: date) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM weekly_movement WHERE week_ending=? LIMIT 1", (week_ending.isoformat(),)
+        ).fetchone()
+        return row is not None
+
+    def all_weekly_movement_rows(self) -> list[WeeklyMovementRow]:
+        """Every recorded week, oldest first - the Weekly Movement Register
+        report reads this list top to bottom and computes week-over-week
+        trends by comparing each row to the one before it.
+        """
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute("SELECT * FROM weekly_movement ORDER BY week_ending ASC")
+        rows = []
+        for r in cur.fetchall():
+            rows.append(
+                WeeklyMovementRow(
+                    week_ending=date.fromisoformat(r["week_ending"]),
+                    recorded_at=datetime.fromisoformat(r["recorded_at"]),
+                    total_ar=Decimal(r["total_ar"]),
+                    open_ar_by_fy={k: Decimal(v) for k, v in json.loads(r["open_ar_by_fy_json"]).items()},
+                    pre_mis_outstanding=Decimal(r["pre_mis_outstanding"]),
+                    overdue_ar=Decimal(r["overdue_ar"]),
+                    overdue_by_bucket={k: Decimal(v) for k, v in json.loads(r["overdue_by_bucket_json"]).items()},
+                    dso=Decimal(r["dso"]) if r["dso"] is not None else None,
+                    collection_efficiency=Decimal(r["collection_efficiency"]) if r["collection_efficiency"] is not None else None,
+                    unapplied_cash=Decimal(r["unapplied_cash"]),
+                )
+            )
+        return rows
 
     # ---- Invoice Follow-Up (item 7 — the one mutable/upserted register row) --
 

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Weekly Movement Register{% endblock %}
+{% block content %}
+<h1>Weekly Movement Register</h1>
+<p class="subtitle">One row per week, recorded once and kept as-is — unlike every other report here, this is a historical log, not a live recalculation. The arrow next to a figure shows direction only, compared to the previous recorded week.</p>
+
+{% include "_freshness.html" %}
+
+{% if session.role == "preparer" %}
+<div class="card" style="margin-bottom:20px;">
+  <h2 style="margin-top:0;">Record this week's position</h2>
+  <p>Computes the current portfolio position as of the date below and locks it in as that week's row. A week already recorded can't be recorded again.</p>
+  <form method="post" action="{{ url_for('weekly_movement_record') }}" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+    <div>
+      <label for="week_ending" style="display:block; font-size:12px; font-weight:600; color:#374151;">Week ending</label>
+      <input type="date" id="week_ending" name="week_ending" value="{{ today }}" style="padding:6px 8px;">
+    </div>
+    <button class="btn" type="submit">Record this week</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Week Ending</th>
+      <th>Total AR</th>
+      <th>Open AR by FY</th>
+      <th>Pre-MIS Outstanding</th>
+      <th>Overdue AR</th>
+      <th>Overdue by Bucket</th>
+      <th>DSO</th>
+      <th>Collection Efficiency</th>
+      <th>Unapplied Cash</th>
+      <th>Recorded At</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for d in display_rows %}
+    <tr>
+      <td>{{ d.row.week_ending }}</td>
+      <td>{{ "%.2f"|format(d.row.total_ar) }}
+        {% if d.total_ar_trend == "up" %}<span class="trend trend-up">&#9650;</span>
+        {% elif d.total_ar_trend == "down" %}<span class="trend trend-down">&#9660;</span>
+        {% elif d.total_ar_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
+      </td>
+      <td>{% for fy, amt in d.row.open_ar_by_fy.items()|sort %}{{ fy }}: {{ "%.2f"|format(amt) }}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</td>
+      <td>{{ "%.2f"|format(d.row.pre_mis_outstanding) }}</td>
+      <td>{{ "%.2f"|format(d.row.overdue_ar) }}
+        {% if d.overdue_ar_trend == "up" %}<span class="trend trend-up">&#9650;</span>
+        {% elif d.overdue_ar_trend == "down" %}<span class="trend trend-down">&#9660;</span>
+        {% elif d.overdue_ar_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
+      </td>
+      <td>{% for bucket, amt in d.row.overdue_by_bucket.items()|sort %}{{ bucket }}: {{ "%.2f"|format(amt) }}{% if not loop.last %}; {% endif %}{% else %}—{% endfor %}</td>
+      <td>{{ "%.2f"|format(d.row.dso) if d.row.dso is not none else '—' }}
+        {% if d.dso_trend == "up" %}<span class="trend trend-up">&#9650;</span>
+        {% elif d.dso_trend == "down" %}<span class="trend trend-down">&#9660;</span>
+        {% elif d.dso_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
+      </td>
+      <td>{{ "%.2f"|format(d.row.collection_efficiency) if d.row.collection_efficiency is not none else '—' }}
+        {% if d.collection_efficiency_trend == "up" %}<span class="trend trend-up">&#9650;</span>
+        {% elif d.collection_efficiency_trend == "down" %}<span class="trend trend-down">&#9660;</span>
+        {% elif d.collection_efficiency_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
+      </td>
+      <td>{{ "%.2f"|format(d.row.unapplied_cash) }}
+        {% if d.unapplied_cash_trend == "up" %}<span class="trend trend-up">&#9650;</span>
+        {% elif d.unapplied_cash_trend == "down" %}<span class="trend trend-down">&#9660;</span>
+        {% elif d.unapplied_cash_trend == "flat" %}<span class="trend trend-flat">&#9644;</span>{% endif %}
+      </td>
+      <td>{{ d.row.recorded_at.strftime('%d %b %Y, %I:%M %p') }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10" class="empty">No weeks recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

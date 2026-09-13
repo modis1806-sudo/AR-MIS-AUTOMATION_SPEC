@@ -55,6 +55,7 @@ from ar_mis.registers import (
 )
 from ar_mis.storage import Store
 from ar_mis.tally_client import CompanyMismatchError, TallyClient, TallyConnectionError
+from ar_mis.weekly_movement import attach_trends, build_weekly_movement_row
 
 ROLES = {
     "preparer": "Preparer",
@@ -758,6 +759,63 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             customer_rows=customer_rows,
             bucket_order=bucket_order,
         )
+
+    @app.route("/reports/weekly-movement")
+    def weekly_movement_report():
+        """Design doc item 15's fifth report - unlike every other report in
+        this app, this one does NOT recompute live: it lists whatever weeks
+        a Preparer has explicitly recorded (append-only, Open Item 4's
+        resolution), oldest first, with a week-over-week trend indicator
+        next to each top-line figure.
+        """
+        store = get_store()
+        rows = store.all_weekly_movement_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        display_rows = attach_trends(rows)
+        today = date.today().isoformat()
+        return render_template(
+            "weekly_movement.html", display_rows=display_rows, freshness=freshness, today=today
+        )
+
+    @app.route("/reports/weekly-movement/record", methods=["POST"])
+    @requires_role("preparer")
+    def weekly_movement_record():
+        """Recording a week is a one-way door by design (append-only
+        history, per WeeklyMovementRow's own docstring) - a Preparer picks
+        the week_ending to record, the current portfolio position as of
+        that date is computed exactly like the AR Snapshot dashboard does,
+        and it's then locked in. A week already recorded is refused with a
+        message, not silently skipped or overwritten.
+        """
+        raw_week_ending = request.form.get("week_ending", "")
+        try:
+            week_ending = date.fromisoformat(raw_week_ending)
+        except ValueError:
+            flash("Choose a valid week-ending date.", "error")
+            return redirect(url_for("weekly_movement_report"))
+
+        store = get_store()
+        if store.has_weekly_movement_for_week(week_ending):
+            store.close()
+            flash(f"{week_ending.isoformat()} has already been recorded and can't be overwritten.", "error")
+            return redirect(url_for("weekly_movement_report"))
+
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
+
+        snapshot = compute_ar_snapshot(
+            sales_dn_rows, cn_rows, rj_rows, customer_masters,
+            ptp_kept_rate=None, as_of=week_ending, latest_weekly_snapshot_closing_total=None,
+        )
+        row = build_weekly_movement_row(snapshot, week_ending, recorded_at=datetime.now())
+        store.record_weekly_movement(row)
+        store.close()
+        flash(f"Recorded the position as of {week_ending.isoformat()}.", "success")
+        return redirect(url_for("weekly_movement_report"))
 
     return app
 

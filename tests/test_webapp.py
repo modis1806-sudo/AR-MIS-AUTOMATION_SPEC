@@ -707,3 +707,60 @@ def test_ageing_matrix_reachable_by_viewer(roleless_client):
 def test_reports_home_links_to_ageing_matrix(client):
     resp = client.get("/reports")
     assert b"Ageing Matrix" in resp.data
+
+
+# ---- Reports: Weekly Movement Register -------------------------------------
+
+
+def test_weekly_movement_renders_with_no_data(client):
+    resp = client.get("/reports/weekly-movement")
+    assert resp.status_code == 200
+    assert b"Weekly Movement Register" in resp.data
+    assert b"No weeks recorded yet" in resp.data
+
+
+def test_preparer_can_record_a_week(client):
+    _run_a_real_extraction(client)
+    resp = client.post("/reports/weekly-movement/record", data={"week_ending": "2026-09-12"}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Recorded the position as of 2026-09-12" in resp.data
+    assert b"2026-09-12" in resp.data
+
+
+def test_recording_the_same_week_twice_is_refused(client):
+    _run_a_real_extraction(client)
+    client.post("/reports/weekly-movement/record", data={"week_ending": "2026-09-12"})
+    resp = client.post("/reports/weekly-movement/record", data={"week_ending": "2026-09-12"}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"already been recorded" in resp.data
+    # Still only one row - the refused attempt must not have appended a duplicate.
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert len(store.all_weekly_movement_rows()) == 1
+    store.close()
+
+
+def test_viewer_cannot_record_a_week(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    resp = roleless_client.post(
+        "/reports/weekly-movement/record", data={"week_ending": "2026-09-12"}, follow_redirects=True
+    )
+    assert resp.status_code == 200
+    assert b"available for your role" in resp.data
+
+
+def test_weekly_movement_reachable_by_viewer(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    resp = roleless_client.get("/reports/weekly-movement")
+    assert resp.status_code == 200
+
+
+def test_viewer_does_not_see_record_form(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    resp = roleless_client.get("/reports/weekly-movement")
+    assert b"Record this week's position" not in resp.data
+
+
+def test_reports_home_links_to_weekly_movement(client):
+    resp = client.get("/reports")
+    assert b"Weekly Movement Register" in resp.data

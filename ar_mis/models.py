@@ -11,7 +11,7 @@ response is parsed into, before sign-flip and roll-forward are applied.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 
@@ -182,6 +182,36 @@ class WeeklySnapshotRow:
     closing_extracted: Decimal
     reconciled: bool
     difference: Decimal
+
+
+@dataclass(frozen=True)
+class WeeklyMovementRow:
+    """Design doc item 15's Weekly Movement Register — one row per
+    week-ending date, portfolio-wide (every branch combined, matching
+    Total AR's own scope on the AR Snapshot dashboard). Append-only
+    stored history (Open Item 4's resolution): a Preparer explicitly
+    records the current position as a given week's row, and it is kept
+    exactly as computed forever after — never silently recomputed, even
+    if later corrections would change the answer. `recorded_at` is the
+    real wall-clock moment this row was recorded, distinct from
+    `week_ending` (the business period it represents) for the same
+    reason extraction_log keeps that distinction.
+
+    The KPI fields mirror a subset of ar_mis.dashboard.ARSnapshot exactly
+    — this row is that dashboard's own numbers, persisted at a point in
+    time, not a separately-computed figure.
+    """
+
+    week_ending: date
+    recorded_at: datetime
+    total_ar: Decimal
+    open_ar_by_fy: dict[str, Decimal]
+    pre_mis_outstanding: Decimal
+    overdue_ar: Decimal
+    overdue_by_bucket: dict[str, Decimal]
+    dso: Decimal | None
+    collection_efficiency: Decimal | None
+    unapplied_cash: Decimal
 
 
 @dataclass(frozen=True)
