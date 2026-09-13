@@ -460,6 +460,28 @@ class Store:
             credit_period_days=r["credit_period_days"],
         )
 
+    def all_customer_masters(self) -> list[CustomerMasterRecord]:
+        """Every customer_master row as a fully-typed CustomerMasterRecord
+        (Decimal, PartyGrouping) - unlike all_customer_master_records(),
+        which returns raw sqlite3.Row for the Customer Master webapp page's
+        own dict-style template access. Needed wherever a caller (the AR
+        Snapshot dashboard) needs real .pre_mis_outstanding/.grouping
+        values to compute with, not just display.
+        """
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute("SELECT * FROM customer_master")
+        return [
+            CustomerMasterRecord(
+                party_id=r["party_id"],
+                party_name=r["party_name"],
+                branch_id=r["branch_id"],
+                pre_mis_outstanding=Decimal(r["pre_mis_outstanding"]),
+                grouping=PartyGrouping(r["grouping"]) if r["grouping"] else None,
+                credit_period_days=r["credit_period_days"],
+            )
+            for r in cur.fetchall()
+        ]
+
     def set_credit_period_days(self, party_id: str, branch_id: str, credit_period_days: int) -> None:
         """Item 6/7: the one sanctioned way to change a party's credit
         period. Per item 6, this only affects invoices built AFTER this
@@ -645,6 +667,19 @@ class Store:
     def all_week_endings(self) -> list[date]:
         cur = self.conn.execute("SELECT DISTINCT week_ending FROM weekly_snapshot ORDER BY week_ending")
         return [date.fromisoformat(row[0]) for row in cur.fetchall()]
+
+    def latest_weekly_snapshot_closing_total(self) -> Decimal | None:
+        """Summed closing_computed across every party for the most recent
+        week_ending on record - the AR Snapshot dashboard's Rounding
+        Difference baseline (ar_mis.dashboard). None when no weekly_snapshot
+        rows exist yet, not zero - there's nothing to compare against.
+        """
+        week_endings = self.all_week_endings()
+        if not week_endings:
+            return None
+        latest = week_endings[-1]
+        rows = self.weekly_snapshots_for_week(latest)
+        return sum((Decimal(r["closing_computed"]) for r in rows), Decimal("0.00"))
 
     def weekly_snapshots_for_party(self, party_id: str, branch_id: str) -> list[sqlite3.Row]:
         self.conn.row_factory = sqlite3.Row

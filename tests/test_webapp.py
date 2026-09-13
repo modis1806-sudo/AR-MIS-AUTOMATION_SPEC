@@ -541,3 +541,47 @@ def test_viewer_can_export_registers_to_excel(roleless_client):
         resp = roleless_client.get(path)
         assert resp.status_code == 200
         assert resp.mimetype == _XLSX_MIMETYPE
+
+
+# ---- Reports: AR Snapshot and Branch Ageing Schedule ----------------------
+
+
+def test_ar_snapshot_renders_with_no_data(client):
+    resp = client.get("/reports/ar-snapshot")
+    assert resp.status_code == 200
+    assert b"AR Snapshot" in resp.data
+    assert b"No data extracted yet" in resp.data
+
+
+def test_ar_snapshot_shows_real_figures_after_an_extraction(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ar-snapshot?as_of=2026-09-12")
+    assert resp.status_code == 200
+    assert b"125000.00" in resp.data  # Total AR from the one seeded invoice
+
+
+def test_ar_snapshot_reachable_by_viewer_not_by_extraction_routes(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    resp = roleless_client.get("/reports/ar-snapshot")
+    assert resp.status_code == 200
+
+
+def test_branch_ageing_report_renders_with_no_data(client):
+    resp = client.get("/reports/branch-ageing")
+    assert resp.status_code == 200
+    assert b"Branch-wise Ageing Schedule" in resp.data
+
+
+def test_branch_ageing_report_shows_the_extracted_branch(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/branch-ageing?as_of=2026-09-12")
+    assert resp.status_code == 200
+    assert b"KOL" in resp.data
+    assert b"All Branches" in resp.data
+
+
+def test_reports_home_links_to_both_new_reports(client):
+    resp = client.get("/reports")
+    assert resp.status_code == 200
+    assert b"AR Snapshot" in resp.data
+    assert b"Branch-wise Ageing Schedule" in resp.data

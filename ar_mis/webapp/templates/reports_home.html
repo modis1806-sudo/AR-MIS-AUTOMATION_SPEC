@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<h1>Reports</h1>
+<p class="subtitle">Every figure below is recalculated live from the registers for whatever date you choose — nothing here is a stored total.</p>
+
+{% include "_freshness.html" %}
+
+<div class="card">
+  <h2 style="margin-top:0;">AR Snapshot</h2>
+  <p>Outstanding position, overdue and ageing, DSO, Collection Efficiency, PTP Kept Rate — the main dashboard.</p>
+  <a class="btn" href="{{ url_for('ar_snapshot_report') }}">Open AR Snapshot</a>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Branch-wise Ageing Schedule</h2>
+  <p>One ageing-bucket row per branch, plus an all-branches total.</p>
+  <a class="btn" href="{{ url_for('branch_ageing_report') }}">Open Ageing Schedule</a>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Coming next</h2>
+  <p>Ageing Matrix (customer-level detail with the Tally closing-balance cross-check), Exception Register (unapplied cash/CN, negative balances, non-active debtors, unresolved references, top overdue customers), and the Weekly Movement Register are still to be built.</p>
+</div>
+{% endblock %}

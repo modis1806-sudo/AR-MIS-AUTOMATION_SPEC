@@ -27,6 +27,7 @@ from io import BytesIO
 from flask import Flask, flash, redirect, render_template, request, send_file, session, url_for
 
 from ar_mis.config import BranchConfig, financial_year_start
+from ar_mis.dashboard import compute_ar_snapshot, compute_branch_ageing_schedule
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
 from ar_mis.models import RegisterClassification
 from ar_mis.register_export import (
@@ -38,6 +39,7 @@ from ar_mis.registers import (
     build_bill_reference_lookup,
     compute_invoice_position,
     compute_linked_cn_reference_text,
+    compute_ptp_kept_rate,
     compute_ptp_outcome,
     compute_receipt_journal_display_fields,
 )
@@ -617,7 +619,54 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store = get_store()
         freshness = _freshness(store.last_extraction_at())
         store.close()
-        return render_template("reports_placeholder.html", freshness=freshness)
+        return render_template("reports_home.html", freshness=freshness)
+
+    @app.route("/reports/ar-snapshot")
+    def ar_snapshot_report():
+        """Design doc item 15's flagship report - every figure recomputed
+        for the selected `as_of` date (item 14), nothing read from a
+        stored total. Trend Analysis (Sales/Collection MIS-vs-Pre-MIS,
+        last 4 months) is deliberately not built yet - it needs a
+        configured MIS go-live date this application doesn't have
+        anywhere yet, and guessing one would put a wrong number in front
+        of whoever's using this to make a decision.
+        """
+        as_of = _parse_as_of()
+        store = get_store()
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
+        follow_ups = store.all_invoice_follow_ups()
+        latest_closing_total = store.latest_weekly_snapshot_closing_total()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        sales_dn_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in sales_dn_rows}
+        ptp_rate = compute_ptp_kept_rate(follow_ups, sales_dn_by_identity, cn_rows, rj_rows, as_of)
+
+        snapshot = compute_ar_snapshot(
+            sales_dn_rows, cn_rows, rj_rows, customer_masters, ptp_rate, as_of, latest_closing_total
+        )
+        return render_template(
+            "ar_snapshot.html", snapshot=snapshot, as_of=as_of.isoformat(), freshness=freshness
+        )
+
+    @app.route("/reports/branch-ageing")
+    def branch_ageing_report():
+        as_of = _parse_as_of()
+        store = get_store()
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        rows = compute_branch_ageing_schedule(sales_dn_rows, cn_rows, rj_rows, as_of)
+        bucket_order = ["Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
+        return render_template(
+            "branch_ageing.html", rows=rows, bucket_order=bucket_order, as_of=as_of.isoformat(), freshness=freshness
+        )
 
     return app
 

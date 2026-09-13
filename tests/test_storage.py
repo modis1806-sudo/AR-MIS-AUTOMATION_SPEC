@@ -96,6 +96,46 @@ def test_new_customer_master_defaults_credit_period_to_30_and_ungrouped(store):
     assert record.grouping is None
 
 
+def test_all_customer_masters_returns_fully_typed_records(store):
+    store.upsert_customer_master(
+        CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("500.00"),
+                              grouping=PartyGrouping.RELATED_PARTY, credit_period_days=45)
+    )
+    store.upsert_customer_master(CustomerMasterRecord("P2", "Beta Ltd", "KOL", Decimal("0.00")))
+    records = {r.party_id: r for r in store.all_customer_masters()}
+    assert records["P1"].pre_mis_outstanding == Decimal("500.00")
+    assert records["P1"].grouping == PartyGrouping.RELATED_PARTY
+    assert records["P1"].credit_period_days == 45
+    assert records["P2"].grouping is None
+
+
+def test_latest_weekly_snapshot_closing_total_is_none_when_empty(store):
+    assert store.latest_weekly_snapshot_closing_total() is None
+
+
+def test_latest_weekly_snapshot_closing_total_sums_the_most_recent_week(store):
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 12),
+            opening=Decimal("1000.00"), sales=Decimal("500.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1500.00"), closing_extracted=Decimal("1500.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    # Only the most recent week's total, not both weeks summed together.
+    assert store.latest_weekly_snapshot_closing_total() == Decimal("1500.00")
+
+
 def test_upsert_customer_master_does_not_touch_credit_period_or_grouping_for_existing_party(store):
     store.upsert_customer_master(
         CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00"),

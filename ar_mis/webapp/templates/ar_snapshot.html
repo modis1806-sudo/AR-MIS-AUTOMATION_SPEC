@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}AR Snapshot{% endblock %}
+{% block content %}
+<h1>AR Snapshot</h1>
+<p class="subtitle">Every figure below is the position as of the date selected — pick a different date and the whole dashboard recalculates, nothing is a stored total.</p>
+
+{% include "_freshness.html" %}
+
+<form class="as-of-form" method="get">
+  <div>
+    <label for="as_of">Show position as of</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
+<div class="section-heading">Outstanding Position</div>
+<div class="kpi-grid">
+  <div class="kpi-tile">
+    <div class="kpi-label">Total AR</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.total_ar) }}</div>
+    <div class="kpi-caption">Open invoices + Pre-MIS Outstanding</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Pre-MIS Outstanding</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.pre_mis_outstanding) }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Sundry Debtor AR</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.sundry_debtor_ar) }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Related Party AR</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.related_party_ar) }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Unapplied Cash</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.unapplied_cash) }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Unapplied CN</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.unapplied_cn) }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Rounding Difference</div>
+    <div class="kpi-value">{% if snapshot.rounding_difference is not none %}{{ "%.2f"|format(snapshot.rounding_difference) }}{% else %}—{% endif %}</div>
+    <div class="kpi-caption">Registers total vs. last weekly run</div>
+  </div>
+</div>
+
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Open AR by Financial Year</th><th>Amount</th></tr></thead>
+  <tbody>
+  {% for fy, amount in snapshot.open_ar_by_fy.items() | sort %}
+    <tr><td>{{ fy }}</td><td>{{ "%.2f"|format(amount) }}</td></tr>
+  {% else %}
+    <tr><td colspan="2" class="empty">No open invoices on record.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Performance</div>
+<div class="kpi-grid">
+  <div class="kpi-tile {% if snapshot.overdue_pct and snapshot.overdue_pct > 50 %}warn{% endif %}">
+    <div class="kpi-label">Overdue AR</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.overdue_ar) }}</div>
+    <div class="kpi-caption">{% if snapshot.overdue_pct is not none %}{{ "%.1f"|format(snapshot.overdue_pct) }}% of Total AR{% else %}—{% endif %}</div>
+  </div>
+  <div class="kpi-tile critical">
+    <div class="kpi-label">Bad Debt Risk (181+ days)</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.bad_debt_risk_180_plus) }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Notional Interest Cost</div>
+    <div class="kpi-value">{{ "%.2f"|format(snapshot.notional_interest_cost) }}</div>
+    <div class="kpi-caption">At 10% p.a. on overdue balances</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">DSO</div>
+    <div class="kpi-value">{% if snapshot.dso is not none %}{{ "%.0f"|format(snapshot.dso) }} days{% else %}—{% endif %}</div>
+    <div class="kpi-caption">Trailing 90-day sales</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Collection Efficiency</div>
+    <div class="kpi-value">{% if snapshot.collection_efficiency is not none %}{{ "%.1f"|format(snapshot.collection_efficiency) }}%{% else %}—{% endif %}</div>
+    <div class="kpi-caption">Trailing 90 days</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">PTP Kept Rate</div>
+    <div class="kpi-value">{% if snapshot.ptp_kept_rate is not none %}{{ "%.1f"|format(snapshot.ptp_kept_rate) }}%{% else %}—{% endif %}</div>
+    <div class="kpi-caption">Promises due on or before {{ as_of }}</div>
+  </div>
+</div>
+
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Overdue AR by Ageing Bucket</th><th>Amount</th></tr></thead>
+  <tbody>
+  {% for bucket in ["1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"] %}
+    <tr><td>{{ bucket }}</td><td>{{ "%.2f"|format(snapshot.overdue_by_bucket.get(bucket, 0)) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Average Collection Period by Branch</div>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Branch</th><th>DSO (days)</th></tr></thead>
+  <tbody>
+  {% for branch_id, dso in snapshot.average_collection_period_by_branch.items() | sort %}
+    <tr><td>{{ branch_id }}</td><td>{% if dso is not none %}{{ "%.0f"|format(dso) }}{% else %}—{% endif %}</td></tr>
+  {% else %}
+    <tr><td colspan="2" class="empty">No branches with tracked invoices yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="card" style="margin-top:20px;">
+  <h2 style="margin-top:0;">Trend Analysis — not built yet</h2>
+  <p>Sales Trend and Collection Trend (MIS Period vs. Pre-MIS Period, last 4 months) need a configured MIS go-live date, which isn't set up anywhere in the app yet. Everything else on this dashboard is live; this one section is the exception.</p>
+</div>
+{% endblock %}
