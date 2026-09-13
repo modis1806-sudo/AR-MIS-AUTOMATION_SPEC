@@ -258,6 +258,35 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
                     )
                 )
 
+        # CONFIRMED against real Speedways data: an "as invoice" voucher
+        # entered against stock items sometimes carries only the party's
+        # own top-level ledger entry - the real revenue/tax breakdown
+        # lives one level down, in each stock item's own
+        # ACCOUNTINGALLOCATIONS.LIST inside ALLINVENTORYENTRIES.LIST (8
+        # real vouchers in one week, one summing 5 x Rs 20000 stock-item
+        # allocations to the exact Rs 100000 the party was debited).
+        # Only used as a fallback when top-level entries are just the
+        # party's own side (fewer than 2) - most real invoices in the
+        # same export already carry a complete top-level picture (party +
+        # CGST + SGST) AND their own inventory detail for line-item
+        # breakdown, so unconditionally adding inventory allocations on
+        # top would double-count revenue for those (confirmed: 154 real
+        # vouchers in the same file have both).
+        if len(entries) < 2:
+            for inv_el in v_el.findall("ALLINVENTORYENTRIES.LIST"):
+                for alloc_el in inv_el.findall("ACCOUNTINGALLOCATIONS.LIST"):
+                    ledger_name = _text(alloc_el.find("LEDGERNAME"))
+                    if not ledger_name:
+                        continue
+                    entries.append(
+                        LedgerEntry(
+                            party_ledger_name=ledger_name,
+                            amount_as_extracted=_parse_decimal_amount(_text(alloc_el.find("AMOUNT"), "0")),
+                            bill_name=None,
+                            bill_type=None,
+                        )
+                    )
+
         vouchers.append(
             Voucher(
                 voucher_type=voucher_type,

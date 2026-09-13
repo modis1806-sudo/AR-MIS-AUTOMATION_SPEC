@@ -177,6 +177,78 @@ def test_parse_voucher_collection_skips_cancelled_vouchers():
     assert vouchers[0].voucher_number == "SB/0002"
 
 
+def test_parse_voucher_collection_falls_back_to_inventory_allocations_when_no_offsetting_ledger_entry():
+    # Confirmed against real Speedways data: a stock-item invoice can
+    # carry only the party's own top-level ledger entry - the real
+    # revenue breakdown lives in each stock item's own
+    # ACCOUNTINGALLOCATIONS.LIST inside ALLINVENTORYENTRIES.LIST.
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260401</DATE>
+  <VOUCHERNUMBER>26/HSLPL/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Transport Invoice</VOUCHERTYPENAME>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>Acme Corp</LEDGERNAME>
+   <AMOUNT>-100000.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <ALLINVENTORYENTRIES.LIST>
+   <ACCOUNTINGALLOCATIONS.LIST>
+    <LEDGERNAME>Road Transport Services_Exempt Goods</LEDGERNAME>
+    <AMOUNT>60000.00</AMOUNT>
+   </ACCOUNTINGALLOCATIONS.LIST>
+  </ALLINVENTORYENTRIES.LIST>
+  <ALLINVENTORYENTRIES.LIST>
+   <ACCOUNTINGALLOCATIONS.LIST>
+    <LEDGERNAME>Road Transport Services_Exempt Goods</LEDGERNAME>
+    <AMOUNT>40000.00</AMOUNT>
+   </ACCOUNTINGALLOCATIONS.LIST>
+  </ALLINVENTORYENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="KOL")
+    assert len(vouchers) == 1
+    entries = vouchers[0].entries
+    assert len(entries) == 3
+    non_party = [e for e in entries if e.party_ledger_name != "Acme Corp"]
+    assert sum(e.amount_as_extracted for e in non_party) == Decimal("100000.00")
+
+
+def test_parse_voucher_collection_does_not_double_count_when_top_level_entries_are_complete():
+    # A voucher that already has a full ledger-level picture (party + tax)
+    # commonly ALSO carries inventory detail for line-item breakdown -
+    # confirmed against real data that 154 of 171 real vouchers in one
+    # week's export have both. The inventory allocations must be ignored
+    # in that case, not added on top of an already-complete total.
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260401</DATE>
+  <VOUCHERNUMBER>1/HSLPL/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Transport Invoice</VOUCHERTYPENAME>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>Acme Corp</LEDGERNAME>
+   <AMOUNT>-21830.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>CGST</LEDGERNAME>
+   <AMOUNT>1665.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>SGST</LEDGERNAME>
+   <AMOUNT>1665.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <ALLINVENTORYENTRIES.LIST>
+   <ACCOUNTINGALLOCATIONS.LIST>
+    <LEDGERNAME>Road Transport Services_GST_18%</LEDGERNAME>
+    <AMOUNT>18500.00</AMOUNT>
+   </ACCOUNTINGALLOCATIONS.LIST>
+  </ALLINVENTORYENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="KOL")
+    assert len(vouchers) == 1
+    assert len(vouchers[0].entries) == 3
+
+
 def test_parse_ledger_closing_balances():
     raw = (FIXTURES / "ledger_closing_balances.xml").read_text()
     balances = parse_ledger_closing_balances(raw)
