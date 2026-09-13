@@ -28,10 +28,13 @@ from ar_mis.registers import (
     compute_dso,
     compute_due_date,
     compute_invoice_position,
+    compute_linked_cn_reference_text,
     compute_ptp_kept_rate,
     compute_ptp_outcome,
+    compute_receipt_journal_display_fields,
     compute_sales_in_window,
     compute_unapplied_cash_by_party,
+    financial_year_label,
     compute_unapplied_cn_by_party,
     is_round_off_ledger,
     RegisterBuildExceptions,
@@ -724,3 +727,84 @@ def test_ptp_kept_rate_percentage_across_multiple_promises():
     ]
     rate = compute_ptp_kept_rate(follow_ups, lookup, [], receipts, as_of=date(2026, 3, 1))
     assert rate == Decimal("50")
+
+
+# ---- Register-view presentation helpers (design doc item 2) --------------
+
+
+def test_financial_year_label():
+    assert financial_year_label(date(2026, 4, 1)) == "2026-27"
+    assert financial_year_label(date(2026, 3, 31)) == "2025-26"
+
+
+def test_linked_cn_reference_text_blank_when_none_linked():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("1000.00"))
+    assert compute_linked_cn_reference_text(invoice, [], as_of=date(2026, 2, 1)) == ""
+
+
+def test_linked_cn_reference_text_shows_the_single_cn_number():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("1000.00"))
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 1, 15), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV001",
+    )
+    assert compute_linked_cn_reference_text(invoice, [cn], as_of=date(2026, 2, 1)) == "CN/01"
+
+
+def test_linked_cn_reference_text_multiple_cns():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("1000.00"))
+    cns = [
+        CreditNoteRegisterRow(branch_id="B1", cn_date=date(2026, 1, 15), voucher_number="CN/01",
+                               party_id="ACME", cn_amount=Decimal("100.00"), bill_allocation_reference="INV001"),
+        CreditNoteRegisterRow(branch_id="B1", cn_date=date(2026, 1, 20), voucher_number="CN/02",
+                               party_id="ACME", cn_amount=Decimal("100.00"), bill_allocation_reference="INV001"),
+    ]
+    assert compute_linked_cn_reference_text(invoice, cns, as_of=date(2026, 2, 1)) == "Multiple credit notes issued"
+
+
+def test_linked_cn_reference_text_excludes_cns_after_as_of_and_non_current():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("1000.00"))
+    cns = [
+        CreditNoteRegisterRow(branch_id="B1", cn_date=date(2026, 6, 1), voucher_number="CN/LATE",
+                               party_id="ACME", cn_amount=Decimal("100.00"), bill_allocation_reference="INV001"),
+        CreditNoteRegisterRow(branch_id="B1", cn_date=date(2026, 1, 15), voucher_number="CN/PENDING",
+                               party_id="ACME", cn_amount=Decimal("100.00"), bill_allocation_reference="INV001",
+                               classification=RegisterClassification.PENDING_REVIEW),
+    ]
+    assert compute_linked_cn_reference_text(invoice, cns, as_of=date(2026, 2, 1)) == ""
+
+
+def test_receipt_journal_display_fields_for_applied_line():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("1000.00"))  # due 2026-01-31
+    lookup = {("ACME", "INV001"): invoice}
+    row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 2, 5), voucher_type="Receipt",
+        voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no="INV001",
+    )
+    fields = compute_receipt_journal_display_fields(row, lookup, as_of=date(2026, 3, 1))
+    assert fields.dpd_at_application == 5  # paid 5 days after the Jan 31 due date
+    assert fields.invoice_fin_year == "2025-26"
+    assert fields.age_unapplied_days is None
+
+
+def test_receipt_journal_display_fields_for_unapplied_line():
+    row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 2, 5), voucher_type="Receipt",
+        voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no=None,
+    )
+    fields = compute_receipt_journal_display_fields(row, {}, as_of=date(2026, 3, 1))
+    assert fields.dpd_at_application is None
+    assert fields.invoice_fin_year is None
+    assert fields.age_unapplied_days == 24  # 2026-02-05 to 2026-03-01
+
+
+def test_receipt_journal_display_fields_for_unresolved_reference():
+    row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 2, 5), voucher_type="Receipt",
+        voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no="INV-UNKNOWN",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    fields = compute_receipt_journal_display_fields(row, {}, as_of=date(2026, 3, 1))
+    assert fields.dpd_at_application is None
+    assert fields.invoice_fin_year is None
+    assert fields.age_unapplied_days is None

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
+from ar_mis.config import financial_year_start
 from ar_mis.models import (
     CreditNoteRegisterRow,
     CustomerMasterRecord,
@@ -616,3 +617,89 @@ def compute_ptp_kept_rate(
         return None
     kept_count = sum(1 for outcome in outcomes if outcome.kept)
     return (Decimal(kept_count) / Decimal(len(outcomes))) * Decimal("100")
+
+
+# ---------------------------------------------------------------------
+# Register-view presentation helpers (design doc item 2's exact confirmed
+# column sets). These are display derivations, not business formulas -
+# they exist here (rather than inline in the webapp) so they're testable
+# independent of Flask/Jinja, matching this module's own convention.
+# ---------------------------------------------------------------------
+
+
+def financial_year_label(d: date) -> str:
+    """"2025-26"-style label for the Indian FY (April 1 start) containing
+    `d` - design doc item 2's "Invoice Fin Year" column on the Receipt &
+    Journal Register.
+    """
+    fy_start = financial_year_start(d)
+    return f"{fy_start.year}-{str(fy_start.year + 1)[-2:]}"
+
+
+def compute_linked_cn_reference_text(
+    row: SalesDNRegisterRow, credit_note_rows: list[CreditNoteRegisterRow], as_of: date
+) -> str:
+    """Design doc item 2's "Linked CN No." column on the Sales & DN
+    Register: the CN's own voucher number when exactly one CURRENT credit
+    note is linked to this invoice as of the given date, "Multiple credit
+    notes issued" when more than one, or "" when none - never a bare CN
+    amount, which Linked CN Amount already covers.
+    """
+    key = (row.party_id, row.bill_allocation_reference)
+    linked = [
+        cn
+        for cn in credit_note_rows
+        if cn.cn_date <= as_of
+        and cn.classification == RegisterClassification.CURRENT
+        and (cn.party_id, cn.bill_allocation_reference) == key
+    ]
+    if not linked:
+        return ""
+    if len(linked) == 1:
+        return linked[0].voucher_number
+    return "Multiple credit notes issued"
+
+
+@dataclass
+class ReceiptJournalDisplayFields:
+    """Design doc item 2's Receipt & Journal Register columns that aren't
+    stored facts: DPD at Application, Invoice Fin Year, and Age Unapplied
+    Days. All None/blank for a field that doesn't apply to this row (an
+    applied line has no Age Unapplied Days; an unapplied line has neither
+    of the other two, since there is no target invoice to derive them
+    from).
+    """
+
+    dpd_at_application: int | None
+    invoice_fin_year: str | None
+    age_unapplied_days: int | None
+
+
+def compute_receipt_journal_display_fields(
+    row: ReceiptJournalRegisterRow,
+    bill_reference_lookup: dict[tuple[str, str], SalesDNRegisterRow],
+    as_of: date,
+) -> ReceiptJournalDisplayFields:
+    """`bill_reference_lookup` is the same (party_id, bill_allocation_
+    reference) -> SalesDNRegisterRow map build_bill_reference_lookup()
+    produces and _resolve_bill_allocation() matches against - Target Doc
+    No. IS a bill allocation reference (see design doc item 2), not a
+    voucher-identity key, so this must use that same lookup rather than
+    the (branch, voucher_number, party) identity PTP matching uses.
+    """
+    if row.target_doc_no is None:
+        return ReceiptJournalDisplayFields(
+            dpd_at_application=None,
+            invoice_fin_year=None,
+            age_unapplied_days=max((as_of - row.txn_date).days, 0),
+        )
+    invoice = bill_reference_lookup.get((row.party_id, row.target_doc_no))
+    if invoice is None:
+        # Pending Review/Pre-MIS reference that never resolved to a
+        # tracked invoice - nothing to derive DPD/Fin Year from.
+        return ReceiptJournalDisplayFields(dpd_at_application=None, invoice_fin_year=None, age_unapplied_days=None)
+    return ReceiptJournalDisplayFields(
+        dpd_at_application=max((row.txn_date - invoice.due_date).days, 0),
+        invoice_fin_year=financial_year_label(invoice.invoice_date),
+        age_unapplied_days=None,
+    )
