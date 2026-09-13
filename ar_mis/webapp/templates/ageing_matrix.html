@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Ageing Matrix{% endblock %}
+{% block content %}
+<h1>Ageing Matrix</h1>
+<p class="subtitle">Branch summary plus customer-level detail, cross-checked against Tally's own ledger closing balance — recalculated for the date below. No rounding tolerance is applied: every difference is shown exactly as computed.</p>
+
+{% include "_freshness.html" %}
+
+<form class="as-of-form" method="get">
+  <div>
+    <label for="as_of">Show position as of</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
+  </div>
+  <div>
+    <label for="fy">Financial year</label>
+    <select id="fy" name="fy">
+      <option value="" {% if not selected_fy %}selected{% endif %}>All years</option>
+      {% for fy in all_fys %}
+        <option value="{{ fy }}" {% if fy == selected_fy %}selected{% endif %}>{{ fy }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
+<div class="section-heading">Branch Summary</div>
+<div class="table-scroll" style="margin-bottom:24px;">
+<table>
+  <thead>
+    <tr>
+      <th>Branch</th>
+      {% for bucket in bucket_order %}<th>{{ bucket }}</th>{% endfor %}
+      <th>Total</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in branch_rows %}
+    <tr {% if row.branch_id == "All Branches" %}style="font-weight:700; background:#f9fafb;"{% endif %}>
+      <td>{{ row.branch_id }}</td>
+      {% for bucket in bucket_order %}<td>{{ "%.2f"|format(row.buckets[bucket]) }}</td>{% endfor %}
+      <td>{{ "%.2f"|format(row.total) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Customer Detail (with Tally cross-check)</div>
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Branch</th>
+      <th>Customer</th>
+      <th>Grouping</th>
+      {% for bucket in bucket_order %}<th>{{ bucket }}</th>{% endfor %}
+      <th>Total Open</th>
+      <th>Tally Closing Balance</th>
+      <th>Difference</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in customer_rows %}
+    <tr>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{{ row.grouping or '—' }}</td>
+      {% for bucket in bucket_order %}<td>{{ "%.2f"|format(row.buckets[bucket]) }}</td>{% endfor %}
+      <td>{{ "%.2f"|format(row.total_open) }}</td>
+      <td>{{ "%.2f"|format(row.tally_closing_balance) if row.tally_closing_balance is not none else 'No Tally figure on record' }}</td>
+      <td {% if row.difference is not none and row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>
+        {{ "%.2f"|format(row.difference) if row.difference is not none else '—' }}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="{{ 6 + bucket_order|length }}" class="empty">No parties found.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

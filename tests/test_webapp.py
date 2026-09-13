@@ -637,3 +637,73 @@ def test_exception_register_reachable_by_viewer(roleless_client):
 def test_reports_home_links_to_exception_register(client):
     resp = client.get("/reports")
     assert b"Exception Register" in resp.data
+
+
+# ---- Reports: Ageing Matrix ------------------------------------------------
+
+
+def test_ageing_matrix_renders_with_no_data(client):
+    resp = client.get("/reports/ageing-matrix")
+    assert resp.status_code == 200
+    assert b"Ageing Matrix" in resp.data
+    assert b"No parties found" in resp.data
+
+
+def test_ageing_matrix_shows_extracted_party_and_branch_total(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12")
+    assert resp.status_code == 200
+    assert b"A &amp; B Transport Pvt Ltd" in resp.data or b"A & B Transport Pvt Ltd" in resp.data
+    assert b"KOL" in resp.data
+    assert b"All Branches" in resp.data
+
+
+def test_ageing_matrix_shows_tally_cross_check_difference_after_extraction(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12")
+    assert resp.status_code == 200
+    # process_branch_data reconciled exactly (125000.00 extracted == computed),
+    # so the cross-check difference must show as zero, not blank/omitted.
+    assert b"125000.00" in resp.data
+
+
+def test_ageing_matrix_fy_filter_narrows_customer_rows(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    _run_a_real_extraction(client)  # FY 2026-27 party: "A & B Transport Pvt Ltd"
+
+    # Add a second party, invoiced entirely within FY 2025-26.
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("BETA", "Beta Logistics", "KOL", Decimal("0.00")))
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 6), voucher_number="SB/0200",
+        branch_id="KOL", party_ledger_name="BETA",
+        entries=[
+            LedgerEntry(party_ledger_name="BETA", amount_as_extracted=Decimal("-50000.00"), bill_name="SB/0200", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("50000.00")),
+        ],
+    )
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 1, 7), [voucher], {"BETA": Decimal("50000.00")})
+    store.close()
+
+    resp_fy26 = client.get("/reports/ageing-matrix?as_of=2026-09-12&fy=2025-26")
+    assert resp_fy26.status_code == 200
+    assert b"BETA" in resp_fy26.data
+    assert b"A &amp; B Transport" not in resp_fy26.data and b"A & B Transport" not in resp_fy26.data
+
+    resp_fy27 = client.get("/reports/ageing-matrix?as_of=2026-09-12&fy=2026-27")
+    assert resp_fy27.status_code == 200
+    assert b"BETA" not in resp_fy27.data
+
+
+def test_ageing_matrix_reachable_by_viewer(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    resp = roleless_client.get("/reports/ageing-matrix")
+    assert resp.status_code == 200
+
+
+def test_reports_home_links_to_ageing_matrix(client):
+    resp = client.get("/reports")
+    assert b"Ageing Matrix" in resp.data

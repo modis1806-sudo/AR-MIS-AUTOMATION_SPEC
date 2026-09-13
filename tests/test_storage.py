@@ -136,6 +136,66 @@ def test_latest_weekly_snapshot_closing_total_sums_the_most_recent_week(store):
     assert store.latest_weekly_snapshot_closing_total() == Decimal("1500.00")
 
 
+def test_latest_weekly_snapshot_closing_by_party_is_empty_when_no_snapshots(store):
+    assert store.latest_weekly_snapshot_closing_by_party(date(2026, 1, 12)) == {}
+
+
+def test_latest_weekly_snapshot_closing_by_party_picks_latest_week_per_party(store):
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 12),
+            opening=Decimal("1000.00"), sales=Decimal("500.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1500.00"), closing_extracted=Decimal("1490.00"),
+            reconciled=True, difference=Decimal("10.00"),
+        )
+    )
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P2", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("2000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("2000.00"), closing_extracted=Decimal("2000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    result = store.latest_weekly_snapshot_closing_by_party(date(2026, 1, 12))
+    assert result == {("P1", "KOL"): Decimal("1490.00"), ("P2", "KOL"): Decimal("2000.00")}
+
+
+def test_latest_weekly_snapshot_closing_by_party_respects_as_of_cutoff(store):
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 12),
+            opening=Decimal("1000.00"), sales=Decimal("500.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("1500.00"), closing_extracted=Decimal("1500.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    # Only the week on-or-before as_of counts, not the later one.
+    result = store.latest_weekly_snapshot_closing_by_party(date(2026, 1, 5))
+    assert result == {("P1", "KOL"): Decimal("1000.00")}
+
+
 def test_upsert_customer_master_does_not_touch_credit_period_or_grouping_for_existing_party(store):
     store.upsert_customer_master(
         CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00"),

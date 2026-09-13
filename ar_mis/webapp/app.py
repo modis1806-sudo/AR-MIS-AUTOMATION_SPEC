@@ -26,6 +26,7 @@ from io import BytesIO
 
 from flask import Flask, flash, redirect, render_template, request, send_file, session, url_for
 
+from ar_mis.ageing_matrix import compute_ageing_matrix
 from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.dashboard import compute_ar_snapshot, compute_branch_ageing_schedule
 from ar_mis.exception_register import (
@@ -50,6 +51,7 @@ from ar_mis.registers import (
     compute_ptp_kept_rate,
     compute_ptp_outcome,
     compute_receipt_journal_display_fields,
+    financial_year_label,
 )
 from ar_mis.storage import Store
 from ar_mis.tally_client import CompanyMismatchError, TallyClient, TallyConnectionError
@@ -709,6 +711,52 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             non_active=non_active,
             unresolved=unresolved,
             top_overdue=top_overdue,
+        )
+
+    @app.route("/reports/ageing-matrix")
+    def ageing_matrix_report():
+        """Design doc item 15's customer-level detail report - a branch
+        summary (reusing compute_branch_ageing_schedule as-is) plus a
+        party-level breakdown that independently cross-checks the
+        registers-derived Total Open against Tally's own ledger closing
+        balance for that party (weekly_snapshot.closing_extracted). FY
+        scoping is applied here, at the call site, by filtering
+        sales_dn_rows before either compute function runs - neither
+        compute function itself knows about financial years.
+        """
+        as_of = _parse_as_of()
+        store = get_store()
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
+        tally_closing_by_party = store.latest_weekly_snapshot_closing_by_party(as_of)
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        all_fys = sorted({financial_year_label(row.invoice_date) for row in sales_dn_rows})
+        selected_fy = request.args.get("fy", "")
+        if selected_fy and selected_fy in all_fys:
+            scoped_sales_dn_rows = [row for row in sales_dn_rows if financial_year_label(row.invoice_date) == selected_fy]
+        else:
+            selected_fy = ""
+            scoped_sales_dn_rows = sales_dn_rows
+
+        branch_rows = compute_branch_ageing_schedule(scoped_sales_dn_rows, cn_rows, rj_rows, as_of)
+        customer_rows = compute_ageing_matrix(
+            scoped_sales_dn_rows, cn_rows, rj_rows, customer_masters, tally_closing_by_party, as_of
+        )
+        bucket_order = ["Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
+
+        return render_template(
+            "ageing_matrix.html",
+            as_of=as_of.isoformat(),
+            freshness=freshness,
+            all_fys=all_fys,
+            selected_fy=selected_fy,
+            branch_rows=branch_rows,
+            customer_rows=customer_rows,
+            bucket_order=bucket_order,
         )
 
     return app

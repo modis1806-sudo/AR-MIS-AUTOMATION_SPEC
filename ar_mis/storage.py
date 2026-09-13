@@ -681,6 +681,27 @@ class Store:
         rows = self.weekly_snapshots_for_week(latest)
         return sum((Decimal(r["closing_computed"]) for r in rows), Decimal("0.00"))
 
+    def latest_weekly_snapshot_closing_by_party(self, as_of: date) -> dict[tuple[str, str], Decimal]:
+        """Per (party_id, branch_id), the closing_extracted from that
+        party's most recent weekly_snapshot row with week_ending <= as_of
+        - Tally's own ledger closing balance as of that date, independent
+        of anything this codebase itself computed. The Ageing Matrix
+        (ar_mis.ageing_matrix) uses this as an outside cross-check against
+        the registers-derived Total Open per party; a party absent from
+        this dict has no weekly_snapshot row on or before as_of yet, which
+        the cross-check must show as "no Tally balance on record", not 0.
+        """
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute(
+            "SELECT party_id, branch_id, week_ending, closing_extracted FROM weekly_snapshot"
+            " WHERE week_ending <= ? ORDER BY week_ending ASC",
+            (as_of.isoformat(),),
+        )
+        result: dict[tuple[str, str], Decimal] = {}
+        for row in cur.fetchall():
+            result[(row["party_id"], row["branch_id"])] = Decimal(row["closing_extracted"])
+        return result
+
     def weekly_snapshots_for_party(self, party_id: str, branch_id: str) -> list[sqlite3.Row]:
         self.conn.row_factory = sqlite3.Row
         cur = self.conn.execute(
