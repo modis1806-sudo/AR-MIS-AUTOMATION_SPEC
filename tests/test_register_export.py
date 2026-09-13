@@ -146,3 +146,56 @@ def test_workbooks_handle_zero_rows_without_error():
     assert build_sales_dn_register_workbook([], as_of=date(2026, 9, 12)) is not None
     assert build_credit_note_register_workbook([]) is not None
     assert build_receipt_journal_register_workbook([], as_of=date(2026, 9, 12)) is not None
+
+
+# ---- Indian number formatting (client's explicit ask) ---------------------
+
+
+def test_sales_dn_register_workbook_applies_indian_format_to_amount_columns_only():
+    row = _sales_dn_row()
+    position = InvoicePosition(
+        row=row, linked_cn_amount=Decimal("0.00"), receipts_applied=Decimal("200000.00"),
+        open_amount=Decimal("264300.00"), is_overdue=True, days_past_due=64, ageing_bucket="61-90",
+    )
+    display_rows = [
+        {"row": row, "position": position, "linked_cn_no": "", "follow_up": None,
+         "ptp_status": "", "grouping": None}
+    ]
+    wb = build_sales_dn_register_workbook(display_rows, as_of=date(2026, 9, 12))
+    ws = wb.active
+    header_row = [c.value for c in ws[3]]
+
+    taxable_col = header_row.index("Taxable Value") + 1
+    assert ws.cell(row=4, column=taxable_col).number_format == "#,##,##0.00"
+
+    # A day count and a text column must keep their own/default format -
+    # never the currency format, even though they're on the same row.
+    dpd_col = header_row.index("DPD") + 1
+    assert ws.cell(row=4, column=dpd_col).number_format != "#,##,##0.00"
+    voucher_col = header_row.index("Voucher No.") + 1
+    assert ws.cell(row=4, column=voucher_col).number_format != "#,##,##0.00"
+
+
+def test_credit_note_register_workbook_applies_indian_format_to_cn_amount():
+    row = CreditNoteRegisterRow(
+        branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
+        cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
+    )
+    wb = build_credit_note_register_workbook([{"row": row, "unapplied_amount": None}])
+    ws = wb.active
+    header_row = [c.value for c in ws[1]]
+    cn_amount_col = header_row.index("CN Amount") + 1
+    assert ws.cell(row=2, column=cn_amount_col).number_format == "#,##,##0.00"
+
+
+def test_receipt_journal_register_workbook_applies_indian_format_to_applied_amount():
+    row = ReceiptJournalRegisterRow(
+        branch_id="MUN", txn_date=date(2026, 7, 1), voucher_type="Receipt", voucher_number="RCPT/01",
+        party_id="GIRIDHAN", amount=Decimal("200000.00"), target_doc_no="INV/001",
+    )
+    fields = ReceiptJournalDisplayFields(dpd_at_application=0, invoice_fin_year="2026-27", age_unapplied_days=None)
+    wb = build_receipt_journal_register_workbook([{"row": row, "fields": fields}], as_of=date(2026, 9, 12))
+    ws = wb.active
+    header_row = [c.value for c in ws[3]]
+    applied_col = header_row.index("Applied Amount") + 1
+    assert ws.cell(row=4, column=applied_col).number_format == "#,##,##0.00"

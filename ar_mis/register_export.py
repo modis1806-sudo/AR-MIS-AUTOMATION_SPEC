@@ -16,12 +16,34 @@ from openpyxl.worksheet.worksheet import Worksheet
 _HEADER_FILL = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
 _HEADER_FONT = Font(bold=True, color="FFFFFF")
 
+# Client's explicit ask: every amount in this app is Indian Rupees, and
+# a downloaded file must show the same digit grouping as the screen it
+# came from (see ar_mis.webapp.formatting's own docstring) - the last 3
+# digits together, then every 2 digits after that. This exact format
+# code is Excel's own well-established way to render that grouping;
+# unlike the webapp's own format_inr (which builds a display string),
+# here the underlying cell value stays a real number - Excel/the
+# spreadsheet's own SUM, sort, and filter must keep working on these
+# columns, which a string would break.
+_INR_NUMBER_FORMAT = "#,##,##0.00"
+
 
 def _header_row(ws: Worksheet, headers: list[str]) -> None:
     ws.append(headers)
     for cell in ws[ws.max_row]:
         cell.fill = _HEADER_FILL
         cell.font = _HEADER_FONT
+
+
+def _apply_inr_format(ws: Worksheet, columns: list[int]) -> None:
+    """Applies the Indian number format to the given 1-indexed column
+    numbers on the row just appended - called once per data row, right
+    after ws.append(), so only genuine amount columns get it (dates,
+    text, and day counts must keep their own/default formatting).
+    """
+    row = ws[ws.max_row]
+    for col in columns:
+        row[col - 1].number_format = _INR_NUMBER_FORMAT
 
 
 def _autosize(ws: Worksheet) -> None:
@@ -37,6 +59,11 @@ _SALES_DN_HEADERS = [
     "Overdue", "DPD", "Ageing Bucket", "PTP Date", "PTP Amount", "PTP Status", "Next Action",
     "Expected Collection Date",
 ]
+
+# 1-indexed column numbers of _SALES_DN_HEADERS that hold a real amount -
+# Taxable Value, CGST, SGST, IGST, Round Off, Invoice Value, Linked CN
+# Amount, Net Receivable, Receipts Applied, Open Amount, PTP Amount.
+_SALES_DN_MONEY_COLUMNS = [9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 25]
 
 
 def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workbook:
@@ -64,6 +91,7 @@ def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workboo
                 fu.expected_collection_date if fu else None,
             ]
         )
+        _apply_inr_format(ws, _SALES_DN_MONEY_COLUMNS)
     _autosize(ws)
     return wb
 
@@ -72,6 +100,8 @@ _CREDIT_NOTE_HEADERS = [
     "Branch", "Date", "Customer", "CN Number", "Original Invoice/DN Ref", "CN Amount",
     "Open/Unapplied CN Amount", "Classification",
 ]
+# CN Amount, Open/Unapplied CN Amount.
+_CREDIT_NOTE_MONEY_COLUMNS = [6, 7]
 
 
 def build_credit_note_register_workbook(display_rows: list[dict]) -> Workbook:
@@ -90,6 +120,7 @@ def build_credit_note_register_workbook(display_rows: list[dict]) -> Workbook:
                 row.classification.value,
             ]
         )
+        _apply_inr_format(ws, _CREDIT_NOTE_MONEY_COLUMNS)
     _autosize(ws)
     return wb
 
@@ -99,6 +130,8 @@ _RECEIPT_JOURNAL_HEADERS = [
     "Applied Amount", "Unapplied Balance", "Classification", "DPD at Application", "Age Unapplied Days",
     "Invoice Fin Year", "Narration",
 ]
+# Applied Amount, Unapplied Balance.
+_RECEIPT_JOURNAL_MONEY_COLUMNS = [8, 9]
 
 
 def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> Workbook:
@@ -122,5 +155,6 @@ def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> 
                 row.narration or "",
             ]
         )
+        _apply_inr_format(ws, _RECEIPT_JOURNAL_MONEY_COLUMNS)
     _autosize(ws)
     return wb
