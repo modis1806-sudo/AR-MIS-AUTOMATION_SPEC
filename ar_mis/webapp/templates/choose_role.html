@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Choose Role{% endblock %}
+{% block nav %}{% endblock %}
+{% block content %}
+<h1>Who's using this?</h1>
+<p class="subtitle">
+  This is a placeholder, not a real login - it just decides what you see.
+  Preparer sees Extraction, Registers, and Reports; Viewer sees Registers
+  and Reports only.
+</p>
+<div class="card role-cards">
+  <form method="post" class="role-card">
+    <input type="hidden" name="role" value="preparer">
+    <input type="hidden" name="next" value="{{ next or '' }}">
+    <h2>Preparer</h2>
+    <p>Extracts data from Tally, sees everything: Extraction, Registers, Reports.</p>
+    <button class="btn" type="submit">Continue as Preparer</button>
+  </form>
+  <form method="post" class="role-card">
+    <input type="hidden" name="role" value="viewer">
+    <input type="hidden" name="next" value="{{ next or '' }}">
+    <h2>Viewer</h2>
+    <p>Owner / CFO view: Registers and Reports only, read-only, no Extraction.</p>
+    <button class="btn secondary" type="submit">Continue as Viewer</button>
+  </form>
+</div>
+{% endblock %}

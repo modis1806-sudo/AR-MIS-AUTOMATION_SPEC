@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Receipt & Journal Register{% endblock %}
+{% block content %}
+<h1>Receipt &amp; Journal Register</h1>
+<p class="subtitle">Voucher-wise, every branch combined, bill-allocated. A voucher can apply against a specific invoice (Against Ref) or be left unapplied (New Ref/on-account) — this applies to Journals exactly like Receipts.</p>
+
+{% include "_freshness.html" %}
+
+<form class="as-of-form" method="get">
+  <div>
+    <label for="as_of">Age Unapplied Days as of</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
+{% if display_rows %}
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Branch</th><th>Date</th><th>Voucher Type</th><th>Voucher No.</th><th>Customer</th>
+      <th>Allocation Type</th><th>Target Doc No.</th><th>Applied Amount</th><th>Unapplied Balance</th>
+      <th>Classification</th><th>DPD at Application</th><th>Age Unapplied Days</th><th>Invoice Fin Year</th>
+      <th>Narration</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for d in display_rows %}
+    {% set row = d.row %}
+    {% set f = d.fields %}
+    <tr>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.txn_date }}</td>
+      <td>{{ row.voucher_type }}</td>
+      <td>{{ row.voucher_number }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{% if row.target_doc_no %}Against Ref{% else %}Unapplied{% endif %}</td>
+      <td>{{ row.target_doc_no or '—' }}</td>
+      <td>{{ row.amount if row.target_doc_no else '—' }}</td>
+      <td>{{ row.amount if not row.target_doc_no else '—' }}</td>
+      <td>
+        {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
+        {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>
+        {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}
+      </td>
+      <td>{{ f.dpd_at_application if f.dpd_at_application is not none else '—' }}</td>
+      <td>{{ f.age_unapplied_days if f.age_unapplied_days is not none else '—' }}</td>
+      <td>{{ f.invoice_fin_year or '—' }}</td>
+      <td>{{ row.narration or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card empty">No receipts or journals on record yet — run an extraction first.</div>
+{% endif %}
+{% endblock %}

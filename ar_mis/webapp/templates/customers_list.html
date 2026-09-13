@@ -4,10 +4,13 @@
 <h1>Customer Master</h1>
 <p class="subtitle">Every party on record, across all branches. "Last Reconciled" is a human review — separate from the automated zero-tolerance check — so a name and date are on record for whoever last actually looked at this party. Never-reconciled and longest-overdue parties are listed first.</p>
 
+{% include "_freshness.html" %}
+
 {% if rows %}
+<div class="table-scroll">
 <table>
   <thead>
-    <tr><th>Party</th><th>Branch</th><th>Pre-MIS Outstanding</th><th>Last Reconciled On</th><th>Last Reconciled By</th><th>Mark Reconciled</th></tr>
+    <tr><th>Party</th><th>Branch</th><th>Pre-MIS Outstanding</th><th>Last Reconciled On</th><th>Last Reconciled By</th>{% if session.role == "preparer" %}<th>Mark Reconciled</th>{% endif %}</tr>
   </thead>
   <tbody>
   {% for r in rows %}
@@ -17,6 +20,7 @@
       <td>{{ r['pre_mis_outstanding'] }}</td>
       <td>{% if r['last_reconciled_on'] %}{{ r['last_reconciled_on'] }}{% else %}<span class="pill fail">Never</span>{% endif %}</td>
       <td>{{ r['last_reconciled_by'] or '—' }}</td>
+      {% if session.role == "preparer" %}
       <td>
         <form method="post" action="{{ url_for('customers_reconcile') }}" style="display:flex; gap:6px;">
           <input type="hidden" name="party_id" value="{{ r['party_id'] }}">
@@ -25,10 +29,12 @@
           <button class="btn" type="submit" style="padding:6px 12px; font-size:13px;">Mark reconciled today</button>
         </form>
       </td>
+      {% endif %}
     </tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <div class="card empty">No customers on record yet — seed Layer 1 first (see README).</div>
 {% endif %}

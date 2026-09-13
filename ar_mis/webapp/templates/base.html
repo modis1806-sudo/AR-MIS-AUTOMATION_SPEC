@@ -31,20 +31,78 @@
   .pill.fail { background:#fee2e2; color:#991b1b; }
   .empty { color:#6b7280; font-style:italic; padding:20px; text-align:center; }
   .row-actions button { background:none; border:none; color:#dc2626; cursor:pointer; padding:0; font-size:14px; }
+
+  /* Section-grouped nav + role indicator */
+  .topbar { background:#1f2937; color:#fff; }
+  .topbar-row1 { padding:14px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  .role-indicator { font-size:12px; color:#9ca3af; }
+  .role-indicator a { color:#93c5fd; text-decoration:none; margin-left:6px; }
+  nav.grouped { padding:0 24px 12px; display:flex; gap:28px; flex-wrap:wrap; }
+  nav.grouped .nav-group-label { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; margin-bottom:4px; }
+  nav.grouped a { color:#d1d5db; text-decoration:none; font-size:14px; margin-right:14px; white-space:nowrap; }
+  nav.grouped a:hover { color:#fff; }
+  nav.grouped a.active { color:#fff; font-weight:600; }
+
+  /* Freshness indicator */
+  .freshness { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#4b5563; background:#eef2f7; border:1px solid #dbe3ee; border-radius:999px; padding:4px 12px; margin-bottom:20px; }
+  .freshness .dot { width:8px; height:8px; border-radius:50%; background:#22c55e; flex:none; }
+  .freshness.stale .dot { background:#f59e0b; }
+  .freshness.never .dot { background:#9ca3af; }
+
+  .as-of-form { display:flex; align-items:flex-end; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+  .as-of-form label { margin:0; font-size:12px; font-weight:600; color:#374151; }
+  .as-of-form input { padding:6px 8px; }
+  .table-scroll { overflow-x:auto; background:#fff; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .table-scroll table { box-shadow:none; border-radius:0; white-space:nowrap; }
+  .pill.status-active { background:#e0f2fe; color:#075985; }
+  .pill.status-kept { background:#dcfce7; color:#166534; }
+  .pill.status-broken { background:#fee2e2; color:#991b1b; }
+  .pill.class-current { background:#f3f4f6; color:#374151; }
+  .pill.class-pending { background:#fef3c7; color:#92400e; }
+  .pill.class-premis { background:#e0e7ff; color:#3730a3; }
+
+  .role-cards { display:flex; gap:0; padding:0; overflow:hidden; }
+  .role-card { flex:1; padding:24px; }
+  .role-card:first-child { border-right:1px solid #e5e7eb; }
+  .role-card h2 { margin-top:0; }
 </style>
 </head>
 <body>
-<header>
-  <a class="brand" href="{{ url_for('home') }}">AR MIS Pipeline</a>
-  <nav>
-    <a href="{{ url_for('home') }}">Home</a>
-    <a href="{{ url_for('branches_list') }}">Branch Master</a>
-    <a href="{{ url_for('customers_list') }}">Customer Master</a>
-    <a href="{{ url_for('discover_companies') }}">Discover Companies</a>
-    <a href="{{ url_for('test_extraction') }}">Test Extraction</a>
-    <a href="{{ url_for('manual_upload') }}">Manual Upload</a>
+{% block nav %}
+<div class="topbar">
+  <div class="topbar-row1">
+    <a class="brand" href="{{ url_for('home') }}">AR MIS Pipeline</a>
+    {% if session.role %}
+    <div class="role-indicator">
+      Viewing as <strong>{{ "Preparer" if session.role == "preparer" else "Viewer" }}</strong>
+      <a href="{{ url_for('choose_role') }}">Switch</a>
+    </div>
+    {% endif %}
+  </div>
+  <nav class="grouped">
+    {% if session.role == "preparer" %}
+    <div>
+      <span class="nav-group-label">Extraction</span>
+      <a href="{{ url_for('branches_list') }}">Branch Master</a>
+      <a href="{{ url_for('discover_companies') }}">Discover Companies</a>
+      <a href="{{ url_for('test_extraction') }}">Test Extraction</a>
+      <a href="{{ url_for('manual_upload') }}">Manual Upload</a>
+    </div>
+    {% endif %}
+    <div>
+      <span class="nav-group-label">Registers</span>
+      <a href="{{ url_for('customers_list') }}">Customer Master</a>
+      <a href="{{ url_for('sales_dn_register') }}">Sales &amp; DN Register</a>
+      <a href="{{ url_for('credit_note_register') }}">Credit Note Register</a>
+      <a href="{{ url_for('receipt_journal_register') }}">Receipt &amp; Journal Register</a>
+    </div>
+    <div>
+      <span class="nav-group-label">Reports</span>
+      <a href="{{ url_for('reports_home') }}">Reports</a>
+    </div>
   </nav>
-</header>
+</div>
+{% endblock %}
 <main>
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for category, message in messages %}

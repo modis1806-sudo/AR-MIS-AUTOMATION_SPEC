@@ -4,6 +4,9 @@
 <h1>AR MIS — Tally Extraction Pipeline</h1>
 <p class="subtitle">Local tool. Runs on this machine only — nothing here leaves it.</p>
 
+{% include "_freshness.html" %}
+
+{% if session.role == "preparer" %}
 <div class="card">
   <h2 style="margin-top:0;">Status</h2>
   <p>{{ branch_count }} branch(es) configured in Branch Master.</p>
@@ -20,6 +23,15 @@
   <ul>
     <li><strong>Branch Master</strong> — configure each branch's Tally company name and how to reach it (host/port). This is the only place branch config lives; nothing is hardcoded in source code.</li>
     <li><strong>Test Extraction</strong> — pick a branch and run a real connectivity + extraction check against its Tally instance: company match, voucher pull, Sundry Debtors pull. Read-only — nothing is written to the database. Use this before trusting any real weekly run.</li>
+    <li><strong>Registers</strong> — once a real extraction has run, every invoice, credit note, and receipt/journal is viewable here with its full detail, not just folded into a report.</li>
   </ul>
 </div>
+{% else %}
+<div class="card">
+  <h2 style="margin-top:0;">Registers &amp; Reports</h2>
+  <p>Extraction is handled by your team's preparer. From here you can look at the registers themselves or the reports built from them.</p>
+  <a class="btn" href="{{ url_for('sales_dn_register') }}">Sales &amp; DN Register</a>
+  <a class="btn secondary" href="{{ url_for('reports_home') }}">Reports</a>
+</div>
+{% endif %}
 {% endblock %}

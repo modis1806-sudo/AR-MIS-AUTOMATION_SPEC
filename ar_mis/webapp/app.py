@@ -1,25 +1,47 @@
-"""Local web application: Branch Master (extraction config as
-user-editable data, not hardcoded Python) and Test Extraction (a
-self-serve way to check "can this reach my Tally and pull real data"
-without touching code or waiting on a build environment that has no
-LAN access to any real Tally instance).
+"""Local web application: Extraction (Branch Master, Test Extraction,
+Discover Companies, Manual Upload - all Preparer-only), Registers (the
+Sales & DN, Credit Note, and Receipt & Journal registers plus Customer
+Master, viewable by anyone), and Reports (still a placeholder - the
+report catalog itself, docs/registers_and_reporting_design.md item 15,
+is separately pending).
 
 Runs on localhost only, matching the spec's LAN-only/no-cloud-dependency
 framing - this is an internal single-operator tool, not a public service.
-No authentication: there is nothing here that isn't also reachable by
-running the CLI directly, and it is not meant to be exposed beyond the
-machine (or LAN) that also has Tally access.
+
+Role gating is a deliberate PLACEHOLDER, not real security (client's
+explicit choice - see docs/registers_and_reporting_design.md's role
+decision): a role picker sets a plain session value with no password
+behind it, so it hides the Extraction section from a Viewer (you/CFO)
+in the UI and blocks its routes server-side, but anyone with access to
+this machine can still pick "Preparer" themselves. Real login (item 11,
+"non-negotiable" once the full AR team is using this) is separate,
+later work - this only needs to hold up while it's the client's own
+team testing on a private machine.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from functools import wraps
 
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, flash, redirect, render_template, request, session, url_for
 
 from ar_mis.config import BranchConfig, financial_year_start
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
+from ar_mis.models import RegisterClassification
+from ar_mis.registers import (
+    build_bill_reference_lookup,
+    compute_invoice_position,
+    compute_linked_cn_reference_text,
+    compute_ptp_outcome,
+    compute_receipt_journal_display_fields,
+)
 from ar_mis.storage import Store
 from ar_mis.tally_client import CompanyMismatchError, TallyClient, TallyConnectionError
+
+ROLES = {
+    "preparer": "Preparer",
+    "viewer": "Viewer",
+}
 
 
 def create_app(db_path: str = "data/ar_mis.db") -> Flask:
@@ -30,14 +52,73 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def get_store() -> Store:
         return Store(app.config["DB_PATH"])
 
+    def _freshness(last_extracted: datetime | None) -> dict:
+        """Client's explicit ask: an indicator of how old what's on screen
+        is. `last_extracted` is the real wall-clock timestamp from
+        store.last_extraction_at() (extraction_log), never the business
+        week_ending a run covers - see that table's own docstring for why
+        those two differ. Flagged "stale" past 7 days, matching the
+        weekly extraction cadence this whole pipeline is built around: a
+        register more than one cycle old is worth calling out, not just
+        stating the date and leaving the reader to do that math.
+        """
+        if last_extracted is None:
+            return {"label": "No data extracted yet", "css_class": "never"}
+        age_days = (datetime.now() - last_extracted).days
+        return {
+            "label": f"Data last extracted: {last_extracted.strftime('%d %b %Y, %I:%M %p')}",
+            "css_class": "stale" if age_days > 7 else "",
+        }
+
+    def requires_role(role: str):
+        """Route-level enforcement of the role placeholder described in
+        this module's docstring - the nav already hides Extraction links
+        from a Viewer, but a link being hidden is not the same as a route
+        being blocked, and the client was explicit that Extraction must
+        not be reachable by a Viewer at all, not just tucked out of the
+        menu.
+        """
+
+        def decorator(view):
+            @wraps(view)
+            def wrapped(*args, **kwargs):
+                if session.get("role") != role:
+                    flash("This section isn't available for your role.", "error")
+                    return redirect(url_for("home"))
+                return view(*args, **kwargs)
+
+            return wrapped
+
+        return decorator
+
+    @app.before_request
+    def require_role_chosen():
+        if request.endpoint in (None, "static", "choose_role") or session.get("role") in ROLES:
+            return None
+        return redirect(url_for("choose_role", next=request.path))
+
+    @app.route("/choose-role", methods=["GET", "POST"])
+    def choose_role():
+        if request.method == "POST":
+            role = request.form.get("role", "")
+            if role not in ROLES:
+                flash("Choose a role to continue.", "error")
+                return render_template("choose_role.html", roles=ROLES)
+            session["role"] = role
+            next_path = request.form.get("next") or url_for("home")
+            return redirect(next_path)
+        return render_template("choose_role.html", roles=ROLES, next=request.args.get("next", ""))
+
     @app.route("/")
     def home():
         store = get_store()
         branch_count = len(store.list_branches())
+        freshness = _freshness(store.last_extraction_at())
         store.close()
-        return render_template("home.html", branch_count=branch_count)
+        return render_template("home.html", branch_count=branch_count, freshness=freshness)
 
     @app.route("/branches")
+    @requires_role("preparer")
     def branches_list():
         store = get_store()
         branches = store.list_branches()
@@ -45,6 +126,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template("branches_list.html", branches=branches)
 
     @app.route("/branches/new", methods=["GET", "POST"])
+    @requires_role("preparer")
     def branch_new():
         if request.method == "POST":
             branch_id = request.form.get("branch_id", "").strip()
@@ -83,6 +165,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template("branch_form.html", branch=None, prefill=prefill)
 
     @app.route("/branches/<branch_id>/edit", methods=["GET", "POST"])
+    @requires_role("preparer")
     def branch_edit(branch_id):
         store = get_store()
         existing = store.get_branch(branch_id)
@@ -114,6 +197,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template("branch_form.html", branch=existing)
 
     @app.route("/branches/<branch_id>/delete", methods=["POST"])
+    @requires_role("preparer")
     def branch_delete(branch_id):
         store = get_store()
         store.delete_branch(branch_id)
@@ -122,6 +206,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return redirect(url_for("branches_list"))
 
     @app.route("/test-extraction", methods=["GET", "POST"])
+    @requires_role("preparer")
     def test_extraction():
         store = get_store()
         branches = store.list_branches()
@@ -211,6 +296,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         )
 
     @app.route("/discover", methods=["GET", "POST"])
+    @requires_role("preparer")
     def discover_companies():
         """Asks Tally what companies are open right now, so a company name
         can be picked rather than typed from memory - the source of a real
@@ -242,6 +328,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def customers_list():
         store = get_store()
         records = store.all_customer_master_records()
+        freshness = _freshness(store.last_extraction_at())
         store.close()
         # Never-reconciled parties first, then longest-unreconciled - this
         # view exists to put a name against who last actually looked at a
@@ -250,9 +337,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             records,
             key=lambda r: (r["last_reconciled_on"] is not None, r["last_reconciled_on"] or "", r["party_name"]),
         )
-        return render_template("customers_list.html", rows=rows, today=date.today().isoformat())
+        return render_template(
+            "customers_list.html", rows=rows, today=date.today().isoformat(), freshness=freshness
+        )
 
     @app.route("/customers/reconcile", methods=["POST"])
+    @requires_role("preparer")
     def customers_reconcile():
         party_id = request.form.get("party_id", "")
         branch_id = request.form.get("branch_id", "")
@@ -282,6 +372,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return raw.decode("utf-16")
 
     @app.route("/manual-upload", methods=["GET", "POST"])
+    @requires_role("preparer")
     def manual_upload():
         store = get_store()
         branches = store.list_branches()
@@ -363,6 +454,111 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "manual_upload.html", branches=branches, result=result, slots=WEEKLY_VOUCHER_SLOTS,
             default_from=default_from.isoformat(), default_to=default_to.isoformat(),
         )
+
+    def _parse_as_of() -> date:
+        raw = request.args.get("as_of", "")
+        try:
+            return date.fromisoformat(raw) if raw else date.today()
+        except ValueError:
+            return date.today()
+
+    @app.route("/registers/sales-dn")
+    def sales_dn_register():
+        """Design doc item 2's flagship register, item 14's as-of-date
+        mechanism applied: every derived column (Linked CN Amount,
+        Receipts Applied, Open Amount, Overdue Flag, DPD, Ageing Bucket,
+        PTP Status) is recomputed live for the selected `as_of` date, not
+        read from a stored total - changing the date changes what's shown
+        without touching any data.
+        """
+        as_of = _parse_as_of()
+        store = get_store()
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        follow_ups = {(f.branch_id, f.voucher_number, f.party_id): f for f in store.all_invoice_follow_ups()}
+        groupings = {
+            (r["party_id"], r["branch_id"]): r["grouping"] for r in store.all_customer_master_records()
+        }
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        display_rows = []
+        for row in sales_dn_rows:
+            position = compute_invoice_position(row, cn_rows, rj_rows, as_of)
+            follow_up = follow_ups.get((row.branch_id, row.voucher_number, row.party_id))
+            ptp_status = None
+            if follow_up is not None and follow_up.ptp_date is not None:
+                if follow_up.ptp_date > as_of:
+                    ptp_status = "Active"
+                else:
+                    outcome = compute_ptp_outcome(row, follow_up, cn_rows, rj_rows)
+                    if outcome is not None:
+                        ptp_status = "Kept" if outcome.kept else "Broken"
+            display_rows.append(
+                {
+                    "row": row,
+                    "position": position,
+                    "linked_cn_no": compute_linked_cn_reference_text(row, cn_rows, as_of),
+                    "follow_up": follow_up,
+                    "ptp_status": ptp_status,
+                    "grouping": groupings.get((row.party_id, row.branch_id)),
+                }
+            )
+
+        return render_template(
+            "sales_dn_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
+            freshness=freshness,
+        )
+
+    @app.route("/registers/credit-notes")
+    def credit_note_register():
+        store = get_store()
+        rows = store.all_credit_note_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+        # Open/Unapplied CN Amount (design doc item 2): the CN's own
+        # amount only when it's genuinely on-account (no bill reference)
+        # AND Current - a Pending Review/Pre-MIS CN isn't a real
+        # unapplied balance this system can vouch for yet, matching
+        # registers.compute_unapplied_cn_by_party's own condition.
+        display_rows = [
+            {
+                "row": row,
+                "unapplied_amount": (
+                    row.cn_amount
+                    if row.bill_allocation_reference is None and row.classification == RegisterClassification.CURRENT
+                    else None
+                ),
+            }
+            for row in rows
+        ]
+        return render_template("credit_note_register.html", display_rows=display_rows, freshness=freshness)
+
+    @app.route("/registers/receipts-journals")
+    def receipt_journal_register():
+        as_of = _parse_as_of()
+        store = get_store()
+        rj_rows = store.all_receipt_journal_rows()
+        sales_dn_rows = store.all_sales_dn_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        lookup = build_bill_reference_lookup(sales_dn_rows)
+        display_rows = [
+            {"row": row, "fields": compute_receipt_journal_display_fields(row, lookup, as_of)} for row in rj_rows
+        ]
+        return render_template(
+            "receipt_journal_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
+            freshness=freshness,
+        )
+
+    @app.route("/reports")
+    def reports_home():
+        store = get_store()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+        return render_template("reports_placeholder.html", freshness=freshness)
 
     return app
 

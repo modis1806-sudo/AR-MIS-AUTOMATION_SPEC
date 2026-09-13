@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Sales & DN Register{% endblock %}
+{% block content %}
+<h1>Sales &amp; Debit Note Register</h1>
+<p class="subtitle">One row per invoice or debit note, every branch combined, cumulative from FY start. Open Amount, Ageing, and PTP Status are all recalculated for the date below — nothing here is a stored total.</p>
+
+{% include "_freshness.html" %}
+
+<form class="as-of-form" method="get">
+  <div>
+    <label for="as_of">Show position as of</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
+{% if display_rows %}
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Branch</th><th>Date</th><th>Type</th><th>Voucher No.</th><th>Bill Ref.</th><th>Job ID</th>
+      <th>Customer</th><th>Grouping</th><th>Taxable Value</th><th>CGST</th><th>SGST</th><th>IGST</th>
+      <th>Invoice Value</th><th>Due Date</th><th>Linked CN No.</th><th>Linked CN Amt</th>
+      <th>Net Receivable</th><th>Receipts Applied</th><th>Open Amount</th><th>Overdue</th><th>DPD</th>
+      <th>Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th>PTP Status</th><th>Next Action</th>
+      <th>Expected Collection</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for d in display_rows %}
+    {% set row = d.row %}
+    {% set pos = d.position %}
+    {% set fu = d.follow_up %}
+    <tr>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.invoice_date }}</td>
+      <td>{{ row.note_type.value }}</td>
+      <td>{{ row.voucher_number }}</td>
+      <td>{{ row.bill_allocation_reference }}</td>
+      <td>{{ row.job_id or '—' }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{{ d.grouping or '—' }}</td>
+      <td>{{ row.taxable_value }}</td>
+      <td>{{ row.cgst }}</td>
+      <td>{{ row.sgst }}</td>
+      <td>{{ row.igst }}</td>
+      <td>{{ row.invoice_value }}</td>
+      <td>{{ row.due_date }}</td>
+      <td>{{ d.linked_cn_no or '—' }}</td>
+      <td>{{ pos.linked_cn_amount }}</td>
+      <td>{{ row.invoice_value - pos.linked_cn_amount }}</td>
+      <td>{{ pos.receipts_applied }}</td>
+      <td>{{ pos.open_amount }}</td>
+      <td>{% if pos.is_overdue %}<span class="pill fail">Yes</span>{% else %}<span class="pill ok">No</span>{% endif %}</td>
+      <td>{{ pos.days_past_due }}</td>
+      <td>{{ pos.ageing_bucket }}</td>
+      <td>{{ fu.ptp_date if fu else '' or '—' }}</td>
+      <td>{{ fu.ptp_amount if fu else '' or '—' }}</td>
+      <td>
+        {% if d.ptp_status == 'Kept' %}<span class="pill status-kept">Kept</span>
+        {% elif d.ptp_status == 'Broken' %}<span class="pill status-broken">Broken</span>
+        {% elif d.ptp_status == 'Active' %}<span class="pill status-active">Active</span>
+        {% else %}—{% endif %}
+      </td>
+      <td>{{ (fu.next_action if fu else '') or '—' }}</td>
+      <td>{{ fu.expected_collection_date if fu else '' or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card empty">No invoices on record yet — run an extraction first.</div>
+{% endif %}
+{% endblock %}

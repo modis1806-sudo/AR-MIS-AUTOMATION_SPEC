@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Credit Note Register{% endblock %}
+{% block content %}
+<h1>Credit Note Register</h1>
+<p class="subtitle">Voucher-wise, every branch combined, matched against the invoice it applies to via Customer + Bill Allocation Reference — never voucher number alone.</p>
+
+{% include "_freshness.html" %}
+
+{% if display_rows %}
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Branch</th><th>Date</th><th>Customer</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
+      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th>Classification</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for d in display_rows %}
+    {% set row = d.row %}
+    <tr>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.cn_date }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{{ row.voucher_number }}</td>
+      <td>{{ row.bill_allocation_reference or '—' }}</td>
+      <td>{{ row.cn_amount }}</td>
+      <td>{{ d.unapplied_amount if d.unapplied_amount is not none else '—' }}</td>
+      <td>
+        {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
+        {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>
+        {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card empty">No credit notes on record yet — run an extraction first.</div>
+{% endif %}
+{% endblock %}

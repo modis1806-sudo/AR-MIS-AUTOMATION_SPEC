@@ -16,6 +16,21 @@ from ar_mis.webapp.app import create_app
 
 @pytest.fixture
 def client(tmp_path):
+    # Pre-selects the Preparer role so every existing test here (written
+    # before role gating existed) keeps exercising full access, exactly
+    # as it did before - role-gating behavior itself (a Viewer being
+    # blocked, the picker, the switcher) has its own dedicated tests
+    # below using a client that does NOT pre-select a role.
+    app = create_app(db_path=str(tmp_path / "webapp.db"))
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        with c.session_transaction() as sess:
+            sess["role"] = "preparer"
+        yield c
+
+
+@pytest.fixture
+def roleless_client(tmp_path):
     app = create_app(db_path=str(tmp_path / "webapp.db"))
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -369,3 +384,118 @@ def test_manual_upload_refuses_when_already_recorded(client):
     resp = client.post("/manual-upload", **_post_kwargs())
     assert b"NOT PROCESSED" in resp.data
     assert b"already has recorded data" in resp.data
+
+
+# ---- Role gating (placeholder access control) ----------------------------
+
+
+def test_roleless_visitor_is_redirected_to_choose_role(roleless_client):
+    resp = roleless_client.get("/", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Who&#39;s using this?" in resp.data or b"Who's using this?" in resp.data
+
+
+def test_choosing_preparer_grants_extraction_access(roleless_client):
+    resp = roleless_client.post("/choose-role", data={"role": "preparer"}, follow_redirects=True)
+    assert resp.status_code == 200
+    resp = roleless_client.get("/branches")
+    assert resp.status_code == 200
+
+
+def test_choosing_viewer_blocks_extraction_routes(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    for path in ("/branches", "/test-extraction", "/discover", "/manual-upload"):
+        resp = roleless_client.get(path, follow_redirects=True)
+        assert resp.status_code == 200
+        assert b"isn&#39;t available for your role" in resp.data or b"isn't available for your role" in resp.data
+
+
+def test_viewer_can_reach_registers_and_reports(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    for path in ("/customers", "/registers/sales-dn", "/registers/credit-notes", "/registers/receipts-journals", "/reports"):
+        resp = roleless_client.get(path)
+        assert resp.status_code == 200
+
+    # The nav itself must not even offer the Extraction links to a Viewer.
+    resp = roleless_client.get("/")
+    assert b"Branch Master" not in resp.data
+    assert b"Test Extraction" not in resp.data
+
+
+def test_viewer_cannot_mark_a_customer_reconciled(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "viewer"})
+    resp = roleless_client.post(
+        "/customers/reconcile", data={"party_id": "P1", "branch_id": "KOL", "reconciled_by": "CFO"},
+        follow_redirects=True,
+    )
+    assert b"isn&#39;t available for your role" in resp.data or b"isn't available for your role" in resp.data
+
+
+def test_preparer_sees_extraction_links_in_nav(client):
+    resp = client.get("/")
+    assert b"Branch Master" in resp.data
+    assert b"Test Extraction" in resp.data
+
+
+# ---- Registers pages -------------------------------------------------
+
+REGISTERS_FIXTURES = Path(__file__).parent.parent / "fixtures"
+
+
+def _run_a_real_extraction(client):
+    """Seeds a customer and runs process_branch_data directly against the
+    live app's own database - the same path a real Test Extraction/CLI
+    run would take - so the Registers pages have real rows to show.
+    """
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(
+        CustomerMasterRecord("A & B Transport Pvt Ltd", "A & B Transport Pvt Ltd", "KOL", Decimal("0.00"))
+    )
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number="SB/0142",
+        branch_id="KOL", party_ledger_name="A & B Transport Pvt Ltd",
+        entries=[
+            LedgerEntry(party_ledger_name="A & B Transport Pvt Ltd", amount_as_extracted=Decimal("-125000.00"),
+                        bill_name="SB/0142", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("125000.00")),
+        ],
+    )
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {"A & B Transport Pvt Ltd": Decimal("125000.00")},
+    )
+    store.close()
+
+
+def test_sales_dn_register_shows_no_data_message_when_empty(client):
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b"No invoices on record yet" in resp.data
+    assert b"No data extracted yet" in resp.data
+
+
+def test_sales_dn_register_shows_a_real_extracted_invoice(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b"SB/0142" in resp.data
+    assert b"A &amp; B Transport Pvt Ltd" in resp.data or b"A & B Transport Pvt Ltd" in resp.data
+    assert b"Data last extracted" in resp.data
+
+
+def test_sales_dn_register_respects_as_of_date_query_param(client):
+    _run_a_real_extraction(client)
+    # As-of a date before the invoice's due date - open, not overdue.
+    resp = client.get("/registers/sales-dn?as_of=2026-04-10")
+    assert resp.status_code == 200
+    assert b"SB/0142" in resp.data
+
+
+def test_credit_note_register_and_receipt_journal_register_render_when_empty(client):
+    for path in ("/registers/credit-notes", "/registers/receipts-journals"):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert b"No " in resp.data  # the empty-state card text
