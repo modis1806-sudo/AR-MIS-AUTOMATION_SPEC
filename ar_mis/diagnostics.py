@@ -34,7 +34,10 @@ def _client(host: str, port: int, company: str = "") -> TallyClient:
     branch = BranchConfig(
         branch_id="_diag", branch_name="_diag", tally_company_name=company, tally_host=host, tally_port=port
     )
-    return TallyClient(branch=branch, timeout_seconds=15.0)
+    # Uses TallyClient's default timeout (tally_client.DEFAULT_TIMEOUT_SECONDS)
+    # rather than a short fixed value - a real diagnostic run against a
+    # non-trivial range needs the same headroom production code does.
+    return TallyClient(branch=branch)
 
 
 def cmd_companies(args: argparse.Namespace) -> int:

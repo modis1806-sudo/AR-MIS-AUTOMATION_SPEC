@@ -163,7 +163,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 )
 
             steps: list[tuple[str, bool, str]] = []
-            client = TallyClient(branch=branch, timeout_seconds=15.0)
+            # Uses TallyClient's default timeout (see tally_client.
+            # DEFAULT_TIMEOUT_SECONDS) - a fixed short timeout here
+            # (an earlier version used 15s) is exactly what broke this
+            # page against any real voucher-heavy range: a single 15-day
+            # chunk can legitimately take close to a minute against a
+            # busy company, confirmed via live-Tally diagnostic.
+            client = TallyClient(branch=branch)
 
             try:
                 client.confirm_current_company()
@@ -223,7 +229,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 tally_host=host or "localhost",
                 tally_port=int(port or 9000),
             )
-            client = TallyClient(branch=probe_branch, timeout_seconds=15.0)
+            client = TallyClient(branch=probe_branch)
             try:
                 companies = client.list_open_companies()
                 result = {"ok": True, "companies": companies}

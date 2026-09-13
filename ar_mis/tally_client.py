@@ -12,7 +12,7 @@ from __future__ import annotations
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from ar_mis.config import BranchConfig
@@ -39,6 +39,42 @@ class TallyConnectionError(RuntimeError):
     """
 
 
+# Confirmed via a live-Tally diagnostic bisection (see commit history/
+# docs/registers_and_reporting_design.md for that session): Voucher
+# Register export hangs/times out on a large date range in a way that
+# does NOT scale linearly with calendar days - two independent 15-day
+# halves of a month each succeeded in ~1 minute, but the same month
+# requested as one 30-day range failed even at a 180-second timeout.
+# The real limit is data volume (how many vouchers/bill-allocations fall
+# in the range), which this codebase has no way to know in advance - so
+# rather than guess a company-specific safe span, every voucher fetch is
+# split into fixed CHUNK_DAYS-sized windows and stitched back together.
+# 14 days is chosen with real margin under the confirmed-working 15-day
+# figure, since even "15 days was fine for this company" doesn't
+# guarantee a busier one stays under that with only one extra day of
+# margin. If a single chunk still fails, that failure now names a much
+# smaller, far more diagnosable window instead of the whole request.
+_VOUCHER_FETCH_CHUNK_DAYS = 14
+
+# Same diagnostic found a 15-day chunk can legitimately take close to a
+# minute against a real, busy company - the old 15s/30s timeouts used
+# across this codebase would abort a perfectly healthy request before it
+# ever had a chance to finish chunked. A larger timeout costs nothing
+# when Tally responds quickly; it only changes how long a genuinely
+# unreachable Tally takes to be reported as such.
+DEFAULT_TIMEOUT_SECONDS = 90.0
+
+
+def _date_chunks(from_date: date, to_date: date, chunk_days: int) -> list[tuple[date, date]]:
+    chunks: list[tuple[date, date]] = []
+    chunk_start = from_date
+    while chunk_start <= to_date:
+        chunk_end = min(chunk_start + timedelta(days=chunk_days - 1), to_date)
+        chunks.append((chunk_start, chunk_end))
+        chunk_start = chunk_end + timedelta(days=1)
+    return chunks
+
+
 class CompanyMismatchError(RuntimeError):
     """Raised when the company currently loaded in Tally does not match
     the expected branch. Section 2.2: this must halt with a clear error,
@@ -56,7 +92,7 @@ class CompanyMismatchError(RuntimeError):
 @dataclass
 class TallyClient:
     branch: BranchConfig
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
     def _post(self, xml_request: str) -> str:
         data = xml_request.encode("utf-8")
@@ -107,15 +143,27 @@ class TallyClient:
             raise CompanyMismatchError(self.branch.tally_company_name, loaded)
 
     def fetch_vouchers(self, from_date: date, to_date: date) -> list[Voucher]:
-        """One request for every voucher in the period - see
-        xml_requests.voucher_export_request for why this isn't filtered
-        by type server-side. Only vouchers that categorize into one of
-        the five AR-relevant types (parsers.categorize_voucher_type) come
-        back; everything else (Payment, Contra, Purchase, ...) is
-        already excluded by parse_voucher_collection.
+        """Every voucher in the period - see xml_requests.voucher_export_request
+        for why this isn't filtered by type server-side. Only vouchers
+        that categorize into one of the five AR-relevant types
+        (parsers.categorize_voucher_type) come back; everything else
+        (Payment, Contra, Purchase, ...) is already excluded by
+        parse_voucher_collection.
+
+        Transparently chunked into _VOUCHER_FETCH_CHUNK_DAYS-sized windows
+        (see that constant's comment for why) - one request per chunk,
+        results concatenated. A caller passing a normal ~7-day weekly
+        range still gets exactly one request, same as before; only a
+        genuinely large range (a YTD pull, an operator-chosen backfill
+        range in Test Extraction) is split. This is the fix for the real
+        hang/timeout confirmed against a live Tally instance on large
+        ranges - see _VOUCHER_FETCH_CHUNK_DAYS's comment.
         """
-        raw = self._post(voucher_export_request(self.branch.tally_company_name, from_date, to_date))
-        return parse_voucher_collection(raw, self.branch.branch_id)
+        all_vouchers: list[Voucher] = []
+        for chunk_from, chunk_to in _date_chunks(from_date, to_date, _VOUCHER_FETCH_CHUNK_DAYS):
+            raw = self._post(voucher_export_request(self.branch.tally_company_name, chunk_from, chunk_to))
+            all_vouchers.extend(parse_voucher_collection(raw, self.branch.branch_id))
+        return all_vouchers
 
     def fetch_all_voucher_types(
         self, from_date: date, to_date: date

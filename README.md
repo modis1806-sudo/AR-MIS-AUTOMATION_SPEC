@@ -83,6 +83,22 @@ since it silently corrupted correctness after the first fix appeared to work:
   the exact same `ALLLEDGERENTRIES.LIST`/`BILLALLOCATIONS.LIST` detail Day
   Book did. See `voucher_export_request()`'s docstring for the full
   diagnostic trail across all of the above.
+- **A fifth bug surfaced only once a large date range was tried**: Voucher
+  Register can hang/time out on a wide range in a way that does **not** scale
+  linearly with calendar days — confirmed by bisecting a month in half: two
+  independent 15-day halves each succeeded in ~1 minute, but the same month
+  requested as one 30-day range failed even at a 180-second timeout. This is
+  a real data-volume effect in Tally's own report engine, not something this
+  codebase can predict per company in advance. Fixed by having
+  `TallyClient.fetch_vouchers` transparently split any requested range into
+  14-day chunks and stitch the results together — real margin under the
+  confirmed-working 15-day figure, since one extra day of margin isn't much
+  for a busier company. A normal ~7-day weekly pull still issues exactly one
+  request, unchanged; only a genuinely wide range (the Section 4.2 YTD
+  cross-check, or an operator picking a multi-month backfill range in Test
+  Extraction) gets split. The 15s/30s timeouts used across this codebase were
+  also too low for a real chunk's realistic duration and have been raised
+  (`tally_client.DEFAULT_TIMEOUT_SECONDS`).
 
 The actual field-reading logic (`LEDGERNAME`, `AMOUNT`, `NAME` by plain tag
 name) needed **no changes** through any of this — every bug found was in
