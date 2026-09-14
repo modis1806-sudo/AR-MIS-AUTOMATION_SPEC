@@ -129,9 +129,9 @@ def test_dry_run_reports_without_writing(tmp_path):
 
 def test_parse_seed_rows_for_branch_reads_valid_rows_without_a_branch_id_column():
     csv_text = (
-        "party_id,party_name,pre_mis_outstanding\n"
-        "ACME001,Acme Traders,125000.00\n"
-        "GLOBAL002,Global Enterprises,-5000.00\n"
+        "party_name,pre_mis_outstanding\n"
+        "Acme Traders,125000.00\n"
+        "Global Enterprises,-5000.00\n"
     )
     records, errors = parse_seed_rows_for_branch(csv_text, "CHRZ")
     assert errors == []
@@ -141,19 +141,35 @@ def test_parse_seed_rows_for_branch_reads_valid_rows_without_a_branch_id_column(
     assert records[1].pre_mis_outstanding == Decimal("-5000.00")
 
 
+def test_parse_seed_rows_for_branch_ignores_a_supplied_party_id_and_uses_the_name():
+    # There is no party_id column at all in this format - even if one
+    # sneaks in (e.g. a re-exported file), party_id must always equal
+    # party_name, since that's the only string the live pipeline ever
+    # matches against (the exact Tally ledger name).
+    csv_text = (
+        "party_id,party_name,pre_mis_outstanding\n"
+        "SOME-CODE,Acme Traders,125000.00\n"
+    )
+    records, errors = parse_seed_rows_for_branch(csv_text, "CHRZ")
+    assert errors == []
+    assert len(records) == 1
+    assert records[0].party_id == "Acme Traders"
+    assert records[0].party_name == "Acme Traders"
+
+
 def test_parse_seed_rows_for_branch_rejects_missing_columns():
     with pytest.raises(ValueError, match="missing required column"):
-        parse_seed_rows_for_branch("party_id,party_name\nP1,Acme\n", "CHRZ")
+        parse_seed_rows_for_branch("party_name\nAcme\n", "CHRZ")
 
 
 def test_parse_seed_rows_for_branch_collects_row_level_errors():
     csv_text = (
-        "party_id,party_name,pre_mis_outstanding\n"
-        "P1,Acme,not-a-number\n"
-        ",Missing Id,100.00\n"
-        "P2,Good Row,500.00\n"
+        "party_name,pre_mis_outstanding\n"
+        "Acme,not-a-number\n"
+        ",100.00\n"
+        "Good Row,500.00\n"
     )
     records, errors = parse_seed_rows_for_branch(csv_text, "CHRZ")
     assert len(records) == 1
-    assert records[0].party_id == "P2"
+    assert records[0].party_id == "Good Row"
     assert len(errors) == 2

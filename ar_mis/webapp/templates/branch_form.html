@@ -27,12 +27,19 @@
     Loads each party's opening balance as it stood the day before this pipeline
     went live for this branch - a one-time-per-party baseline (never re-pulled
     or recalculated week to week). Columns required:
-    <code>party_id,party_name,pre_mis_outstanding</code> (no branch_id column -
-    every row is assumed to belong to this branch).
+    <code>party_name,pre_mis_outstanding</code> (no branch_id column - every
+    row is assumed to belong to this branch, and no party_id column either -
+    there is no separate party code anywhere in this system).
+    <strong>party_name must be typed exactly as the ledger appears in
+    Tally</strong> (exact spelling and capitalisation, no extra spaces) -
+    it is the only thing this baseline is matched against when the real
+    extraction later runs, so a mismatch here means the balance silently
+    never attaches to the real party and reconciliation will fail without
+    telling you why.
     Amounts use this pipeline's own convention, <strong>not</strong> Tally's raw
-    export: <strong>Dr positive / Cr positive</strong> is wrong - use
-    <strong>positive for a debtor who owes money, negative for a credit
-    balance</strong> (do not use "Dr"/"Cr" suffixes, just a signed number).
+    export: <strong>positive for a debtor who owes money, negative for a
+    credit balance</strong> (do not use "Dr"/"Cr" suffixes, just a signed
+    number).
     Once a party has any weekly extraction recorded, this baseline can no
     longer be bulk-corrected here - only through a logged adjustment.
     <a href="{{ url_for('branch_pre_mis_template') }}">Download CSV template</a>.

@@ -123,9 +123,9 @@ def test_test_extraction_page_with_no_branches_prompts_to_add_one(client):
 
 def test_branch_creation_with_pre_mis_csv_loads_parties(client):
     csv_text = (
-        "party_id,party_name,pre_mis_outstanding\n"
-        "ACME001,Acme Traders,125000.00\n"
-        "GLOBAL002,Global Enterprises,-5000.00\n"
+        "party_name,pre_mis_outstanding\n"
+        "Acme Traders,125000.00\n"
+        "Global Enterprises,-5000.00\n"
     )
     resp = client.post(
         "/branches/new",
@@ -142,8 +142,11 @@ def test_branch_creation_with_pre_mis_csv_loads_parties(client):
 
     from ar_mis.storage import Store
     s = Store(client.application.config["DB_PATH"])
-    assert s.get_opening_balance("ACME001", "KOL") == Decimal("125000.00")
-    assert s.get_opening_balance("GLOBAL002", "KOL") == Decimal("-5000.00")
+    # party_id is always the exact ledger name (Acme Traders) - never a
+    # separately-typed code - since that's the only string the live
+    # extraction will ever match against.
+    assert s.get_opening_balance("Acme Traders", "KOL") == Decimal("125000.00")
+    assert s.get_opening_balance("Global Enterprises", "KOL") == Decimal("-5000.00")
     s.close()
 
 
@@ -168,7 +171,7 @@ def test_branch_edit_with_pre_mis_csv_loads_parties(client):
         data={"branch_id": "KOL", "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
               "tally_host": "localhost", "tally_port": "9000"},
     )
-    csv_text = "party_id,party_name,pre_mis_outstanding\nACME001,Acme Traders,125000.00\n"
+    csv_text = "party_name,pre_mis_outstanding\nAcme Traders,125000.00\n"
     resp = client.post(
         "/branches/KOL/edit",
         data={
@@ -189,7 +192,7 @@ def test_pre_mis_csv_with_missing_columns_is_rejected_wholesale(client):
         data={
             "branch_id": "KOL", "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
             "tally_host": "localhost", "tally_port": "9000",
-            "pre_mis_csv": (BytesIO(b"party_id,party_name\nP1,Acme\n"), "bad.csv"),
+            "pre_mis_csv": (BytesIO(b"party_name\nAcme\n"), "bad.csv"),
         },
         content_type="multipart/form-data",
         follow_redirects=True,
@@ -203,9 +206,9 @@ def test_pre_mis_csv_with_missing_columns_is_rejected_wholesale(client):
 
 def test_pre_mis_csv_with_bad_row_is_rejected_wholesale_nothing_loaded(client):
     csv_text = (
-        "party_id,party_name,pre_mis_outstanding\n"
-        "P1,Acme,not-a-number\n"
-        "P2,Good Row,500.00\n"
+        "party_name,pre_mis_outstanding\n"
+        "Acme,not-a-number\n"
+        "Good Row,500.00\n"
     )
     resp = client.post(
         "/branches/new",
@@ -223,7 +226,7 @@ def test_pre_mis_csv_with_bad_row_is_rejected_wholesale_nothing_loaded(client):
 
     from ar_mis.storage import Store
     s = Store(client.application.config["DB_PATH"])
-    assert s.customer_master_exists("P2", "KOL") is False
+    assert s.customer_master_exists("Good Row", "KOL") is False
     s.close()
 
 
@@ -237,7 +240,7 @@ def test_pre_mis_csv_skips_party_that_already_has_weekly_snapshots(client):
             "branch_id": "KOL", "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
             "tally_host": "localhost", "tally_port": "9000",
             "pre_mis_csv": (
-                BytesIO(b"party_id,party_name,pre_mis_outstanding\nACME001,Acme Traders,125000.00\n"),
+                BytesIO(b"party_name,pre_mis_outstanding\nAcme Traders,125000.00\n"),
                 "pre_mis.csv",
             ),
         },
@@ -247,7 +250,7 @@ def test_pre_mis_csv_skips_party_that_already_has_weekly_snapshots(client):
     s = Store(client.application.config["DB_PATH"])
     s.append_weekly_snapshot(
         WeeklySnapshotRow(
-            party_id="ACME001", branch_id="KOL", week_ending=date(2026, 1, 5),
+            party_id="Acme Traders", branch_id="KOL", week_ending=date(2026, 1, 5),
             opening=Decimal("125000.00"), sales=Decimal("0.00"), credit_notes=Decimal("0.00"),
             debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
             closing_computed=Decimal("125000.00"), closing_extracted=Decimal("125000.00"),
@@ -262,7 +265,7 @@ def test_pre_mis_csv_skips_party_that_already_has_weekly_snapshots(client):
             "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
             "tally_host": "localhost", "tally_port": "9000",
             "pre_mis_csv": (
-                BytesIO(b"party_id,party_name,pre_mis_outstanding\nACME001,Acme Traders,999999.00\n"),
+                BytesIO(b"party_name,pre_mis_outstanding\nAcme Traders,999999.00\n"),
                 "pre_mis.csv",
             ),
         },
@@ -273,14 +276,14 @@ def test_pre_mis_csv_skips_party_that_already_has_weekly_snapshots(client):
     assert b"1 skipped" in resp.data
 
     s = Store(client.application.config["DB_PATH"])
-    assert s.get_opening_balance("ACME001", "KOL") == Decimal("125000.00")
+    assert s.get_opening_balance("Acme Traders", "KOL") == Decimal("125000.00")
     s.close()
 
 
 def test_pre_mis_template_download_route(client):
     resp = client.get("/branches/pre-mis-template.csv")
     assert resp.status_code == 200
-    assert b"party_id,party_name,pre_mis_outstanding" in resp.data
+    assert b"party_name,pre_mis_outstanding" in resp.data
 
 
 def test_branches_list_shows_no_data_yet_before_any_extraction(client):

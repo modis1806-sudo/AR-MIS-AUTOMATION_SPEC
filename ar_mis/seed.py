@@ -43,11 +43,11 @@ from ar_mis.money import to_money
 from ar_mis.storage import Store
 
 REQUIRED_COLUMNS = {"party_id", "party_name", "branch_id", "pre_mis_outstanding"}
-BRANCH_SCOPED_REQUIRED_COLUMNS = {"party_id", "party_name", "pre_mis_outstanding"}
+BRANCH_SCOPED_REQUIRED_COLUMNS = {"party_name", "pre_mis_outstanding"}
 BRANCH_SCOPED_CSV_TEMPLATE = (
-    "party_id,party_name,pre_mis_outstanding\n"
-    "ACME001,Acme Traders,125000.00\n"
-    "GLOBAL002,Global Enterprises,-5000.00\n"
+    "party_name,pre_mis_outstanding\n"
+    "Acme Traders,125000.00\n"
+    "Global Enterprises,-5000.00\n"
 )
 
 
@@ -57,15 +57,27 @@ class SeedRowError:
     reason: str
 
 
-def _parse_seed_rows(reader: csv.DictReader, required_columns: set[str], branch_id: str | None):
+def _parse_seed_rows(
+    reader: csv.DictReader,
+    required_columns: set[str],
+    branch_id: str | None,
+    force_party_id_equals_name: bool = False,
+):
     records: list[CustomerMasterRecord] = []
     errors: list[SeedRowError] = []
     missing = required_columns - set(reader.fieldnames or [])
     if missing:
         raise ValueError(f"CSV is missing required column(s): {', '.join(sorted(missing))}")
     for line_number, row in enumerate(reader, start=2):  # header is line 1
-        party_id = (row.get("party_id") or "").strip()
         party_name = (row.get("party_name") or "").strip()
+        # party_id is the exact string the live pipeline auto-assigns a new
+        # party (pipeline.process_branch_data uses the raw Tally ledger
+        # name as both party_id AND party_name - there is no separate
+        # "party code" anywhere in the real matching path). Letting an
+        # operator type a different party_id here would silently orphan
+        # the seeded balance the moment the real ledger shows up under its
+        # own name, so the branch-scoped upload never asks for one.
+        party_id = party_name if force_party_id_equals_name else (row.get("party_id") or "").strip()
         row_branch_id = branch_id if branch_id is not None else (row.get("branch_id") or "").strip()
         raw_amount = (row.get("pre_mis_outstanding") or "").strip()
         if not party_id or not party_name or not row_branch_id:
@@ -96,9 +108,18 @@ def parse_seed_rows_for_branch(csv_text: str, branch_id: str) -> tuple[list[Cust
     multiple branches from one shared file). Takes CSV TEXT rather than a
     path, since this is an uploaded file's already-decoded content, not
     something living on disk.
+
+    Deliberately has no party_id column at all (force_party_id_equals_name
+    below) - party_id is always set equal to party_name. `party_name` is
+    therefore the join key against Tally's own extraction and MUST be
+    typed exactly as the ledger appears in Tally (exact spelling and
+    case, no extra whitespace); anything else means this row's balance
+    never attaches to the real party.
     """
     reader = csv.DictReader(io.StringIO(csv_text))
-    return _parse_seed_rows(reader, BRANCH_SCOPED_REQUIRED_COLUMNS, branch_id=branch_id)
+    return _parse_seed_rows(
+        reader, BRANCH_SCOPED_REQUIRED_COLUMNS, branch_id=branch_id, force_party_id_equals_name=True
+    )
 
 
 @dataclass
