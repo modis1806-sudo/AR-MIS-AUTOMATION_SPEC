@@ -105,75 +105,67 @@ def ytd_sundry_debtors_request(company_name: str, fy_start: date, as_of: date) -
     """Export request for the full Sundry Debtors ledger group's closing
     balances as of a specific date, for the Section 4.1/4.2 cross-check.
 
-    CANDIDATE FIX v2, NOT YET LIVE-CONFIRMED. History, in order:
+    CANDIDATE FIX v4, NOT YET LIVE-CONFIRMED. History, in order (all
+    against the same real Charze ledger, live-verified via two pulls at
+    genuinely different `as_of` dates each time - see this project's own
+    diagnostics CLI):
 
-    v1 (original): a raw `<TYPE>Collection</TYPE>` of `<TYPE>Ledger</TYPE>`
-    with `<FETCH>CLOSINGBALANCE,OPENINGBALANCE</FETCH>` and SVFROMDATE/
-    SVTODATE. CONFIRMED BROKEN against a real Charze ledger dump: two live
-    pulls for the same ledger, one asking for 2026-04-02 and one for
-    2026-09-14, came back byte-identical (-79484.00 both times), while
-    Tally's own UI (F2: Period set to that exact 2-day window) showed the
-    true figure (730). The raw CLOSINGBALANCE/OPENINGBALANCE object
-    fields are apparently a cached master-level value, not scoped by the
-    STATICVARIABLES actually sent - same class of bug voucher_export_
-    request's own docstring documents for "Day Book" silently reading
-    Tally's live UI/session period instead.
+    v1 (original): raw `<TYPE>Collection</TYPE>` of `<TYPE>Ledger</TYPE>`,
+    `<FETCH>CLOSINGBALANCE,OPENINGBALANCE</FETCH>`. CONFIRMED BROKEN:
+    both dates returned the exact same cached figure - the raw object
+    fields ignore SVFROMDATE/SVTODATE entirely. Ledger SELECTION itself
+    (BELONGSTO/CHILDOF under Sundry Debtors) was separately confirmed
+    correct - it found all 964 real debtor ledgers, including ones under
+    custom sub-groups.
 
-    v2 (this version) went the other direction - a REPORTNAME-based
-    "Trial Balance" export, with SVCURRENTGROUP added to scope it to
-    Sundry Debtors. CONFIRMED PARTIALLY WORKING: the two dates now
-    genuinely return different figures (the date IS being respected) -
-    but SVCURRENTGROUP had no scoping effect at all. The response was
-    the whole company's Trial Balance at primary-group level (Capital
-    Account, Current Liabilities, Current Assets, ...) - Sundry Debtors
-    doesn't even appear as its own row (it's nested inside Current
-    Assets), and group-level totals aren't what's needed anyway - this
-    cross-check is per-party, not a portfolio total.
+    v2: REPORTNAME-based "Trial Balance" export with SVCURRENTGROUP set
+    to Sundry Debtors. CONFIRMED PARTIALLY WORKING: the two dates now
+    returned genuinely different figures - but SVCURRENTGROUP had no
+    scoping effect. The response was the whole company's Trial Balance
+    at primary-group level; Sundry Debtors doesn't even appear as its
+    own row there (nested inside Current Assets), and group totals
+    aren't what a per-party cross-check needs anyway.
 
-    v3 (current): keeps v1's proven-correct ledger selection
-    (`BELONGSTO`/`CHILDOF` under Sundry Debtors, confirmed via a live
-    diagnostics run to correctly find all 964 real debtor ledgers,
-    including ones nested under custom sub-groups) but replaces the raw
-    CLOSINGBALANCE field with a COMPUTE using Tally's own `$$ClosingBalance`
-    system formula function, which (per Tally's TDL function reference)
-    is explicitly date-aware within a Collection's own SVFROMDATE/SVTODATE
-    context - unlike the raw object field, which is not. The computed
-    field is still named CLOSINGBALANCE in the output, so parsers.
-    parse_ledger_closing_balances needs no change either way.
+    v3: v1's ledger selection + a COMPUTE field using `$$ClosingBalance`.
+    CONFIRMED BROKEN WORSE: the CLOSINGBALANCE field vanished from the
+    response entirely - `$$ClosingBalance` is not a recognized TDL system
+    formula (most likely confused with UI terminology), so Tally silently
+    dropped the whole field rather than erroring.
 
-    MUST be re-verified the same way both previous attempts were: pull
-    the same ledger for two different `as_of` dates and confirm the
+    v4 (current): switches to REPORTNAME "Group Summary" - the actual
+    built-in Tally screen shown when a human drills from Trial Balance
+    into one specific group (Display > Trial Balance > Sundry Debtors),
+    which is inherently period-scoped by nature. Passes the target group
+    via SVVIEWNAME (Tally's documented mechanism for naming which node of
+    a drillable report to open), alongside SVCURRENTGROUP kept as a
+    second attempt at the same intent in case only one of the two is
+    actually read for this specific report - unlike "Trial Balance",
+    which confirmed ignoring SVCURRENTGROUP outright.
+
+    MUST be re-verified the same way all three previous attempts were:
+    pull the same ledger for two different `as_of` dates and confirm the
     values now genuinely differ AND match Tally's own F2:Period-scoped
     figure for that exact ledger - before trusting this in a real save.
     """
     company = escape(company_name)
     return f"""<ENVELOPE>
  <HEADER>
-  <VERSION>1</VERSION>
-  <TALLYREQUEST>Export</TALLYREQUEST>
-  <TYPE>Collection</TYPE>
-  <ID>ARMIS Sundry Debtors YTD</ID>
+  <TALLYREQUEST>Export Data</TALLYREQUEST>
  </HEADER>
  <BODY>
-  <DESC>
-   <STATICVARIABLES>
-    <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
-    <SVFROMDATE>{_tally_date(fy_start)}</SVFROMDATE>
-    <SVTODATE>{_tally_date(as_of)}</SVTODATE>
-    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-   </STATICVARIABLES>
-   <TDL>
-    <TDLMESSAGE>
-     <COLLECTION NAME="ARMIS Sundry Debtors YTD" ISMODIFY="No">
-      <TYPE>Ledger</TYPE>
-      <BELONGSTO>Yes</BELONGSTO>
-      <CHILDOF>Sundry Debtors</CHILDOF>
-      <FETCH>NAME,PARENT,OPENINGBALANCE</FETCH>
-      <COMPUTE>CLOSINGBALANCE:$$ClosingBalance:$Name</COMPUTE>
-     </COLLECTION>
-    </TDLMESSAGE>
-   </TDL>
-  </DESC>
+  <EXPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>Group Summary</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
+     <SVFROMDATE>{_tally_date(fy_start)}</SVFROMDATE>
+     <SVTODATE>{_tally_date(as_of)}</SVTODATE>
+     <SVVIEWNAME>Sundry Debtors</SVVIEWNAME>
+     <SVCURRENTGROUP>Sundry Debtors</SVCURRENTGROUP>
+     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+  </EXPORTDATA>
  </BODY>
 </ENVELOPE>"""
 
