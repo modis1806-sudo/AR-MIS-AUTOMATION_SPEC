@@ -102,37 +102,58 @@ def voucher_export_request(
 
 
 def ytd_sundry_debtors_request(company_name: str, fy_start: date, as_of: date) -> str:
-    """Collection export request for the full Sundry Debtors ledger group
-    from day 1 of the financial year, for the Section 4.2 YTD cross-check.
-    Fetches closing balance per ledger (party).
+    """Export request for the full Sundry Debtors ledger group's closing
+    balances as of a specific date, for the Section 4.1/4.2 cross-check.
+
+    CANDIDATE FIX, NOT YET LIVE-CONFIRMED (see this module's own
+    docstring on why a working shape for one report never generalizes to
+    another): a real Charze ledger dump proved the previous version of
+    this function - a raw `<TYPE>Collection</TYPE>` of `<TYPE>Ledger</TYPE>`
+    with SVFROMDATE/SVTODATE - silently ignored both dates entirely.
+    Two live pulls for the exact same ledger, one asking for 2026-04-02
+    and one for 2026-09-14, came back byte-identical (OPENINGBALANCE and
+    CLOSINGBALANCE both -79484.00 either way), while Tally's own UI, F2:
+    Period set to that exact 2-day window, showed the true figure (730).
+    This is the same class of bug voucher_export_request's own docstring
+    already documents for "Day Book" - a request shape that is silently
+    bound to Tally's live UI/session state rather than the STATICVARIABLES
+    actually sent.
+
+    This version switches to a REPORTNAME-based Export Data request for
+    Tally's own "Trial Balance" report (a period statement by definition,
+    unlike a raw ledger master's cached balance field) with SVCURRENTGROUP
+    added to scope it to Sundry Debtors specifically, mirroring the same
+    Collection-hangs/Day-Book-ignores-dates -> REPORTNAME-based-report fix
+    already proven for voucher_export_request. Tally's own Trial Balance
+    Display Report shape (DSPACCNAME/DSPACCINFO, confirmed against a real
+    manual export in fixtures/real_samples/TBDebtors.xml) is what
+    parsers.parse_ledger_closing_balances already parses as its second,
+    fallback shape - so if this request shape is confirmed correct, no
+    parser change is needed either.
+
+    MUST be re-verified the same way the bug was found: pull the same
+    ledger for two different `as_of` dates and confirm the values now
+    genuinely differ and match Tally's own F2:Period-scoped figure -
+    before trusting this in a real save.
     """
     company = escape(company_name)
     return f"""<ENVELOPE>
  <HEADER>
-  <VERSION>1</VERSION>
-  <TALLYREQUEST>Export</TALLYREQUEST>
-  <TYPE>Collection</TYPE>
-  <ID>ARMIS Sundry Debtors YTD</ID>
+  <TALLYREQUEST>Export Data</TALLYREQUEST>
  </HEADER>
  <BODY>
-  <DESC>
-   <STATICVARIABLES>
-    <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
-    <SVFROMDATE>{_tally_date(fy_start)}</SVFROMDATE>
-    <SVTODATE>{_tally_date(as_of)}</SVTODATE>
-    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-   </STATICVARIABLES>
-   <TDL>
-    <TDLMESSAGE>
-     <COLLECTION NAME="ARMIS Sundry Debtors YTD" ISMODIFY="No">
-      <TYPE>Ledger</TYPE>
-      <BELONGSTO>Yes</BELONGSTO>
-      <CHILDOF>Sundry Debtors</CHILDOF>
-      <FETCH>NAME,PARENT,CLOSINGBALANCE,OPENINGBALANCE</FETCH>
-     </COLLECTION>
-    </TDLMESSAGE>
-   </TDL>
-  </DESC>
+  <EXPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>Trial Balance</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
+     <SVFROMDATE>{_tally_date(fy_start)}</SVFROMDATE>
+     <SVTODATE>{_tally_date(as_of)}</SVTODATE>
+     <SVCURRENTGROUP>Sundry Debtors</SVCURRENTGROUP>
+     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+  </EXPORTDATA>
  </BODY>
 </ENVELOPE>"""
 
