@@ -251,6 +251,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         row-level error rejects the whole file (nothing is loaded) rather
         than silently loading the good rows and burying the bad ones in a
         flash message - a maker fixes the file and re-uploads it clean.
+
+        Always seeds with force=True. seed()'s has_weekly_snapshots()
+        check runs BEFORE its force check and is never bypassed by it -
+        a party with real extraction history on record can never be
+        touched here no matter what. Without force, though, a party that
+        exists only because an earlier (possibly buggy, since-deleted)
+        extraction auto-created it at a placeholder Pre-MIS Outstanding
+        of 0.00 - the ordinary "still the pre-launch load, first attempt
+        was wrong" case - would also get skipped, with no way for a
+        browser-only maker to pass --force to unlock it. Forcing here
+        closes that gap without weakening the real protection.
         """
         csv_text = _decode_upload(request.files.get("pre_mis_csv"))
         if not csv_text.strip():
@@ -269,7 +280,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 "error",
             )
             return
-        summary = seed_pre_mis(store, records, announce=lambda *_: None)
+        summary = seed_pre_mis(store, records, force=True, announce=lambda *_: None)
         parts = [f"{summary.loaded} loaded"]
         if summary.unchanged:
             parts.append(f"{summary.unchanged} unchanged")

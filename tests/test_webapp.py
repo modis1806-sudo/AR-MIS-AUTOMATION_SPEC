@@ -230,6 +230,47 @@ def test_pre_mis_csv_with_bad_row_is_rejected_wholesale_nothing_loaded(client):
     s.close()
 
 
+def test_pre_mis_csv_corrects_a_party_auto_created_at_zero_by_an_earlier_extraction(client):
+    # Mirrors a real failure mode: a Test & Save Extraction run before any
+    # Pre-MIS CSV existed auto-creates every new party at a placeholder
+    # 0.00 (pipeline.process_branch_data's own new-party fallback). A
+    # later CSV upload correcting that placeholder must succeed outright
+    # - a maker has no way to pass --force through a browser, so the
+    # upload route must apply it for them (still gated by
+    # has_weekly_snapshots, covered by the test below).
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    client.post(
+        "/branches/new",
+        data={"branch_id": "KOL", "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
+              "tally_host": "localhost", "tally_port": "9000"},
+    )
+    s = Store(client.application.config["DB_PATH"])
+    s.upsert_customer_master(CustomerMasterRecord("Acme Traders", "Acme Traders", "KOL", Decimal("0.00")))
+    s.close()
+
+    resp = client.post(
+        "/branches/KOL/edit",
+        data={
+            "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
+            "tally_host": "localhost", "tally_port": "9000",
+            "pre_mis_csv": (
+                BytesIO(b"party_name,pre_mis_outstanding\nAcme Traders,125000.00\n"),
+                "pre_mis.csv",
+            ),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"1 corrected" in resp.data
+
+    s = Store(client.application.config["DB_PATH"])
+    assert s.get_opening_balance("Acme Traders", "KOL") == Decimal("125000.00")
+    s.close()
+
+
 def test_pre_mis_csv_skips_party_that_already_has_weekly_snapshots(client):
     from ar_mis.models import WeeklySnapshotRow
     from ar_mis.storage import Store
