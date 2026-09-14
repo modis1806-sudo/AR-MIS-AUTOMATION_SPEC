@@ -22,7 +22,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from ar_mis.config import BranchConfig, week_start
+from ar_mis.config import BranchConfig
 from ar_mis.models import (
     CreditNoteRegisterRow,
     CustomerMasterRecord,
@@ -63,7 +63,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -360,6 +360,20 @@ ALTER TABLE drift_finding ADD COLUMN incorporated INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE drift_finding ADD COLUMN incorporated_by TEXT;
 ALTER TABLE drift_finding ADD COLUMN incorporated_at TEXT;
 ALTER TABLE drift_finding ADD COLUMN incorporated_week_ending TEXT;
+""",
+    # Client's explicit reversal this session: extraction no longer snaps
+    # to a Monday-Sunday calendar grid (see ar_mis.config's own docstring
+    # for the real incident that forced this) - a run's own start date can
+    # no longer be recovered by subtracting 6 days from week_ending, so it
+    # has to be stored explicitly. Every row that predates this column
+    # was, without exception, saved back when the fixed-7-day-week
+    # assumption still held everywhere in this codebase, so backfilling
+    # via that same subtraction is exact for existing data, not a guess -
+    # it only stops being derivable for rows saved from here on, which is
+    # exactly why they're the ones that now store it directly.
+    9: """
+ALTER TABLE weekly_snapshot ADD COLUMN period_start TEXT;
+UPDATE weekly_snapshot SET period_start = date(week_ending, '-6 days') WHERE period_start IS NULL;
 """,
 }
 
@@ -707,8 +721,9 @@ class Store:
         self.conn.execute(
             "INSERT INTO weekly_snapshot "
             "(party_id, branch_id, week_ending, opening, sales, credit_notes, debit_notes,"
-            " receipts, journals, closing_computed, closing_extracted, reconciled, difference)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " receipts, journals, closing_computed, closing_extracted, reconciled, difference,"
+            " period_start)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 d["party_id"],
                 d["branch_id"],
@@ -723,6 +738,7 @@ class Store:
                 str(d["closing_extracted"]),
                 int(d["reconciled"]),
                 str(d["difference"]),
+                d["period_start"].isoformat() if d["period_start"] else None,
             ),
         )
         self.conn.commit()
@@ -765,6 +781,7 @@ class Store:
                 closing_extracted=Decimal(r["closing_extracted"]),
                 reconciled=bool(r["reconciled"]),
                 difference=Decimal(r["difference"]),
+                period_start=date.fromisoformat(r["period_start"]) if r["period_start"] else None,
             )
             for r in cur.fetchall()
         ]
@@ -800,49 +817,55 @@ class Store:
 
     def branch_data_summary(self, branch_id: str) -> dict | None:
         """Coverage summary for the Branch Master screen: the earliest
-        and latest week already on record for this branch, and how many
-        weeks in between - so an operator can see what's already been
-        extracted before running another extraction, without having to
-        open a register and hunt for it. None if nothing has been
-        recorded for this branch yet.
+        and latest date already on record for this branch, and how many
+        separate runs make up that history - so an operator can see
+        what's already been extracted before running another extraction,
+        without having to open a register and hunt for it. None if
+        nothing has been recorded for this branch yet.
         """
-        weeks = self.week_endings_for_branch(branch_id)
-        if not weeks:
+        row = self.conn.execute(
+            "SELECT MIN(period_start), MAX(week_ending), COUNT(DISTINCT week_ending)"
+            " FROM weekly_snapshot WHERE branch_id=?",
+            (branch_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
             return None
         return {
-            "earliest_week_start": week_start(weeks[0]),
-            "latest_week_end": weeks[-1],
-            "week_count": len(weeks),
+            "earliest_week_start": date.fromisoformat(row[0]),
+            "latest_week_end": date.fromisoformat(row[1]),
+            "week_count": row[2],
         }
 
     def delete_branch_week(self, branch_id: str, week_ending: date) -> None:
         """Deletes every row this system wrote for one branch's one
-        Monday-Sunday week - the client's explicit ask: a mistaken
-        extraction currently can't be undone at all, so a genuine error
-        (wrong company loaded, wrong range typed) is stuck in the system
-        forever with no way to reextract cleanly.
+        extraction run - the client's explicit ask: a mistaken extraction
+        currently can't be undone at all, so a genuine error (wrong
+        company loaded, wrong range typed) is stuck in the system forever
+        with no way to reextract cleanly.
 
-        Deliberately restricted to the branch's OWN latest recorded week,
-        not any arbitrary past week: every week after the first rolls its
-        Opening Balance forward from the immediately preceding week's own
+        Deliberately restricted to the branch's OWN latest recorded run,
+        not any arbitrary past one: every run after the first rolls its
+        Opening Balance forward from the immediately preceding run's own
         closing (get_latest_closing/rollforward.resolve_opening_balances).
-        Deleting an earlier week out from under a later one that's still
-        on record would leave that later week's opening balance dangling -
+        Deleting an earlier run out from under a later one that's still
+        on record would leave that later run's opening balance dangling -
         rolled forward from data that no longer exists, with no
         mechanism here to notice or repair it. Deleting only ever the
-        newest week keeps the chain intact: nothing downstream depends
-        on it yet, since nothing downstream exists yet.
+        newest run keeps the chain intact: nothing downstream depends on
+        it yet, since nothing downstream exists yet.
 
         sales_dn_register/credit_note_register/receipt_journal_register
         carry no week_ending column of their own (see their own CREATE
         TABLE comments) - identity there is branch + voucher + party, not
-        a batch/run id - so rows belonging to this week are found by date
-        falling inside [week_start(week_ending), week_ending], the same
-        boundary every extraction (live or manual) now saves against
-        (ar_mis.config.split_into_weeks). Any invoice_follow_up row for an
-        invoice being deleted goes with it - a human's PTP/next-action
-        note about an invoice this system is about to forget has nothing
-        left to attach to.
+        a batch/run id - so rows belonging to this run are found by date
+        falling inside [period_start, week_ending], read back from this
+        exact run's own weekly_snapshot rows (client's own reversal:
+        extraction no longer runs on a fixed calendar grid, so this range
+        can no longer be derived by formula - see ar_mis.config's own
+        docstring). Any invoice_follow_up row for an invoice being
+        deleted goes with it - a human's PTP/next-action note about an
+        invoice this system is about to forget has nothing left to
+        attach to.
 
         Deliberately does NOT touch weekly_movement: design doc item 15's
         Weekly Movement Register is its own frozen, explicitly-recorded
@@ -858,7 +881,11 @@ class Store:
                 "every earlier week's closing balance is the opening balance the next week "
                 "rolled forward from, and deleting out of order would strand that chain."
             )
-        w_start_s = week_start(week_ending).isoformat()
+        period_start_row = self.conn.execute(
+            "SELECT period_start FROM weekly_snapshot WHERE branch_id=? AND week_ending=? LIMIT 1",
+            (branch_id, week_ending.isoformat()),
+        ).fetchone()
+        w_start_s = period_start_row[0]
         w_end_s = week_ending.isoformat()
 
         orphaned_invoices = self.conn.execute(

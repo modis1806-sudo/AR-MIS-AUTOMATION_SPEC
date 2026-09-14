@@ -47,6 +47,7 @@ def process_branch_data(
     all_vouchers: list[Voucher],
     closing_extracted: dict[str, Decimal],
     extracted_at: datetime | None = None,
+    period_start: date | None = None,
 ) -> BranchRunOutcome:
     """Roll forward, auto-discover new customers, reconcile at zero
     tolerance, and write Layer 2 (weekly_snapshot), the voucher log, and
@@ -78,6 +79,13 @@ def process_branch_data(
     internally by aggregate_party_movements). Callers own the flip on
     closing_extracted because where it comes from differs: a live
     Tally pull needs it applied, some manual-upload sources might not.
+
+    `period_start` is this run's own real start date - stored alongside
+    week_ending so Store.delete_branch_week can later recover exactly
+    which register rows belong to this run, now that extraction no
+    longer runs on a fixed calendar grid (see ar_mis.config's own
+    docstring for why that assumption was dropped). None only for a
+    caller that genuinely has no meaningful start date of its own.
     """
     party_names = set(closing_extracted)
 
@@ -115,6 +123,7 @@ def process_branch_data(
                 closing_extracted=result.closing_extracted,
                 reconciled=result.reconciled,
                 difference=result.difference,
+                period_start=period_start,
             )
         )
 
@@ -243,6 +252,9 @@ def build_branch_runner(store: Store, week_ending: date, from_date: date, to_dat
             name: flip_sign(balance) for name, balance in client.fetch_ytd_sundry_debtors(fy_start, to_date).items()
         }
 
-        return process_branch_data(store, branch.branch_id, branch.branch_name, week_ending, all_vouchers, closing_extracted)
+        return process_branch_data(
+            store, branch.branch_id, branch.branch_name, week_ending, all_vouchers, closing_extracted,
+            period_start=from_date,
+        )
 
     return run_branch

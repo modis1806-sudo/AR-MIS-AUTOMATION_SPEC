@@ -65,12 +65,17 @@ def process_manual_upload(
     weekly_voucher_xml: dict[str, str],
     trial_balance_xml: str,
     ytd_voucher_xml: str = "",
+    from_date: date | None = None,
 ) -> ManualUploadResult:
     """`weekly_voucher_xml` maps slot name (any/all of WEEKLY_VOUCHER_SLOTS)
     to raw XML text - a blank or missing entry is simply skipped, since a
     branch legitimately might have zero vouchers of some type in a given
     week. `to_date` doubles as the week_ending this data is recorded
-    under, matching how the live path uses its reporting date.
+    under, matching how the live path uses its reporting date. `from_date`
+    is that same run's own start date (the operator's own From Date field)
+    - threaded through as period_start so Store.delete_branch_week can
+    later recover exactly which rows this upload covers, same reason the
+    live path now needs it (see ar_mis.config's own docstring).
     """
     if store.has_weekly_snapshot_for_branch_week(branch_id, to_date):
         raise ManualUploadRefused(
@@ -88,7 +93,9 @@ def process_manual_upload(
         name: flip_sign(balance) for name, balance in parse_ledger_closing_balances(trial_balance_xml).items()
     }
 
-    outcome = process_branch_data(store, branch_id, branch_name, to_date, all_vouchers, closing_extracted)
+    outcome = process_branch_data(
+        store, branch_id, branch_name, to_date, all_vouchers, closing_extracted, period_start=from_date
+    )
 
     # data is now always written (see process_branch_data's own docstring
     # for this session's never-discard reversal), so this only needs to

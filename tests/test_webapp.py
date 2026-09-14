@@ -129,7 +129,7 @@ def test_branches_list_shows_data_coverage_after_a_save(client, monkeypatch):
     _add_branch(client)
     client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     resp = client.get("/branches")
     assert b"2026-01-05" in resp.data and b"2026-01-11" in resp.data
@@ -142,7 +142,7 @@ def test_branch_delete_week_removes_it_and_allows_reextraction(client, monkeypat
     _add_branch(client)
     client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     resp = client.post(
         "/branches/KOL/delete-week", data={"week_ending": _SINGLE_WEEK_END}, follow_redirects=True
@@ -159,7 +159,7 @@ def test_branch_delete_week_removes_it_and_allows_reextraction(client, monkeypat
     # Re-extracting the same week now succeeds rather than being skipped.
     resp = client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     assert b"RECONCILED CLEAN" in resp.data
 
@@ -169,7 +169,7 @@ def test_branch_delete_week_refuses_a_week_that_is_not_the_latest(client, monkey
     _add_branch(client)
     client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": "2026-01-05", "snapped_to": "2026-01-18"},
+        data={"branch_id": "KOL", "from_date": "2026-01-05", "to_date": "2026-01-18"},
     )
     resp = client.post(
         "/branches/KOL/delete-week", data={"week_ending": "2026-01-11"}, follow_redirects=True
@@ -282,11 +282,10 @@ def test_test_extraction_reports_connection_failure_clearly(client, monkeypatch)
 # ---- (POST /test-extraction/save, only ever reached from a successful ---
 # ---- Test Extraction result on the same page) ----------------------------
 
-# 2026-01-05 is a Monday, so a request for exactly that single day snaps
-# to the full Monday-Sunday week 2026-01-05..2026-01-11 with no other
-# week involved - keeps these tests to one week without needing a
-# separate mid-week-snap test (that's covered in test_config.py and the
-# dedicated multi-week test below).
+# A 7-day span - exactly one ar_mis.config.split_into_chunks piece at
+# the default chunk_days=7, so these tests exercise a single run without
+# needing a separate multi-chunk test (that's covered in test_config.py
+# and the dedicated multi-chunk test below).
 _SINGLE_WEEK_START = "2026-01-05"
 _SINGLE_WEEK_END = "2026-01-11"
 
@@ -346,7 +345,7 @@ def test_test_extraction_save_writes_data_and_shows_reconciled_clean(client, mon
     _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
     resp = client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     assert resp.status_code == 200
     assert b"RECONCILED CLEAN" in resp.data
@@ -365,7 +364,7 @@ def test_test_extraction_save_mismatch_still_writes_data(client, monkeypatch):
     _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
     resp = client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     assert b"RECONCILIATION MISMATCH" in resp.data
     assert b"still recorded" in resp.data
@@ -382,11 +381,11 @@ def test_test_extraction_save_skips_a_week_already_recorded(client, monkeypatch)
     _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
     client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     resp = client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     assert b"SKIPPED" in resp.data
     assert b"already has recorded data" in resp.data
@@ -402,7 +401,7 @@ def test_test_extraction_save_reports_connection_failure_and_writes_nothing(clie
     _add_branch(client)
     resp = client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     assert b"FAILED" in resp.data
     assert b"Could not reach Tally" in resp.data
@@ -432,11 +431,11 @@ def test_test_extraction_save_stops_at_first_failed_week_in_a_multi_week_range(c
     _add_branch(client)
     resp = client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": "2026-01-05", "snapped_to": "2026-01-18"},
+        data={"branch_id": "KOL", "from_date": "2026-01-05", "to_date": "2026-01-18"},
     )
     assert b"RECONCILED CLEAN" in resp.data  # first week
     assert b"FAILED" in resp.data  # second week
-    assert b"were not attempted" in resp.data
+    assert b"was not attempted" in resp.data
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
@@ -449,7 +448,7 @@ def test_checker_cannot_reach_test_extraction_save(roleless_client):
     roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.post(
         "/test-extraction/save",
-        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
         follow_redirects=True,
     )
     assert b"available for your role" in resp.data

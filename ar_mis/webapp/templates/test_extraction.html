@@ -2,7 +2,7 @@
 {% block title %}Test & Save Extraction{% endblock %}
 {% block content %}
 <h1>Test &amp; Save Extraction</h1>
-<p class="subtitle">Pick a branch and a date range, run the check first (read-only, nothing written), then save the exact same range you just tested — never a different one. Any range is snapped outward to full Monday-to-Sunday weeks and saved one real week at a time; a week that already has recorded data is left untouched.</p>
+<p class="subtitle">Pick a branch and a date range, run the check first (read-only, nothing written), then save the exact same range you just tested — never a different one. Extraction runs on exactly the range you type, never snapped to any calendar boundary; a big range is broken into ~7-day pieces purely as a practical batch size. A run that already has recorded data is left untouched.</p>
 
 <div class="card">
 {% if branches %}
@@ -21,7 +21,7 @@
 
   <label>To Date</label>
   <input name="to_date" type="date" value="{{ default_to }}" required>
-  <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">Any range — a week, a month, or a full financial year for a first-time backfill. Defaults to the most recently completed Monday–Sunday week.</p>
+  <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">Any range — a day, a month, or a full financial year for a first-time backfill. Used exactly as typed.</p>
 
   <p style="margin-top:20px;"><button class="btn" type="submit">Run Test</button></p>
 </form>
@@ -37,8 +37,7 @@
     <span class="pill {{ 'ok' if result.all_ok else 'fail' }}">{{ 'ALL PASSED' if result.all_ok else 'FAILED' }}</span>
   </h2>
   <p>
-    Testing week{{ 's' if result.weeks|length > 1 else '' }} <strong>{{ result.snapped_from }}</strong> to <strong>{{ result.snapped_to }}</strong>
-    {% if result.was_snapped %}<span style="color:#6b7280;">(you asked for {{ result.requested_from }} to {{ result.requested_to }} — extended outward to full Monday–Sunday weeks)</span>{% endif %}
+    Testing <strong>{{ result.from_date }}</strong> to <strong>{{ result.to_date }}</strong>
   </p>
   <table>
     <thead><tr><th>Step</th><th>Status</th><th>Detail</th></tr></thead>
@@ -54,15 +53,15 @@
   </table>
 
   {% if result.all_ok %}
-  <p style="font-weight:600; margin-top:20px;">Weeks this would save:</p>
+  <p style="font-weight:600; margin-top:20px;">{{ 'Pieces' if result.chunks|length > 1 else 'This' }} this would save:</p>
   <table>
-    <thead><tr><th>Week Ending</th><th>Status</th></tr></thead>
+    <thead><tr><th>Range</th><th>Status</th></tr></thead>
     <tbody>
-    {% for w in result.weeks %}
+    {% for c in result.chunks %}
       <tr>
-        <td>{{ w.start }} to {{ w.end }}</td>
+        <td>{{ c.start }} to {{ c.end }}</td>
         <td>
-          {% if w.already_recorded %}<span class="pill status-active">Already recorded — will be skipped</span>
+          {% if c.already_recorded %}<span class="pill status-active">Already recorded — will be skipped</span>
           {% else %}<span class="pill ok">New — will be saved</span>{% endif %}
         </td>
       </tr>
@@ -70,15 +69,15 @@
     </tbody>
   </table>
 
-  {% if result.any_week_new %}
+  {% if result.any_chunk_new %}
   <form method="post" action="{{ url_for('test_extraction_save') }}" style="margin-top:20px;">
     <input type="hidden" name="branch_id" value="{{ result.branch.branch_id }}">
-    <input type="hidden" name="snapped_from" value="{{ result.snapped_from }}">
-    <input type="hidden" name="snapped_to" value="{{ result.snapped_to }}">
+    <input type="hidden" name="from_date" value="{{ result.from_date }}">
+    <input type="hidden" name="to_date" value="{{ result.to_date }}">
     <button class="btn" type="submit">Save this data</button>
   </form>
   {% else %}
-  <p style="color:#6b7280; margin-top:16px;">Every week in this range is already recorded — nothing new to save.</p>
+  <p style="color:#6b7280; margin-top:16px;">Every piece of this range is already recorded — nothing new to save.</p>
   {% endif %}
   {% endif %}
 </div>
@@ -86,55 +85,55 @@
 
 {% if result and result.mode == "save" %}
 <div class="card">
-  <h2 style="margin-top:0;">Saved — {{ result.branch.branch_name }} ({{ result.snapped_from }} to {{ result.snapped_to }})</h2>
+  <h2 style="margin-top:0;">Saved — {{ result.branch.branch_name }} ({{ result.from_date }} to {{ result.to_date }})</h2>
 
-  {% for wr in result.week_results %}
-    {% if wr.status == "skipped" %}
+  {% for cr in result.chunk_results %}
+    {% if cr.status == "skipped" %}
     <div class="card" style="background:#f9fafb;">
-      <h3 style="margin-top:0;">Week ending {{ wr.end }} <span class="pill status-active">SKIPPED</span></h3>
-      <p>{{ wr.detail }}</p>
+      <h3 style="margin-top:0;">{{ cr.start }} to {{ cr.end }} <span class="pill status-active">SKIPPED</span></h3>
+      <p>{{ cr.detail }}</p>
     </div>
-    {% elif wr.status == "failed" %}
+    {% elif cr.status == "failed" %}
     <div class="card" style="background:#fef2f2;">
-      <h3 style="margin-top:0;">Week ending {{ wr.end }} <span class="pill fail">FAILED</span></h3>
-      <p>{{ wr.detail }}</p>
-      <p style="color:#991b1b;">Stopped here — any weeks after this one were not attempted, since each week's opening balance depends on the one before it.</p>
+      <h3 style="margin-top:0;">{{ cr.start }} to {{ cr.end }} <span class="pill fail">FAILED</span></h3>
+      <p>{{ cr.detail }}</p>
+      <p style="color:#991b1b;">Stopped here — anything after this range was not attempted, since each run's opening balance depends on the one before it.</p>
     </div>
     {% else %}
     <div class="card">
       <h3 style="margin-top:0;">
-        Week ending {{ wr.end }}
-        <span class="pill {{ 'ok' if not wr.outcome.failed_parties else 'fail' }}">
-          {{ 'RECONCILED CLEAN' if not wr.outcome.failed_parties else 'RECONCILIATION MISMATCH' }}
+        {{ cr.start }} to {{ cr.end }}
+        <span class="pill {{ 'ok' if not cr.outcome.failed_parties else 'fail' }}">
+          {{ 'RECONCILED CLEAN' if not cr.outcome.failed_parties else 'RECONCILIATION MISMATCH' }}
         </span>
       </h3>
-      <p>{{ wr.outcome.detail }}</p>
-      {% if wr.outcome.failed_parties %}
+      <p>{{ cr.outcome.detail }}</p>
+      {% if cr.outcome.failed_parties %}
       <p style="color:#991b1b;">Data was still recorded for every party, mismatch included — see the TB Reconciliation Cross-Check sheet for the exact difference.</p>
       {% endif %}
 
-      {% if wr.outcome.new_parties %}
-      <p><strong>New parties this run:</strong> {{ wr.outcome.new_parties | join(', ') }} (auto-created at Pre-MIS Outstanding = 0)</p>
+      {% if cr.outcome.new_parties %}
+      <p><strong>New parties this run:</strong> {{ cr.outcome.new_parties | join(', ') }} (auto-created at Pre-MIS Outstanding = 0)</p>
       {% endif %}
 
-      {% if wr.outcome.register_build_exceptions %}
+      {% if cr.outcome.register_build_exceptions %}
       <p style="font-weight:600; margin-top:16px;">Vouchers not added to a register (reconciliation is unaffected — these never touched a tracked customer's balance):</p>
       <table>
         <thead><tr><th>Voucher</th><th>Reason</th></tr></thead>
         <tbody>
-        {% for voucher_number, reason in wr.outcome.register_build_exceptions %}
+        {% for voucher_number, reason in cr.outcome.register_build_exceptions %}
           <tr><td>{{ voucher_number }}</td><td>{{ reason }}</td></tr>
         {% endfor %}
         </tbody>
       </table>
       {% endif %}
 
-      {% if wr.drift_findings %}
-      <p style="font-weight:600; margin-top:16px;">YTD drift found (backdated entries not part of this week's own extraction):</p>
+      {% if cr.drift_findings %}
+      <p style="font-weight:600; margin-top:16px;">YTD drift found (backdated entries not part of this run's own extraction):</p>
       <table>
-        <thead><tr><th>Party</th><th>Voucher</th><th>Date</th><th>Amount</th><th>Attributed Week</th></tr></thead>
+        <thead><tr><th>Party</th><th>Voucher</th><th>Date</th><th>Amount</th><th>Attributed Run</th></tr></thead>
         <tbody>
-        {% for f in wr.drift_findings %}
+        {% for f in cr.drift_findings %}
           <tr>
             <td>{{ f.party_ledger_name }}</td>
             <td>{{ f.voucher_type }} {{ f.voucher_number }}</td>

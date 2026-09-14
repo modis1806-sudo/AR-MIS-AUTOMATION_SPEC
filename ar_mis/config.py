@@ -39,45 +39,52 @@ def financial_year_start(as_of: date) -> date:
     return date(year, FINANCIAL_YEAR_START_MONTH, FINANCIAL_YEAR_START_DAY)
 
 
-# Client's explicit, permanent rule: the reporting week is always
-# Monday through Sunday - fixed to the real calendar, never floating
-# based on whatever day an extraction happens to run on or whatever day
-# the very first week happened to start. Without this, week_ending would
-# just be whatever date got typed in, and a first extraction run on a
-# Wednesday would anchor every subsequent week Wednesday-to-Wednesday
-# instead of the real business week - silently corrupting the week-over-
-# week trending (Weekly Movement Register, DSO) that depends on every
-# row meaning the same real calendar week.
-def week_start(d: date) -> date:
-    """Monday of the calendar week containing `d`."""
-    return d - timedelta(days=d.weekday())
+# Reversed, client's own explicit call (previously this module snapped
+# every extraction outward to a fixed Monday-Sunday calendar grid). Real
+# incident that forced the reversal: a brand-new branch's very first
+# extraction, requested as "1 April" (a Wednesday), got silently
+# stretched backward to include 30-31 March - two days that predate the
+# branch's own go-live cutoff, double-counting against the Pre-MIS
+# Outstanding baseline that was supposed to already cover them.
+#
+# Client's own reasoning, confirmed explicitly: this tool isn't custom to
+# one customer's calendar - the underlying data (every invoice, CN,
+# receipt, journal) is already stored by its own real date, never by
+# "which week" (see SalesDNRegisterRow/CreditNoteRegisterRow/
+# ReceiptJournalRegisterRow - none of them carry a week_ending column,
+# never did). "Weekly" is only a real business requirement in two places,
+# neither of which needs the underlying data pinned to a calendar grid:
+# (1) management's chosen extraction CADENCE (roughly once a week -  a
+# process decision, not a data rule), and (2) the Weekly Movement
+# Register, which is a Maker's own deliberate, point-in-time recording
+# action (ar_mis.webapp.app.weekly_movement_record) already computed live
+# from whatever continuous data is on record - it never depended on
+# extraction itself being chunked by calendar week.
+#
+# So extraction now runs on exactly the range asked for - never snapped,
+# never silently widened past what was typed. A big backfill is still
+# broken into CHUNK_DAYS-sized pieces below, purely as a practical batch
+# size (the same reason voucher-fetching was already chunked - see
+# tally_client._VOUCHER_FETCH_CHUNK_DAYS) - not because any chunk is
+# meant to mean "a calendar week." Gaps aren't newly risked by dropping
+# the grid: Section 4.2's YTD full-pull drift check already re-diffs the
+# entire financial year on every run, independent of how any individual
+# extraction was chunked, and would surface a missed date range exactly
+# the same way it surfaces any other backdated/missed voucher.
+CHUNK_DAYS = 7
 
 
-def week_end(d: date) -> date:
-    """Sunday of the calendar week containing `d` - this app's own
-    week_ending value.
+def split_into_chunks(from_date: date, to_date: date, chunk_days: int = CHUNK_DAYS) -> list[tuple[date, date]]:
+    """Splits [from_date, to_date] into consecutive `chunk_days`-sized
+    pieces, starting exactly at from_date - never snapped to any calendar
+    boundary. The final piece is shorter than chunk_days when the range
+    doesn't divide evenly; every other piece is exactly chunk_days long.
+    Covers the full range with no gap and no overlap between pieces.
     """
-    return week_start(d) + timedelta(days=6)
-
-
-def snap_to_full_weeks(from_date: date, to_date: date) -> tuple[date, date]:
-    """Extends [from_date, to_date] outward to the nearest full Monday-
-    Sunday weeks - never narrows the requested range, matching this
-    codebase's own never-discard principle (better to pull a little more
-    than asked than to silently drop data the operator expected covered).
-    """
-    return week_start(from_date), week_end(to_date)
-
-
-def split_into_weeks(from_date: date, to_date: date) -> list[tuple[date, date]]:
-    """Splits an already week-aligned [from_date, to_date] range (as
-    produced by snap_to_full_weeks) into consecutive (Monday, Sunday)
-    pairs - one entry per real calendar week, each becoming its own
-    weekly_snapshot write.
-    """
-    weeks = []
+    chunks = []
     current = from_date
     while current <= to_date:
-        weeks.append((current, current + timedelta(days=6)))
-        current += timedelta(days=7)
-    return weeks
+        chunk_end = min(current + timedelta(days=chunk_days - 1), to_date)
+        chunks.append((current, chunk_end))
+        current = chunk_end + timedelta(days=1)
+    return chunks

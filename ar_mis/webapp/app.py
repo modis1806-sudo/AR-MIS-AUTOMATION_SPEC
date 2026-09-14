@@ -30,7 +30,7 @@ from flask import Flask, flash, redirect, render_template, request, send_file, s
 
 from ar_mis.ageing_matrix import compute_ageing_matrix
 from ar_mis.branch_totals import compute_branch_sales_cn_dn_totals
-from ar_mis.config import BranchConfig, financial_year_start, snap_to_full_weeks, split_into_weeks, week_start
+from ar_mis.config import BranchConfig, financial_year_start, split_into_chunks
 from ar_mis.dashboard import compute_ar_snapshot, compute_branch_ageing_schedule
 from ar_mis.exception_register import (
     compute_negative_open_amount_invoices,
@@ -273,13 +273,14 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return redirect(url_for("branches_list"))
 
     def _default_test_range() -> tuple[date, date]:
-        """Defaults to the most recently completed Monday-Sunday week,
-        regardless of what day it is today - "the previous whole week",
-        per the client's own weekly rule below.
+        """A plain, generic starting suggestion - the last 7 days ending
+        yesterday - shown before a branch is even picked, so this can't
+        know that branch's own last-extracted date yet. Purely a
+        convenience default; the operator can type any range at all,
+        including one starting well before or after this.
         """
-        this_week_start = week_start(date.today())
-        last_week_end = this_week_start - timedelta(days=1)
-        return week_start(last_week_end), last_week_end
+        yesterday = date.today() - timedelta(days=1)
+        return yesterday - timedelta(days=6), yesterday
 
     @app.route("/test-extraction", methods=["GET", "POST"])
     @requires_role("maker")
@@ -291,15 +292,16 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         page's form). Testing here always shows the range that a
         follow-up Save would actually use, since a Save (see
         test_extraction_save below) is only ever offered against the same
-        snapped range this test just ran.
+        range this test just ran.
 
-        Client's explicit, permanent rule: the reporting week is always
-        Monday through Sunday, fixed to the calendar - never the raw
-        dates typed in. Whatever range the operator picks gets extended
-        outward (ar_mis.config.snap_to_full_weeks) to the enclosing full
-        weeks, then split into one real week per ar_mis.config.
-        split_into_weeks - never narrowed, per this app's own never-
-        discard principle, and never a partial week silently included.
+        Client's explicit reversal this session: extraction runs on
+        EXACTLY the range typed in - never snapped to a calendar week
+        boundary (see ar_mis.config's own docstring for the real
+        incident this undoes: a first extraction for a new branch got
+        silently stretched backward across its own go-live date). A big
+        range is still broken into ar_mis.config.split_into_chunks
+        pieces below, purely as a practical batch size - not because any
+        piece is meant to mean "a calendar week."
         """
         store = get_store()
         branches = store.list_branches()
@@ -317,10 +319,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     default_from=default_from.isoformat(), default_to=default_to.isoformat(),
                 )
 
-            # Any range the operator picks - a week, a month, a full
-            # financial year for a first-time backfill - gets snapped
-            # outward to full Monday-Sunday weeks below; no artificial
-            # min/max on what can be requested.
+            # Any range the operator picks - a day, a month, a full
+            # financial year for a first-time backfill - is used exactly
+            # as typed; no artificial min/max, and nothing snapped.
             try:
                 from_date = date.fromisoformat(request.form["from_date"])
                 to_date = date.fromisoformat(request.form["to_date"])
@@ -338,8 +339,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     "test_extraction.html", branches=branches, result=None,
                     default_from=from_date.isoformat(), default_to=to_date.isoformat(),
                 )
-
-            snapped_from, snapped_to = snap_to_full_weeks(from_date, to_date)
 
             steps: list[tuple[str, bool, str]] = []
             # Uses TallyClient's default timeout (see tally_client.
@@ -362,7 +361,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
             if all_ok_so_far:
                 try:
-                    vouchers_by_type = client.fetch_all_voucher_types(snapped_from, snapped_to)
+                    vouchers_by_type = client.fetch_all_voucher_types(from_date, to_date)
                     counts = ", ".join(f"{vt.value}: {len(vs)}" for vt, vs in vouchers_by_type.items())
                     steps.append(("Voucher extraction", True, counts or "0 vouchers in range"))
                 except TallyConnectionError as exc:
@@ -372,28 +371,26 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
             if all_ok_so_far:
                 try:
-                    balances = client.fetch_ytd_sundry_debtors(snapped_from, snapped_to)
+                    balances = client.fetch_ytd_sundry_debtors(from_date, to_date)
                     steps.append(("Sundry Debtors pull", True, f"{len(balances)} ledger(s) found"))
                 except TallyConnectionError as exc:
                     steps.append(("Sundry Debtors pull", False, str(exc)))
 
             all_ok = all(ok for _, ok, _ in steps)
-            weeks = [
+            chunks = [
                 {
-                    "start": w_start.isoformat(), "end": w_end.isoformat(),
-                    "already_recorded": store.has_weekly_snapshot_for_branch_week(branch_id, w_end),
+                    "start": c_start.isoformat(), "end": c_end.isoformat(),
+                    "already_recorded": store.has_weekly_snapshot_for_branch_week(branch_id, c_end),
                 }
-                for w_start, w_end in split_into_weeks(snapped_from, snapped_to)
+                for c_start, c_end in split_into_chunks(from_date, to_date)
             ]
 
             result = {
                 "mode": "test",
                 "branch": branch, "steps": steps, "all_ok": all_ok,
-                "requested_from": from_date.isoformat(), "requested_to": to_date.isoformat(),
-                "snapped_from": snapped_from.isoformat(), "snapped_to": snapped_to.isoformat(),
-                "was_snapped": (from_date, to_date) != (snapped_from, snapped_to),
-                "weeks": weeks,
-                "any_week_new": any(not w["already_recorded"] for w in weeks),
+                "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+                "chunks": chunks,
+                "any_chunk_new": any(not c["already_recorded"] for c in chunks),
             }
             default_from, default_to = from_date, to_date
 
@@ -408,27 +405,26 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def test_extraction_save():
         """The genuine live-Tally commit action - only ever reached from a
         successful Test Extraction result above, posting back the exact
-        same (already snapped, week-aligned) range that was just tested,
-        so what gets saved is never a different range than what was
-        checked.
+        same range that was just tested, so what gets saved is never a
+        different range than what was checked.
 
         Same write path Manual Upload uses (process_branch_data),
         sourced from a live Tally pull instead, mirroring
         ar_mis.pipeline.build_branch_runner (the CLI's own live path) -
-        including the Section 4.2 YTD full-pull drift check per week, so
+        including the Section 4.2 YTD full-pull drift check per chunk, so
         a backdated entry is caught here too.
 
-        A multi-week range is saved one real Monday-Sunday week at a
-        time, in chronological order - required, not just tidy: each
-        week's opening balance rolls forward from the immediately
-        preceding week's own just-saved closing
+        A big range is saved one ar_mis.config.split_into_chunks piece at
+        a time, in chronological order - required, not just tidy: each
+        chunk's opening balance rolls forward from the immediately
+        preceding chunk's own just-saved closing
         (rollforward.resolve_opening_balances), so processing out of
         order or skipping ahead past a failure would silently corrupt
-        every later week's opening. A week that already has recorded
+        every later chunk's opening. A chunk that already has recorded
         data is skipped (first one in wins, same conflict rule Manual
         Upload enforces) without stopping the run; a genuine extraction
-        failure on one week DOES stop the run, rather than risk building
-        every later week's opening on top of a gap.
+        failure on one chunk DOES stop the run, rather than risk building
+        every later chunk's opening on top of a gap.
         """
         store = get_store()
         branches = store.list_branches()
@@ -445,8 +441,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             )
 
         try:
-            snapped_from = date.fromisoformat(request.form["snapped_from"])
-            snapped_to = date.fromisoformat(request.form["snapped_to"])
+            from_date = date.fromisoformat(request.form["from_date"])
+            to_date = date.fromisoformat(request.form["to_date"])
         except (KeyError, ValueError):
             flash("That save request was missing its date range - please run the test again.", "error")
             store.close()
@@ -455,45 +451,42 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 "test_extraction.html", branches=branches, result=None,
                 default_from=default_from.isoformat(), default_to=default_to.isoformat(),
             )
-        # Defensive re-snap - the form fields are hidden inputs carrying
-        # values this same server already computed, but never trust a
-        # posted value as pre-validated.
-        snapped_from, snapped_to = snap_to_full_weeks(snapped_from, snapped_to)
 
         client = TallyClient(branch=branch)
-        week_results = []
+        chunk_results = []
 
-        for w_start, w_end in split_into_weeks(snapped_from, snapped_to):
-            if store.has_weekly_snapshot_for_branch_week(branch_id, w_end):
-                week_results.append({
-                    "start": w_start.isoformat(), "end": w_end.isoformat(), "status": "skipped",
-                    "detail": f"Already has recorded data for the week ending {w_end.isoformat()} - not overwritten.",
+        for c_start, c_end in split_into_chunks(from_date, to_date):
+            if store.has_weekly_snapshot_for_branch_week(branch_id, c_end):
+                chunk_results.append({
+                    "start": c_start.isoformat(), "end": c_end.isoformat(), "status": "skipped",
+                    "detail": f"Already has recorded data for the run ending {c_end.isoformat()} - not overwritten.",
                 })
                 continue
 
-            fy_start = financial_year_start(w_end)
+            fy_start = financial_year_start(c_end)
             try:
                 client.confirm_current_company()
-                vouchers_by_type = client.fetch_all_voucher_types(w_start, w_end)
+                vouchers_by_type = client.fetch_all_voucher_types(c_start, c_end)
                 all_vouchers = [v for vs in vouchers_by_type.values() for v in vs]
                 closing_extracted = {
                     name: flip_sign(balance)
-                    for name, balance in client.fetch_ytd_sundry_debtors(fy_start, w_end).items()
+                    for name, balance in client.fetch_ytd_sundry_debtors(fy_start, c_end).items()
                 }
             except (CompanyMismatchError, TallyConnectionError) as exc:
-                week_results.append({
-                    "start": w_start.isoformat(), "end": w_end.isoformat(), "status": "failed",
+                chunk_results.append({
+                    "start": c_start.isoformat(), "end": c_end.isoformat(), "status": "failed",
                     "detail": f"Extraction failed: {exc}",
                 })
-                break  # later weeks would roll forward from a gap - stop here, don't guess onward
+                break  # later chunks would roll forward from a gap - stop here, don't guess onward
 
             outcome = process_branch_data(
-                store, branch.branch_id, branch.branch_name, w_end, all_vouchers, closing_extracted
+                store, branch.branch_id, branch.branch_name, c_end, all_vouchers, closing_extracted,
+                period_start=c_start,
             )
 
             drift_findings = []
             try:
-                ytd_vouchers_by_type = client.fetch_all_voucher_types(fy_start, w_end)
+                ytd_vouchers_by_type = client.fetch_all_voucher_types(fy_start, c_end)
                 ytd_vouchers = [v for vs in ytd_vouchers_by_type.values() for v in vs]
                 party_names = set(closing_extracted)
                 logged_keys = {p: store.logged_voucher_keys(branch.branch_id, p) for p in party_names}
@@ -501,20 +494,20 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 drift_findings = isolate_drift(branch.branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
                 store.record_drift_findings(branch.branch_id, drift_findings, datetime.now())
             except TallyConnectionError as exc:
-                flash(f"Week ending {w_end.isoformat()} was saved, but its YTD drift check could not run: {exc}", "error")
+                flash(f"Run ending {c_end.isoformat()} was saved, but its YTD drift check could not run: {exc}", "error")
 
-            week_results.append({
-                "start": w_start.isoformat(), "end": w_end.isoformat(), "status": "saved",
+            chunk_results.append({
+                "start": c_start.isoformat(), "end": c_end.isoformat(), "status": "saved",
                 "outcome": outcome, "drift_findings": drift_findings,
             })
 
         result = {
             "mode": "save", "branch": branch,
-            "snapped_from": snapped_from.isoformat(), "snapped_to": snapped_to.isoformat(),
-            "week_results": week_results,
+            "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+            "chunk_results": chunk_results,
         }
         store.close()
-        default_from, default_to = snapped_from, snapped_to
+        default_from, default_to = from_date, to_date
         return render_template(
             "test_extraction.html", branches=branches, result=result,
             default_from=default_from.isoformat(), default_to=default_to.isoformat(),
@@ -661,6 +654,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     weekly_voucher_xml=weekly_voucher_xml,
                     trial_balance_xml=trial_balance_xml,
                     ytd_voucher_xml=ytd_voucher_xml,
+                    from_date=from_date,
                 )
                 result = {
                     "branch": branch, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),

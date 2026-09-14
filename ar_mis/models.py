@@ -161,12 +161,23 @@ class PreMisAdjustment:
 
 @dataclass(frozen=True)
 class WeeklySnapshotRow:
-    """Layer 2. One row per party per branch per week. All amounts are
+    """Layer 2. One row per party per branch per run. All amounts are
     post-sign-flip. `closing_extracted` is the YTD Trial Balance closing
     balance pulled directly from Tally for this party; `closing_computed`
     is Opening + Sales + CN + DN + Receipts + Journals. Section 4.1
     compares the two — this row carries both so the reconciliation result
     is reproducible from stored data alone, not recomputed silently later.
+
+    `week_ending` is the run's own end date — no longer required to fall
+    on a Sunday (client's explicit reversal: extraction runs on exactly
+    the range asked for, never snapped to a calendar week - see
+    ar_mis.config's own docstring). `period_start` is that same run's own
+    start date, needed to recover exactly which date range this run
+    covered (Store.delete_branch_week's register-row cleanup depends on
+    it) now that it can no longer be derived by subtracting 6 days from
+    week_ending. Optional/None only for rows that predate this field
+    existing at all - see storage.py's own migration for how those are
+    backfilled.
     """
 
     party_id: str
@@ -182,6 +193,7 @@ class WeeklySnapshotRow:
     closing_extracted: Decimal
     reconciled: bool
     difference: Decimal
+    period_start: date | None = None
 
 
 @dataclass(frozen=True)

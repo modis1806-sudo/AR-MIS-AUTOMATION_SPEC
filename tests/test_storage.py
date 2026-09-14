@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -912,9 +912,11 @@ def test_last_extraction_at_across_all_branches_is_the_most_recent_of_any(store)
 # merged Test & Save Extraction flow now saves one week at a time.
 
 
-def _run_week(store, week_ending, voucher_number, invoice_date, party="ACME"):
+def _run_week(store, week_ending, voucher_number, invoice_date, party="ACME", period_start=None):
     from ar_mis.pipeline import process_branch_data
 
+    if period_start is None:
+        period_start = week_ending - timedelta(days=6)
     store.upsert_customer_master(CustomerMasterRecord(party, party, "KOL", Decimal("0.00")))
     voucher = Voucher(
         voucher_type=VoucherType.SALES, voucher_date=invoice_date, voucher_number=voucher_number,
@@ -925,7 +927,9 @@ def _run_week(store, week_ending, voucher_number, invoice_date, party="ACME"):
             LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("1000.00")),
         ],
     )
-    return process_branch_data(store, "KOL", "Kolkata", week_ending, [voucher], {party: Decimal("-1000.00")})
+    return process_branch_data(
+        store, "KOL", "Kolkata", week_ending, [voucher], {party: Decimal("-1000.00")}, period_start=period_start
+    )
 
 
 def test_week_endings_for_branch_is_empty_before_any_extraction(store):
