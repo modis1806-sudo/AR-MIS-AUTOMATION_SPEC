@@ -727,7 +727,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             )
         return display_rows, freshness
 
-    def _build_credit_note_display_rows():
+    def _build_credit_note_display_rows(as_of: date):
         store = get_store()
         rows = store.all_credit_note_rows()
         freshness = _freshness(store.last_extraction_at())
@@ -737,12 +737,21 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         # AND Current - a Pending Review/Pre-MIS CN isn't a real
         # unapplied balance this system can vouch for yet, matching
         # registers.compute_unapplied_cn_by_party's own condition.
+        #
+        # `as_of` (item 14, added this session): a CN dated after the
+        # selected date didn't exist yet as of that date - same "future
+        # dated line contributes nothing yet" rule compute_invoice_position
+        # already applies to Sales/DN. Every row still appears (nothing
+        # here is ever hidden), only the Unapplied CN Amount is zeroed
+        # for a CN not yet in effect as of the chosen date.
         display_rows = [
             {
                 "row": row,
                 "unapplied_amount": (
                     row.cn_amount
-                    if row.bill_allocation_reference is None and row.classification == RegisterClassification.CURRENT
+                    if row.bill_allocation_reference is None
+                    and row.classification == RegisterClassification.CURRENT
+                    and row.cn_date <= as_of
                     else None
                 ),
             }
@@ -763,6 +772,94 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         ]
         return display_rows, freshness
 
+    # ---- Register snapshot summaries (client's explicit ask) ------------
+    # A running sum-total as of the selected date, shown at the top of
+    # each register - so a viewer can trust the figure on screen without
+    # exporting to Excel and totaling it by hand first. Built from the
+    # exact same already-computed display_rows the table itself renders
+    # (never a second, separate recomputation - same principle
+    # ar_mis.register_export's own docstring states for the Excel
+    # exports), so a summary tile can never silently drift from the rows
+    # underneath it.
+
+    def _sales_dn_summary(display_rows: list[dict], as_of: date) -> dict:
+        total_invoice_value = sum(
+            (d["row"].invoice_value for d in display_rows if d["row"].invoice_date <= as_of), Decimal("0.00")
+        )
+        total_open_amount = Decimal("0.00")
+        open_invoice_count = 0
+        total_overdue_amount = Decimal("0.00")
+        overdue_invoice_count = 0
+        for d in display_rows:
+            pos = d["position"]
+            if pos.open_amount != 0:
+                total_open_amount += pos.open_amount
+                open_invoice_count += 1
+            if pos.is_overdue:
+                total_overdue_amount += pos.open_amount
+                overdue_invoice_count += 1
+        return {
+            "as_of": as_of,
+            "total_invoice_value": total_invoice_value,
+            "total_open_amount": total_open_amount,
+            "open_invoice_count": open_invoice_count,
+            "total_overdue_amount": total_overdue_amount,
+            "overdue_invoice_count": overdue_invoice_count,
+        }
+
+    def _credit_note_summary(display_rows: list[dict], as_of: date) -> dict:
+        total_cn_amount = Decimal("0.00")
+        total_unapplied_amount = Decimal("0.00")
+        unapplied_count = 0
+        pending_review_amount = Decimal("0.00")
+        pending_review_count = 0
+        for d in display_rows:
+            row = d["row"]
+            if row.cn_date > as_of:
+                continue
+            total_cn_amount += row.cn_amount
+            if d["unapplied_amount"] is not None:
+                total_unapplied_amount += d["unapplied_amount"]
+                unapplied_count += 1
+            if row.classification == RegisterClassification.PENDING_REVIEW:
+                pending_review_amount += row.cn_amount
+                pending_review_count += 1
+        return {
+            "as_of": as_of,
+            "total_cn_amount": total_cn_amount,
+            "total_unapplied_amount": total_unapplied_amount,
+            "unapplied_count": unapplied_count,
+            "pending_review_amount": pending_review_amount,
+            "pending_review_count": pending_review_count,
+        }
+
+    def _receipt_journal_summary(display_rows: list[dict], as_of: date) -> dict:
+        total_applied_amount = Decimal("0.00")
+        total_unapplied_amount = Decimal("0.00")
+        unapplied_count = 0
+        pending_review_amount = Decimal("0.00")
+        pending_review_count = 0
+        for d in display_rows:
+            row = d["row"]
+            if row.txn_date > as_of:
+                continue
+            if row.target_doc_no:
+                total_applied_amount += row.amount
+            else:
+                total_unapplied_amount += row.amount
+                unapplied_count += 1
+            if row.classification == RegisterClassification.PENDING_REVIEW:
+                pending_review_amount += row.amount
+                pending_review_count += 1
+        return {
+            "as_of": as_of,
+            "total_applied_amount": total_applied_amount,
+            "total_unapplied_amount": total_unapplied_amount,
+            "unapplied_count": unapplied_count,
+            "pending_review_amount": pending_review_amount,
+            "pending_review_count": pending_review_count,
+        }
+
     @app.route("/registers/sales-dn")
     def sales_dn_register():
         """Design doc item 2's flagship register, item 14's as-of-date
@@ -774,9 +871,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         """
         as_of = _parse_as_of()
         display_rows, freshness = _build_sales_dn_display_rows(as_of)
+        summary = _sales_dn_summary(display_rows, as_of)
         return render_template(
             "sales_dn_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
-            freshness=freshness,
+            freshness=freshness, summary=summary,
         )
 
     @app.route("/registers/sales-dn/export.xlsx")
@@ -794,18 +892,24 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
     @app.route("/registers/credit-notes")
     def credit_note_register():
-        display_rows, freshness = _build_credit_note_display_rows()
-        return render_template("credit_note_register.html", display_rows=display_rows, freshness=freshness)
+        as_of = _parse_as_of()
+        display_rows, freshness = _build_credit_note_display_rows(as_of)
+        summary = _credit_note_summary(display_rows, as_of)
+        return render_template(
+            "credit_note_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
+            freshness=freshness, summary=summary,
+        )
 
     @app.route("/registers/credit-notes/export.xlsx")
     def credit_note_register_export():
-        display_rows, _ = _build_credit_note_display_rows()
-        wb = build_credit_note_register_workbook(display_rows)
+        as_of = _parse_as_of()
+        display_rows, _ = _build_credit_note_display_rows(as_of)
+        wb = build_credit_note_register_workbook(display_rows, as_of)
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
         return send_file(
-            buf, as_attachment=True, download_name=f"Credit_Note_Register_{date.today().isoformat()}.xlsx",
+            buf, as_attachment=True, download_name=f"Credit_Note_Register_{as_of.isoformat()}.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -813,9 +917,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def receipt_journal_register():
         as_of = _parse_as_of()
         display_rows, freshness = _build_receipt_journal_display_rows(as_of)
+        summary = _receipt_journal_summary(display_rows, as_of)
         return render_template(
             "receipt_journal_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
-            freshness=freshness,
+            freshness=freshness, summary=summary,
         )
 
     @app.route("/registers/receipts-journals/export.xlsx")

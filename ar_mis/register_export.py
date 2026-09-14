@@ -104,10 +104,13 @@ _CREDIT_NOTE_HEADERS = [
 _CREDIT_NOTE_MONEY_COLUMNS = [6, 7]
 
 
-def build_credit_note_register_workbook(display_rows: list[dict]) -> Workbook:
+def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Workbook:
     wb = Workbook()
     ws = wb.active
     ws.title = "Credit Note Register"
+    ws.append([f"Credit Note Register - as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
     _header_row(ws, _CREDIT_NOTE_HEADERS)
 
     for d in display_rows:

@@ -12,6 +12,14 @@
   nav a { color:#d1d5db; margin-left:20px; text-decoration:none; font-size:14px; }
   nav a:hover { color:#fff; }
   main { max-width: 960px; margin: 32px auto; padding: 0 20px; }
+  /* Wide pages (the master registers - up to 28 columns) get a much
+     roomier column: the old fixed 960px squeezed every such table into
+     horizontal scroll immediately, with a lot of unused space either
+     side of it on any normal desktop screen - a real complaint, not a
+     cosmetic one, since it forced scrolling to see columns that would
+     otherwise have fit. Still capped, and still centered, so it doesn't
+     stretch edge-to-edge on an ultra-wide monitor. */
+  main.wide { max-width: 1600px; }
   h1 { font-size:22px; margin-bottom:4px; }
   .subtitle { color:#6b7280; margin-top:0; margin-bottom:24px; font-size:14px; }
   table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.08); }
@@ -116,7 +124,7 @@
   </nav>
 </div>
 {% endblock %}
-<main>
+<main class="{% block main_class %}{% endblock %}">
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for category, message in messages %}
       <div class="flash {{ category }}">{{ message }}</div>

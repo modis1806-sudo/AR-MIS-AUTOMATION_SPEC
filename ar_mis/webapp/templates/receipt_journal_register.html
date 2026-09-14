@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Receipt & Journal Register{% endblock %}
+{% block main_class %}wide{% endblock %}
 {% block content %}
 <h1>Receipt &amp; Journal Register</h1>
 <p class="subtitle">Voucher-wise, every branch combined, bill-allocated. A voucher can apply against a specific invoice (Against Ref) or be left unapplied (New Ref/on-account) — this applies to Journals exactly like Receipts.</p>
@@ -14,6 +15,24 @@
   <button class="btn secondary" type="submit">Apply</button>
   <a class="btn" href="{{ url_for('receipt_journal_register_export', as_of=as_of) }}">Export to Excel</a>
 </form>
+
+<div class="kpi-grid">
+  <div class="kpi-tile">
+    <div class="kpi-label">Total Applied Amount</div>
+    <div class="kpi-value">{{ summary.total_applied_amount|inr }}</div>
+    <div class="kpi-caption">On or before {{ as_of }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Total Unapplied Balance</div>
+    <div class="kpi-value">{{ summary.total_unapplied_amount|inr }}</div>
+    <div class="kpi-caption">{{ summary.unapplied_count }} unapplied case{{ 's' if summary.unapplied_count != 1 else '' }}</div>
+  </div>
+  <div class="kpi-tile {{ 'warn' if summary.pending_review_count else '' }}">
+    <div class="kpi-label">Pending Review</div>
+    <div class="kpi-value">{{ summary.pending_review_amount|inr }}</div>
+    <div class="kpi-caption">{{ summary.pending_review_count }} case{{ 's' if summary.pending_review_count != 1 else '' }} — reference didn't match a tracked invoice</div>
+  </div>
+</div>
 
 {% if display_rows %}
 <div class="table-scroll">

@@ -837,6 +837,74 @@ def test_credit_note_register_and_receipt_journal_register_render_when_empty(cli
         assert b"No " in resp.data  # the empty-state card text
 
 
+# ---- Register snapshot summaries (client's explicit ask) -----------------
+
+
+def test_sales_dn_register_shows_a_running_summary_of_open_and_overdue(client):
+    _run_a_real_extraction(client)
+    # As of a date past the invoice's due date (2026-04-6 + 30 days), the
+    # invoice is both open and overdue - both totals should reflect it.
+    resp = client.get("/registers/sales-dn?as_of=2026-06-01")
+    assert resp.status_code == 200
+    assert b"Total Invoice Value" in resp.data
+    assert b"1,25,000.00" in resp.data  # Indian grouping, confirms the real amount flowed through
+    assert b"1 overdue invoice" in resp.data
+
+
+def test_credit_note_register_has_an_as_of_date_and_running_summary(client):
+    resp = client.get("/registers/credit-notes")
+    assert resp.status_code == 200
+    assert b'name="as_of"' in resp.data
+    assert b"Total CN Amount" in resp.data
+    assert b"Total Unapplied CN Amount" in resp.data
+    assert b"Pending Review" in resp.data
+
+
+def test_credit_note_register_as_of_date_excludes_a_future_dated_cn_from_the_summary(client):
+    from ar_mis.models import CustomerMasterRecord, CreditNoteRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/1", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference=None,
+        )
+    )
+    store.close()
+
+    # As of a date before the CN was even issued, it must not count yet.
+    resp = client.get("/registers/credit-notes?as_of=2026-04-01")
+    assert b"CN/1" in resp.data  # still listed - never hidden
+    assert b"200.00" not in resp.data.split(b"Total CN Amount")[1].split(b"</table")[0][:200]
+
+    resp2 = client.get("/registers/credit-notes?as_of=2026-05-01")
+    assert b"200.00" in resp2.data
+
+
+def test_receipt_journal_register_shows_a_running_summary_of_unapplied_balance(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt", voucher_number="RCPT/1",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no=None,
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals?as_of=2026-04-10")
+    assert resp.status_code == 200
+    assert b"Total Unapplied Balance" in resp.data
+    assert b"1 unapplied case" in resp.data
+
+
 # ---- Excel export -----------------------------------------------------
 
 _XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

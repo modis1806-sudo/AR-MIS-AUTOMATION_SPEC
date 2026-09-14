@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Sales & DN Register{% endblock %}
+{% block main_class %}wide{% endblock %}
 {% block content %}
 <h1>Sales &amp; Debit Note Register</h1>
 <p class="subtitle">One row per invoice or debit note, every branch combined, cumulative from FY start. Open Amount, Ageing, and PTP Status are all recalculated for the date below — nothing here is a stored total.</p>
@@ -14,6 +15,24 @@
   <button class="btn secondary" type="submit">Apply</button>
   <a class="btn" href="{{ url_for('sales_dn_register_export', as_of=as_of) }}">Export to Excel</a>
 </form>
+
+<div class="kpi-grid">
+  <div class="kpi-tile">
+    <div class="kpi-label">Total Invoice Value</div>
+    <div class="kpi-value">{{ summary.total_invoice_value|inr }}</div>
+    <div class="kpi-caption">Invoiced on or before {{ as_of }}</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Total Open Amount</div>
+    <div class="kpi-value">{{ summary.total_open_amount|inr }}</div>
+    <div class="kpi-caption">{{ summary.open_invoice_count }} open invoice{{ 's' if summary.open_invoice_count != 1 else '' }}</div>
+  </div>
+  <div class="kpi-tile {{ 'warn' if summary.overdue_invoice_count else '' }}">
+    <div class="kpi-label">Total Overdue Amount</div>
+    <div class="kpi-value">{{ summary.total_overdue_amount|inr }}</div>
+    <div class="kpi-caption">{{ summary.overdue_invoice_count }} overdue invoice{{ 's' if summary.overdue_invoice_count != 1 else '' }}</div>
+  </div>
+</div>
 
 {% if display_rows %}
 <div class="table-scroll">

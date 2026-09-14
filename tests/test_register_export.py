@@ -97,13 +97,13 @@ def test_credit_note_register_workbook_contains_headers_and_row_values():
     )
     display_rows = [{"row": row, "unapplied_amount": None}]
 
-    wb = build_credit_note_register_workbook(display_rows)
+    wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
     ws = wb.active
     assert ws.title == "Credit Note Register"
-    header_row = [c.value for c in ws[1]]
+    header_row = [c.value for c in ws[3]]
     assert "CN Number" in header_row
 
-    data_row = [c.value for c in ws[2]]
+    data_row = [c.value for c in ws[4]]
     assert "CN/01" in data_row
     assert "INV/002" in data_row
     assert 5000.0 in data_row
@@ -115,9 +115,9 @@ def test_credit_note_register_workbook_unapplied_amount_blank_when_allocated():
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
     )
-    wb = build_credit_note_register_workbook([{"row": row, "unapplied_amount": None}])
-    data_row = [c.value for c in wb.active[2]]
-    unapplied_col_index = [c.value for c in wb.active[1]].index("Open/Unapplied CN Amount")
+    wb = build_credit_note_register_workbook([{"row": row, "unapplied_amount": None}], as_of=date(2026, 9, 12))
+    data_row = [c.value for c in wb.active[4]]
+    unapplied_col_index = [c.value for c in wb.active[3]].index("Open/Unapplied CN Amount")
     assert data_row[unapplied_col_index] is None
 
 
@@ -144,7 +144,7 @@ def test_receipt_journal_register_workbook_contains_headers_and_row_values():
 
 def test_workbooks_handle_zero_rows_without_error():
     assert build_sales_dn_register_workbook([], as_of=date(2026, 9, 12)) is not None
-    assert build_credit_note_register_workbook([]) is not None
+    assert build_credit_note_register_workbook([], as_of=date(2026, 9, 12)) is not None
     assert build_receipt_journal_register_workbook([], as_of=date(2026, 9, 12)) is not None
 
 
@@ -181,11 +181,11 @@ def test_credit_note_register_workbook_applies_indian_format_to_cn_amount():
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
     )
-    wb = build_credit_note_register_workbook([{"row": row, "unapplied_amount": None}])
+    wb = build_credit_note_register_workbook([{"row": row, "unapplied_amount": None}], as_of=date(2026, 9, 12))
     ws = wb.active
-    header_row = [c.value for c in ws[1]]
+    header_row = [c.value for c in ws[3]]
     cn_amount_col = header_row.index("CN Amount") + 1
-    assert ws.cell(row=2, column=cn_amount_col).number_format == "#,##,##0.00"
+    assert ws.cell(row=4, column=cn_amount_col).number_format == "#,##,##0.00"
 
 
 def test_receipt_journal_register_workbook_applies_indian_format_to_applied_amount():
