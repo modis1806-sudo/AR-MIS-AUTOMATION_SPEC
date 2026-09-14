@@ -198,6 +198,7 @@ def _resolve_bill_allocation(
 
 def build_credit_note_register_row(
     voucher: Voucher,
+    tracked_party_names: set[str],
     tracked_bill_references: dict[tuple[str, str], SalesDNRegisterRow],
     exceptions: RegisterBuildExceptions,
 ) -> CreditNoteRegisterRow | None:
@@ -206,23 +207,52 @@ def build_credit_note_register_row(
     it identifies - the caller builds this from every already-built Sales &
     DN row (item 8's composite key), so this function never needs to query
     storage directly and stays trivially testable.
+
+    `tracked_party_names` is the set of genuine Sundry Debtors this branch
+    tracks (customer_master). A Credit Note isn't necessarily a customer
+    transaction - Tally uses the same voucher type for a supplier-side
+    credit note - and the voucher's own top-level PARTYLEDGERNAME tag
+    can name either side; it is never trusted on its own. Instead every
+    entry is checked against the real debtor list, exactly like
+    ar_mis.rollforward.aggregate_party_movements already does for
+    reconciliation - a voucher whose party Tally happens to label as the
+    creditor leg of a debtor/creditor journal, or a voucher that is a
+    genuine supplier credit note, is caught here rather than silently
+    attributed to the wrong ledger or dropped from reconciliation's own
+    figures while still showing in this register (confirmed live: exactly
+    this mismatch reproduced with a debtor/creditor Journal before this
+    fix - the reconciled total had the debtor's movement, the register
+    showed the creditor's name instead, with the debtor's line missing
+    from the register entirely).
     """
     if voucher.voucher_type != VoucherType.CREDIT_NOTE:
         raise ValueError(f"build_credit_note_register_row called with {voucher.voucher_type}, not Credit Note")
-    if not voucher.party_ledger_name:
+
+    matched_parties = {e.party_ledger_name for e in voucher.entries if e.party_ledger_name in tracked_party_names}
+    if not matched_parties:
         exceptions.unattributable_party.append(
-            (voucher.voucher_number, "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
+            (voucher.voucher_number, "No leg of this voucher touches a tracked Sundry Debtor - not a customer credit note")
         )
         return None
+    if len(matched_parties) > 1:
+        exceptions.unattributable_party.append(
+            (
+                voucher.voucher_number,
+                f"Touches multiple tracked debtors ({', '.join(sorted(matched_parties))}) in one voucher - "
+                "needs a human look, not a guess",
+            )
+        )
+        return None
+    party_ledger_name = matched_parties.pop()
 
     cn_amount = Decimal("0.00")
     reference: str | None = None
     classification = RegisterClassification.CURRENT
     for entry in voucher.entries:
-        if entry.party_ledger_name != voucher.party_ledger_name:
+        if entry.party_ledger_name != party_ledger_name:
             continue
         cn_amount += abs(entry.amount_as_extracted)
-        ref, cls = _resolve_bill_allocation(entry, voucher.party_ledger_name, tracked_bill_references)
+        ref, cls = _resolve_bill_allocation(entry, party_ledger_name, tracked_bill_references)
         if ref is not None:
             reference = ref
         if cls != RegisterClassification.CURRENT:
@@ -232,7 +262,7 @@ def build_credit_note_register_row(
         branch_id=voucher.branch_id,
         cn_date=voucher.voucher_date,
         voucher_number=voucher.voucher_number,
-        party_id=voucher.party_ledger_name,
+        party_id=party_ledger_name,
         cn_amount=cn_amount,
         bill_allocation_reference=reference,
         classification=classification,
@@ -241,6 +271,7 @@ def build_credit_note_register_row(
 
 def build_receipt_journal_register_rows(
     voucher: Voucher,
+    tracked_party_names: set[str],
     tracked_bill_references: dict[tuple[str, str], SalesDNRegisterRow],
     exceptions: RegisterBuildExceptions,
 ) -> list[ReceiptJournalRegisterRow]:
@@ -249,6 +280,22 @@ def build_receipt_journal_register_rows(
     legitimately apply against MULTIPLE different invoices (a customer
     pays several invoices in one cheque), so this returns a list, not one
     row per voucher.
+
+    `tracked_party_names` is the set of genuine Sundry Debtors this branch
+    tracks. A Journal in particular is Tally's most generic voucher type -
+    used for loan adjustments, creditor entries, depreciation, anything -
+    and can legitimately have one leg touch a real customer while the
+    other touches something this app has no business tracking. The
+    voucher's own top-level PARTYLEDGERNAME tag is never trusted alone to
+    say which: every entry is checked against the real debtor list
+    instead, the same way ar_mis.rollforward.aggregate_party_movements
+    already does for reconciliation. Reproduced live before this fix: a
+    debtor/creditor Journal where Tally tagged the creditor leg as "the
+    party" - the reconciled total correctly picked up the debtor's
+    movement, but this register showed a row for the creditor's name
+    instead, with no row at all for the debtor leg actually driving that
+    total. A voucher touching more than one tracked debtor in one go is
+    flagged for a human rather than guessed at, for the same reason.
 
     Voucher-level classification invariant (item 10): if ANY line in this
     voucher resolves to PENDING_REVIEW or is later confirmed
@@ -262,18 +309,29 @@ def build_receipt_journal_register_rows(
     """
     if voucher.voucher_type not in (VoucherType.RECEIPT, VoucherType.JOURNAL):
         raise ValueError(f"build_receipt_journal_register_rows called with {voucher.voucher_type}")
-    if not voucher.party_ledger_name:
+
+    matched_entries = [e for e in voucher.entries if e.party_ledger_name in tracked_party_names]
+    if not matched_entries:
         exceptions.unattributable_party.append(
-            (voucher.voucher_number, "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
+            (voucher.voucher_number, "No leg of this voucher touches a tracked Sundry Debtor")
         )
         return []
+    matched_parties = {e.party_ledger_name for e in matched_entries}
+    if len(matched_parties) > 1:
+        exceptions.unattributable_party.append(
+            (
+                voucher.voucher_number,
+                f"Touches multiple tracked debtors ({', '.join(sorted(matched_parties))}) in one voucher - "
+                "needs a human look, not a guess",
+            )
+        )
+        return []
+    party_ledger_name = matched_parties.pop()
 
     rows: list[ReceiptJournalRegisterRow] = []
-    for entry in voucher.entries:
-        if entry.party_ledger_name != voucher.party_ledger_name:
-            continue
+    for entry in matched_entries:
         target_doc_no, classification = _resolve_bill_allocation(
-            entry, voucher.party_ledger_name, tracked_bill_references
+            entry, party_ledger_name, tracked_bill_references
         )
         rows.append(
             ReceiptJournalRegisterRow(
@@ -281,7 +339,7 @@ def build_receipt_journal_register_rows(
                 txn_date=voucher.voucher_date,
                 voucher_type=voucher.voucher_type.value,
                 voucher_number=voucher.voucher_number,
-                party_id=voucher.party_ledger_name,
+                party_id=party_ledger_name,
                 amount=abs(entry.amount_as_extracted),
                 target_doc_no=target_doc_no,
                 classification=classification,

@@ -171,6 +171,15 @@ def _build_and_persist_registers(
     a Credit Note or Receipt/Journal voucher in this week's data commonly
     references an invoice from a prior week, and item 8's composite-key
     matching only works if the lookup can see it.
+
+    Credit Note and Receipt/Journal vouchers are also checked against
+    `tracked_party_names` (this branch's real Sundry Debtors, per
+    customer_master) before being attributed to anyone - a Journal in
+    particular can touch a creditor, a loan account, anything, and
+    Tally's own top-level PARTYLEDGERNAME tag on that voucher is not
+    reliable evidence of which leg is the actual customer (see
+    registers.build_receipt_journal_register_rows's own docstring for the
+    live-reproduced case this fixes).
     """
     exceptions = RegisterBuildExceptions()
 
@@ -191,14 +200,16 @@ def _build_and_persist_registers(
             store.append_sales_dn_row(row)
 
     lookup = build_bill_reference_lookup(store.all_sales_dn_rows(branch_id))
+    tracked_party_names = {r["party_id"] for r in store.all_customer_master_records() if r["branch_id"] == branch_id}
 
     for voucher in all_vouchers:
         if voucher.voucher_type == VoucherType.CREDIT_NOTE:
-            row = build_credit_note_register_row(voucher, lookup, exceptions)
+            row = build_credit_note_register_row(voucher, tracked_party_names, lookup, exceptions)
             if row is not None:
                 store.append_credit_note_row(row)
         elif voucher.voucher_type in (VoucherType.RECEIPT, VoucherType.JOURNAL):
-            store.append_receipt_journal_rows(build_receipt_journal_register_rows(voucher, lookup, exceptions))
+            rows = build_receipt_journal_register_rows(voucher, tracked_party_names, lookup, exceptions)
+            store.append_receipt_journal_rows(rows)
 
     return exceptions
 

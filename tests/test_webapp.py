@@ -512,6 +512,47 @@ def test_manual_upload_mismatch_still_writes_data_and_shows_mismatch_badge(clien
     store.close()
 
 
+def test_manual_upload_shows_register_build_exceptions_for_non_debtor_journal(client):
+    # A Journal voucher between a creditor and a bank loan account -
+    # nothing to do with any tracked Sundry Debtor. Reconciliation must
+    # still show clean (this voucher never touches AR), but the register
+    # exclusion must be visible on the result page, not silent.
+    _add_manual_upload_branch(client)
+    _seed_manual_upload_openings(client)
+    sales_xml = (MANUAL_UPLOAD_FIXTURES / "voucher_collection_sales.xml").read_bytes()
+    tb_xml = (MANUAL_UPLOAD_FIXTURES / "ledger_closing_balances.xml").read_bytes()
+    journal_xml = b"""<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260403</DATE>
+  <VOUCHERNUMBER>JV/9001</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Journal</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>Some Creditor Pvt Ltd</PARTYLEDGERNAME>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Some Creditor Pvt Ltd</LEDGERNAME>
+   <AMOUNT>-50000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Bank Loan Account</LEDGERNAME>
+   <AMOUNT>50000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+
+    resp = client.post(
+        "/manual-upload",
+        data={
+            "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+            "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+            "voucher_Journal": (BytesIO(journal_xml), "journal.xml"),
+            "trial_balance": (BytesIO(tb_xml), "tb.xml"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert b"RECONCILED CLEAN" in resp.data
+    assert b"JV/9001" in resp.data
+    assert b"No leg of this voucher touches a tracked Sundry Debtor" in resp.data
+
+
 def test_manual_upload_refuses_when_already_recorded(client):
     _add_manual_upload_branch(client)
     _seed_manual_upload_openings(client)

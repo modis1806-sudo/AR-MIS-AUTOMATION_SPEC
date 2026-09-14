@@ -216,7 +216,7 @@ def test_credit_note_agst_ref_matching_tracked_invoice_is_current():
             LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("200.00"), bill_name="INV001", bill_type="Agst Ref"),
         ],
     )
-    row = build_credit_note_register_row(voucher, lookup, RegisterBuildExceptions())
+    row = build_credit_note_register_row(voucher, {"ACME"}, lookup, RegisterBuildExceptions())
     assert row.classification == RegisterClassification.CURRENT
     assert row.bill_allocation_reference == "INV001"
     assert row.cn_amount == Decimal("200.00")
@@ -234,7 +234,7 @@ def test_credit_note_advance_treated_same_as_agst_ref():
             LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("200.00"), bill_name="INV001", bill_type="Advance"),
         ],
     )
-    row = build_credit_note_register_row(voucher, lookup, RegisterBuildExceptions())
+    row = build_credit_note_register_row(voucher, {"ACME"}, lookup, RegisterBuildExceptions())
     assert row.classification == RegisterClassification.CURRENT
 
 
@@ -250,7 +250,7 @@ def test_credit_note_unresolved_reference_is_pending_review_not_dropped():
             LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("200.00"), bill_name="INV-PRE-MIS-1", bill_type="Agst Ref"),
         ],
     )
-    row = build_credit_note_register_row(voucher, lookup, RegisterBuildExceptions())
+    row = build_credit_note_register_row(voucher, {"ACME"}, lookup, RegisterBuildExceptions())
     assert row.classification == RegisterClassification.PENDING_REVIEW
     assert row.bill_allocation_reference == "INV-PRE-MIS-1"
 
@@ -266,7 +266,7 @@ def test_credit_note_new_ref_is_unapplied_and_current():
             LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("200.00"), bill_name="CN004", bill_type="New Ref"),
         ],
     )
-    row = build_credit_note_register_row(voucher, {}, RegisterBuildExceptions())
+    row = build_credit_note_register_row(voucher, {"ACME"}, {}, RegisterBuildExceptions())
     assert row.classification == RegisterClassification.CURRENT
     assert row.bill_allocation_reference is None
 
@@ -280,7 +280,29 @@ def test_credit_note_missing_party_is_flagged():
         party_ledger_name="",
     )
     exceptions = RegisterBuildExceptions()
-    row = build_credit_note_register_row(voucher, {}, exceptions)
+    row = build_credit_note_register_row(voucher, set(), {}, exceptions)
+    assert row is None
+    assert len(exceptions.unattributable_party) == 1
+
+
+def test_credit_note_party_not_a_tracked_debtor_is_flagged_not_guessed():
+    # A supplier-side credit note: Tally uses the same voucher type, and
+    # the top-level PARTYLEDGERNAME names the supplier - which is never
+    # on the real Sundry Debtors list. Must be flagged, never silently
+    # attributed as if it were a customer transaction.
+    voucher = Voucher(
+        voucher_type=VoucherType.CREDIT_NOTE,
+        voucher_date=date(2026, 4, 15),
+        voucher_number="CN006",
+        branch_id="B1",
+        party_ledger_name="Some Supplier Pvt Ltd",
+        entries=[
+            LedgerEntry(party_ledger_name="Some Supplier Pvt Ltd", amount_as_extracted=Decimal("200.00")),
+            LedgerEntry(party_ledger_name="Purchase Returns", amount_as_extracted=Decimal("-200.00")),
+        ],
+    )
+    exceptions = RegisterBuildExceptions()
+    row = build_credit_note_register_row(voucher, {"ACME"}, {}, exceptions)
     assert row is None
     assert len(exceptions.unattributable_party) == 1
 
@@ -291,7 +313,7 @@ def test_credit_note_rejects_wrong_voucher_type():
         voucher_number="X", branch_id="B1", party_ledger_name="ACME",
     )
     with pytest.raises(ValueError, match="not Credit Note"):
-        build_credit_note_register_row(voucher, {}, RegisterBuildExceptions())
+        build_credit_note_register_row(voucher, set(), {}, RegisterBuildExceptions())
 
 
 # ---- Receipt/Journal voucher-level classification promotion (item 10) --
@@ -311,7 +333,7 @@ def test_receipt_journal_promotes_entire_voucher_to_pending_review():
             LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("300.00"), bill_name="RCPT001", bill_type="New Ref"),
         ],
     )
-    rows = build_receipt_journal_register_rows(voucher, lookup, RegisterBuildExceptions())
+    rows = build_receipt_journal_register_rows(voucher, {"ACME"}, lookup, RegisterBuildExceptions())
     assert len(rows) == 3
     # Every line - including the resolved match and the unapplied leg -
     # must share the most severe classification found anywhere in the
@@ -332,7 +354,7 @@ def test_receipt_journal_all_current_when_every_line_resolves_or_is_unapplied():
             LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("300.00"), bill_name="JV001", bill_type="New Ref"),
         ],
     )
-    rows = build_receipt_journal_register_rows(voucher, lookup, RegisterBuildExceptions())
+    rows = build_receipt_journal_register_rows(voucher, {"ACME"}, lookup, RegisterBuildExceptions())
     assert all(r.classification == RegisterClassification.CURRENT for r in rows)
 
 
@@ -342,7 +364,50 @@ def test_receipt_journal_missing_party_returns_empty_and_flags():
         voucher_type=VoucherType.RECEIPT, voucher_date=date(2026, 4, 20),
         voucher_number="R2", branch_id="B1", party_ledger_name="",
     )
-    rows = build_receipt_journal_register_rows(voucher, {}, exceptions)
+    rows = build_receipt_journal_register_rows(voucher, set(), {}, exceptions)
+    assert rows == []
+    assert len(exceptions.unattributable_party) == 1
+
+
+def test_receipt_journal_debtor_creditor_journal_attributes_to_the_debtor_leg():
+    # The exact live-reproduced case: Tally tags the CREDITOR as this
+    # Journal's top-level party, but one entry genuinely touches a
+    # tracked debtor. The register must show the debtor's line, not the
+    # creditor's name, and never drop the debtor leg silently.
+    voucher = Voucher(
+        voucher_type=VoucherType.JOURNAL,
+        voucher_date=date(2026, 4, 3),
+        voucher_number="JV9002",
+        branch_id="B1",
+        party_ledger_name="Some Creditor Pvt Ltd",
+        entries=[
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-30000.00")),
+            LedgerEntry(party_ledger_name="Some Creditor Pvt Ltd", amount_as_extracted=Decimal("30000.00")),
+        ],
+    )
+    rows = build_receipt_journal_register_rows(voucher, {"ACME"}, {}, RegisterBuildExceptions())
+    assert len(rows) == 1
+    assert rows[0].party_id == "ACME"
+    assert rows[0].amount == Decimal("30000.00")
+
+
+def test_receipt_journal_creditor_only_journal_is_flagged_not_recorded():
+    # Neither leg touches a tracked debtor at all (a creditor/loan
+    # adjustment) - must be excluded entirely, not attributed to whoever
+    # Tally happens to call "the party".
+    voucher = Voucher(
+        voucher_type=VoucherType.JOURNAL,
+        voucher_date=date(2026, 4, 3),
+        voucher_number="JV9001",
+        branch_id="B1",
+        party_ledger_name="Some Creditor Pvt Ltd",
+        entries=[
+            LedgerEntry(party_ledger_name="Some Creditor Pvt Ltd", amount_as_extracted=Decimal("-50000.00")),
+            LedgerEntry(party_ledger_name="Bank Loan Account", amount_as_extracted=Decimal("50000.00")),
+        ],
+    )
+    exceptions = RegisterBuildExceptions()
+    rows = build_receipt_journal_register_rows(voucher, {"ACME"}, {}, exceptions)
     assert rows == []
     assert len(exceptions.unattributable_party) == 1
 
@@ -353,7 +418,7 @@ def test_receipt_journal_rejects_wrong_voucher_type():
         voucher_number="X", branch_id="B1", party_ledger_name="ACME",
     )
     with pytest.raises(ValueError):
-        build_receipt_journal_register_rows(voucher, {}, RegisterBuildExceptions())
+        build_receipt_journal_register_rows(voucher, set(), {}, RegisterBuildExceptions())
 
 
 # ---- Unapplied cash/CN netting (item 9) ----------------------------------
@@ -569,17 +634,26 @@ def test_full_pipeline_against_real_sample_fixtures():
     assert len(sales_dn_rows) == len(sales_vouchers) + len(dn_vouchers)
 
     lookup = build_bill_reference_lookup(sales_dn_rows)
+    # Every real party name mentioned anywhere in this real fixture set -
+    # standing in for customer_master in this pure-function test (the
+    # actual pipeline builds this from customer_master; see
+    # pipeline._build_and_persist_registers).
+    tracked_party_names = {
+        v.party_ledger_name
+        for v in sales_vouchers + dn_vouchers + cn_vouchers + receipt_vouchers + journal_vouchers
+        if v.party_ledger_name
+    }
 
     cn_rows = [
         row
         for v in cn_vouchers
-        if (row := build_credit_note_register_row(v, lookup, exceptions)) is not None
+        if (row := build_credit_note_register_row(v, tracked_party_names, lookup, exceptions)) is not None
     ]
     assert len(cn_rows) == len(cn_vouchers)
 
     rj_rows = []
     for v in receipt_vouchers + journal_vouchers:
-        rj_rows.extend(build_receipt_journal_register_rows(v, lookup, exceptions))
+        rj_rows.extend(build_receipt_journal_register_rows(v, tracked_party_names, lookup, exceptions))
     assert len(rj_rows) > 0
 
     # Previously a known gap (8 real vouchers carried only the party's own
