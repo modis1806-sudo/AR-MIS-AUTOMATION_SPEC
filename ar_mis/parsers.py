@@ -362,12 +362,24 @@ def parse_currently_loaded_companies(raw_xml: str) -> list[str]:
     """Parses a 'List of Companies' response. Tally reports only
     currently-open companies here, which is what Section 2.2's
     pre-extraction confirmation check relies on.
+
+    CONFIRMED against a live TallyPrime instance: the response envelope's
+    BODY/DESC/CMPINFO block is a diagnostics section Tally always
+    includes, carrying plain counts under tags that happen to share names
+    with the real payload - <COMPANY>0</COMPANY>, <GROUP>0</GROUP>,
+    <LEDGER>0</LEDGER>, and many more, all just counters, nothing to do
+    with actual company names. A tree-wide search for any element named
+    COMPANY or NAME (the original approach) picks up that stray
+    <COMPANY>0</COMPANY> as a second, phantom company literally named
+    "0". The real payload only ever lives inside BODY/DATA/COLLECTION, so
+    the search is scoped to there and nowhere else in the envelope.
     """
     root = ET.fromstring(_sanitize_xml(raw_xml))
     names: list[str] = []
-    for el in root.iter():
-        if el.tag in ("COMPANY", "NAME") and el.text and el.text.strip():
-            names.append(el.text.strip())
+    for collection in root.iter("COLLECTION"):
+        for el in collection.iter():
+            if el.tag in ("COMPANY", "NAME") and el.text and el.text.strip():
+                names.append(el.text.strip())
     # Dedupe while preserving order (COMPANY and nested NAME can both match).
     seen: set[str] = set()
     result = []

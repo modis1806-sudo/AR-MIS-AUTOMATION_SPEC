@@ -295,3 +295,15 @@ def test_parse_currently_loaded_companies():
         "SPEEDWAYS LOGISTICS PRIVATE LIMITED VIZAG - (From 1.4.23)",
         "SPEEDWAYS LOGISTICS PVT. LTD. (DELHI) (from 1-Apr-23)",
     ]
+
+
+def test_parse_currently_loaded_companies_ignores_cmpinfo_diagnostics_block():
+    # CONFIRMED against a live TallyPrime Gold instance (a different real
+    # response shape than the fixture above): the response's
+    # BODY/DESC/CMPINFO block carries plain master-count fields, one of
+    # which is literally named <COMPANY>0</COMPANY> - a count, not a
+    # company. A tree-wide search for any COMPANY/NAME tag picked this up
+    # as a phantom company named "0" alongside the one real company.
+    raw = (FIXTURES / "list_of_companies_with_cmpinfo_counts.xml").read_text()
+    names = parse_currently_loaded_companies(raw)
+    assert names == ["CHARZE INDUSTRIES PRIVATE LIMITED - From 1-Apr-25"]
