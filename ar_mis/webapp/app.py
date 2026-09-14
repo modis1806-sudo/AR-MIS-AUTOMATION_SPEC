@@ -50,6 +50,7 @@ from ar_mis.drift_correction import (
 from ar_mis.pipeline import process_branch_data
 from ar_mis.reconciliation import isolate_drift
 from ar_mis.reconciliation_report import compute_tb_cross_check_summary
+from ar_mis.seed import BRANCH_SCOPED_CSV_TEMPLATE, parse_seed_rows_for_branch, seed as seed_pre_mis
 from ar_mis.register_export import (
     build_credit_note_register_workbook,
     build_receipt_journal_register_workbook,
@@ -187,6 +188,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 flash(f"Branch ID '{branch.branch_id}' already exists.", "error")
                 return render_template("branch_form.html", branch=branch)
             store.upsert_branch(branch)
+            _process_pre_mis_upload(store, branch.branch_id)
             store.close()
             flash(f"Branch '{branch.branch_name}' added.", "success")
             return redirect(url_for("branches_list"))
@@ -228,12 +230,65 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 tally_port=int(request.form.get("tally_port") or 9000),
             )
             store.upsert_branch(updated)
+            _process_pre_mis_upload(store, branch_id)
             store.close()
             flash(f"Branch '{updated.branch_name}' updated.", "success")
             return redirect(url_for("branches_list"))
 
         store.close()
         return render_template("branch_form.html", branch=existing)
+
+    def _process_pre_mis_upload(store: Store, branch_id: str) -> None:
+        """Optional one-time Pre-MIS Outstanding (Section 2.5) bulk load,
+        offered right on Branch Master's create/edit form - client's
+        explicit ask, since this baseline "is to be provided just once in
+        a lifetime" and recon "will always fail" without it. A no-op if
+        no file was attached: the field is optional on every submit, not
+        just the first one, so a maker can come back later and load
+        parties missed the first time.
+
+        Mirrors the CLI seed tool's own all-or-nothing validation: any
+        row-level error rejects the whole file (nothing is loaded) rather
+        than silently loading the good rows and burying the bad ones in a
+        flash message - a maker fixes the file and re-uploads it clean.
+        """
+        csv_text = _decode_upload(request.files.get("pre_mis_csv"))
+        if not csv_text.strip():
+            return
+        try:
+            records, errors = parse_seed_rows_for_branch(csv_text, branch_id)
+        except ValueError as exc:
+            flash(f"Pre-MIS Outstanding CSV rejected: {exc}", "error")
+            return
+        if errors:
+            first = errors[0]
+            more = f", and {len(errors) - 1} more" if len(errors) > 1 else ""
+            flash(
+                f"Pre-MIS Outstanding CSV rejected: line {first.line_number}: "
+                f"{first.reason}{more}. Nothing was loaded - fix and re-upload.",
+                "error",
+            )
+            return
+        summary = seed_pre_mis(store, records, announce=lambda *_: None)
+        parts = [f"{summary.loaded} loaded"]
+        if summary.unchanged:
+            parts.append(f"{summary.unchanged} unchanged")
+        if summary.overwritten:
+            parts.append(f"{summary.overwritten} corrected")
+        if summary.skipped:
+            parts.append(f"{len(summary.skipped)} skipped - already has weekly data, use an adjustment instead")
+        flash(
+            f"Pre-MIS Outstanding CSV: {', '.join(parts)}.",
+            "error" if summary.skipped else "success",
+        )
+
+    @app.route("/branches/pre-mis-template.csv")
+    @requires_role("maker")
+    def branch_pre_mis_template():
+        buf = BytesIO(BRANCH_SCOPED_CSV_TEMPLATE.encode("utf-8"))
+        return send_file(
+            buf, as_attachment=True, download_name="pre_mis_outstanding_template.csv", mimetype="text/csv",
+        )
 
     @app.route("/branches/<branch_id>/delete", methods=["POST"])
     @requires_role("maker")

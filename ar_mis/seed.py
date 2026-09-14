@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -42,6 +43,12 @@ from ar_mis.money import to_money
 from ar_mis.storage import Store
 
 REQUIRED_COLUMNS = {"party_id", "party_name", "branch_id", "pre_mis_outstanding"}
+BRANCH_SCOPED_REQUIRED_COLUMNS = {"party_id", "party_name", "pre_mis_outstanding"}
+BRANCH_SCOPED_CSV_TEMPLATE = (
+    "party_id,party_name,pre_mis_outstanding\n"
+    "ACME001,Acme Traders,125000.00\n"
+    "GLOBAL002,Global Enterprises,-5000.00\n"
+)
 
 
 @dataclass(frozen=True)
@@ -50,31 +57,48 @@ class SeedRowError:
     reason: str
 
 
-def parse_seed_csv(path: str) -> tuple[list[CustomerMasterRecord], list[SeedRowError]]:
+def _parse_seed_rows(reader: csv.DictReader, required_columns: set[str], branch_id: str | None):
     records: list[CustomerMasterRecord] = []
     errors: list[SeedRowError] = []
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"CSV is missing required column(s): {', '.join(sorted(missing))}")
-        for line_number, row in enumerate(reader, start=2):  # header is line 1
-            party_id = (row.get("party_id") or "").strip()
-            party_name = (row.get("party_name") or "").strip()
-            branch_id = (row.get("branch_id") or "").strip()
-            raw_amount = (row.get("pre_mis_outstanding") or "").strip()
-            if not party_id or not party_name or not branch_id:
-                errors.append(
-                    SeedRowError(line_number, "party_id, party_name and branch_id are all required")
-                )
-                continue
-            try:
-                amount = to_money(Decimal(raw_amount))
-            except InvalidOperation:
-                errors.append(SeedRowError(line_number, f"'{raw_amount}' is not a valid decimal amount"))
-                continue
-            records.append(CustomerMasterRecord(party_id, party_name, branch_id, amount))
+    missing = required_columns - set(reader.fieldnames or [])
+    if missing:
+        raise ValueError(f"CSV is missing required column(s): {', '.join(sorted(missing))}")
+    for line_number, row in enumerate(reader, start=2):  # header is line 1
+        party_id = (row.get("party_id") or "").strip()
+        party_name = (row.get("party_name") or "").strip()
+        row_branch_id = branch_id if branch_id is not None else (row.get("branch_id") or "").strip()
+        raw_amount = (row.get("pre_mis_outstanding") or "").strip()
+        if not party_id or not party_name or not row_branch_id:
+            errors.append(
+                SeedRowError(line_number, "party_id, party_name and branch_id are all required")
+            )
+            continue
+        try:
+            amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            errors.append(SeedRowError(line_number, f"'{raw_amount}' is not a valid decimal amount"))
+            continue
+        records.append(CustomerMasterRecord(party_id, party_name, row_branch_id, amount))
     return records, errors
+
+
+def parse_seed_csv(path: str) -> tuple[list[CustomerMasterRecord], list[SeedRowError]]:
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return _parse_seed_rows(csv.DictReader(f), REQUIRED_COLUMNS, branch_id=None)
+
+
+def parse_seed_rows_for_branch(csv_text: str, branch_id: str) -> tuple[list[CustomerMasterRecord], list[SeedRowError]]:
+    """Same Layer 1 seeding as parse_seed_csv, scoped to one already-known
+    branch - the Branch Master webapp's own Pre-MIS Outstanding upload,
+    where every row obviously belongs to the branch just created or being
+    edited, so there's no reason to make an operator retype that branch_id
+    on every single row (unlike the CLI tool above, which can seed
+    multiple branches from one shared file). Takes CSV TEXT rather than a
+    path, since this is an uploaded file's already-decoded content, not
+    something living on disk.
+    """
+    reader = csv.DictReader(io.StringIO(csv_text))
+    return _parse_seed_rows(reader, BRANCH_SCOPED_REQUIRED_COLUMNS, branch_id=branch_id)
 
 
 @dataclass

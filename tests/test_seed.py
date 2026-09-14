@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ar_mis.models import WeeklySnapshotRow
-from ar_mis.seed import parse_seed_csv, seed
+from ar_mis.seed import parse_seed_csv, parse_seed_rows_for_branch, seed
 from ar_mis.storage import Store
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -122,3 +122,38 @@ def test_dry_run_reports_without_writing(tmp_path):
     # Nothing was actually written.
     assert store.customer_master_exists("ACME001", "KOL") is False
     store.close()
+
+
+# ---- Branch-scoped CSV (Branch Master's own Pre-MIS Outstanding upload) --
+
+
+def test_parse_seed_rows_for_branch_reads_valid_rows_without_a_branch_id_column():
+    csv_text = (
+        "party_id,party_name,pre_mis_outstanding\n"
+        "ACME001,Acme Traders,125000.00\n"
+        "GLOBAL002,Global Enterprises,-5000.00\n"
+    )
+    records, errors = parse_seed_rows_for_branch(csv_text, "CHRZ")
+    assert errors == []
+    assert len(records) == 2
+    assert all(r.branch_id == "CHRZ" for r in records)
+    assert records[0].pre_mis_outstanding == Decimal("125000.00")
+    assert records[1].pre_mis_outstanding == Decimal("-5000.00")
+
+
+def test_parse_seed_rows_for_branch_rejects_missing_columns():
+    with pytest.raises(ValueError, match="missing required column"):
+        parse_seed_rows_for_branch("party_id,party_name\nP1,Acme\n", "CHRZ")
+
+
+def test_parse_seed_rows_for_branch_collects_row_level_errors():
+    csv_text = (
+        "party_id,party_name,pre_mis_outstanding\n"
+        "P1,Acme,not-a-number\n"
+        ",Missing Id,100.00\n"
+        "P2,Good Row,500.00\n"
+    )
+    records, errors = parse_seed_rows_for_branch(csv_text, "CHRZ")
+    assert len(records) == 1
+    assert records[0].party_id == "P2"
+    assert len(errors) == 2

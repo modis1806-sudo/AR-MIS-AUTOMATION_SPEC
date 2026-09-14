@@ -3,7 +3,7 @@
 {% block content %}
 <h1>{{ 'Edit Branch' if branch else 'Add Branch' }}</h1>
 <div class="card">
-<form method="post">
+<form method="post" enctype="multipart/form-data">
   <label>Branch ID{% if branch %} (fixed once created){% endif %}</label>
   <input name="branch_id" value="{{ branch.branch_id if branch else '' }}" {% if branch %}readonly{% endif %} required placeholder="e.g. KOL">
 
@@ -19,6 +19,24 @@
 
   <label>Tally Port</label>
   <input name="tally_port" type="number" value="{{ branch.tally_port if branch else (prefill.tally_port if prefill else 9000) }}">
+
+  <hr style="margin:24px 0;">
+  <label>Pre-MIS Outstanding CSV (optional)</label>
+  <input name="pre_mis_csv" type="file" accept=".csv">
+  <p style="font-size:12px;color:#6b7280;margin:6px 0 0;">
+    Loads each party's opening balance as it stood the day before this pipeline
+    went live for this branch - a one-time-per-party baseline (never re-pulled
+    or recalculated week to week). Columns required:
+    <code>party_id,party_name,pre_mis_outstanding</code> (no branch_id column -
+    every row is assumed to belong to this branch).
+    Amounts use this pipeline's own convention, <strong>not</strong> Tally's raw
+    export: <strong>Dr positive / Cr positive</strong> is wrong - use
+    <strong>positive for a debtor who owes money, negative for a credit
+    balance</strong> (do not use "Dr"/"Cr" suffixes, just a signed number).
+    Once a party has any weekly extraction recorded, this baseline can no
+    longer be bulk-corrected here - only through a logged adjustment.
+    <a href="{{ url_for('branch_pre_mis_template') }}">Download CSV template</a>.
+  </p>
 
   <p style="margin-top:20px;">
     <button class="btn" type="submit">Save</button>
