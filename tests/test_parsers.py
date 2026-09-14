@@ -256,6 +256,29 @@ def test_parse_ledger_closing_balances():
     assert balances["Reliable Cargo Movers"] == Decimal("-150000.00")
 
 
+def test_parse_ledger_closing_balances_strips_stray_characters_baked_into_the_name():
+    # CONFIRMED against a real Charze ledger dump: a live ledger's own
+    # NAME attribute came back as "RAASHI ENTERPRISES\r\n\r\n" - stray
+    # control characters baked into the name inside Tally itself, not an
+    # XML export artifact. Every voucher-side name field in this module
+    # (PARTYLEDGERNAME, LEDGERNAME) is read through _text(), which always
+    # trims - so a real voucher posted against this exact ledger comes
+    # through as the clean "RAASHI ENTERPRISES" and could never match
+    # this collection's own (previously unstripped) key, flagging a
+    # perfectly real, active customer as unrecognized.
+    raw = (
+        "<ENVELOPE>\n"
+        ' <LEDGER NAME="RAASHI ENTERPRISES\r\n\r\n">\n'
+        "  <PARENT>OTHERS</PARENT>\n"
+        "  <OPENINGBALANCE>-46.00</OPENINGBALANCE>\n"
+        "  <CLOSINGBALANCE>-46.00</CLOSINGBALANCE>\n"
+        " </LEDGER>\n"
+        "</ENVELOPE>"
+    )
+    balances = parse_ledger_closing_balances(raw)
+    assert balances == {"RAASHI ENTERPRISES": Decimal("-46.00")}
+
+
 def test_parse_ledger_closing_balances_handles_real_display_report_shape():
     # Confirmed against a real manually-exported Trial Balance: Tally's
     # "Display Report" shape has no LEDGER element at all - each party is

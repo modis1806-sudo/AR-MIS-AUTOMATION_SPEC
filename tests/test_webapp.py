@@ -1209,8 +1209,62 @@ def test_tb_cross_check_shows_mismatch_and_summary_counts(client, monkeypatch):
     resp = client.get("/reports/tb-cross-check")
     assert resp.status_code == 200
     assert b"1,000.00" in resp.data  # the difference, shown in full
-    # Two KPI tiles: 1 party currently mismatched, total difference 1000.00.
-    assert resp.data.count(b"kpi-value") >= 2
+    # Three KPI tiles: Total Debtor as per Books, 1 party currently
+    # mismatched, total difference 1000.00.
+    assert resp.data.count(b"kpi-value") >= 3
+
+
+def test_tb_cross_check_shows_total_debtor_as_per_books(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("P2", "P2", "KOL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("-1000.00"), "P2": Decimal("-500.00")})
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check")
+    assert resp.status_code == 200
+    assert b"Total Debtor as per Books" in resp.data
+    assert b"1,500.00" in resp.data
+
+
+def test_tb_cross_check_date_range_scopes_the_table_but_never_shrinks_the_running_total(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 1, 5), [], {"P1": Decimal("-1000.00")})
+    store.close()
+
+    # A narrow later range that doesn't include week ending 2026-01-05 -
+    # the row must not appear in the table, but the party's last known
+    # balance must still count toward Total Debtor as per Books.
+    resp = client.get("/reports/tb-cross-check?from_date=2026-06-01&to_date=2026-06-30")
+    assert resp.status_code == 200
+    assert b"2026-01-05" not in resp.data
+    assert b"1,000.00" in resp.data  # still in the Total Debtor tile
+
+
+def test_tb_cross_check_as_of_excludes_a_week_recorded_after_the_chosen_to_date(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 1, 5), [], {"P1": Decimal("-1000.00")})
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 1, 19), [], {"P1": Decimal("-1200.00")})
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check?from_date=2026-01-01&to_date=2026-01-12")
+    assert resp.status_code == 200
+    assert b"1,000.00" in resp.data
+    assert b"1,200.00" not in resp.data
 
 
 # ---- Reports: Branch Sales + CN + DN Total ---------------------------------

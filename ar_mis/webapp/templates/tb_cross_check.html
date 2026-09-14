@@ -7,17 +7,36 @@
 
 {% include "_freshness.html" %}
 
+<form class="as-of-form" method="get">
+  <div>
+    <label for="from_date">From</label>
+    <input type="date" id="from_date" name="from_date" value="{{ from_date }}">
+  </div>
+  <div>
+    <label for="to_date">To</label>
+    <input type="date" id="to_date" name="to_date" value="{{ to_date }}">
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
 <div class="kpi-grid" style="margin-bottom:20px;">
+  <div class="kpi-tile">
+    <div class="kpi-label">Total Debtor as per Books</div>
+    <div class="kpi-value">{{ summary.total_debtor_as_per_books|inr }}</div>
+    <div class="kpi-caption">As of {{ to_date }} — each party's latest Tally closing on or before this date, summed. Check this against Tally's own Sundry Debtors total for the same date.</div>
+  </div>
   <div class="kpi-tile">
     <div class="kpi-label">Parties currently showing a difference</div>
     <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.parties_with_current_difference else 'color:#166534;' }}">{{ summary.parties_with_current_difference }}</div>
+    <div class="kpi-caption">As of {{ to_date }}</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Total absolute difference (current)</div>
     <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.total_current_absolute_difference else 'color:#166534;' }}">{{ summary.total_current_absolute_difference|inr }}</div>
+    <div class="kpi-caption">As of {{ to_date }}</div>
   </div>
 </div>
-<p class="subtitle" style="margin-top:-12px;">"Currently" means each party's most recently recorded week only — a past mismatch that has since reconciled clean is not counted here, though it stays visible in the full history below.</p>
+<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. The table below is scoped to {{ from_date }} to {{ to_date }} for browsing; the tiles never shrink just because a narrower range is on screen.</p>
 
 <div class="table-scroll">
 <table>

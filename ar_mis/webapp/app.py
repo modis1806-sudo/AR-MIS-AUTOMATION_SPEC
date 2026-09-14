@@ -1139,15 +1139,37 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         is. Every row already exists in weekly_snapshot (data is never
         discarded, reconciled or not - see ar_mis.pipeline); this report
         does no independent computation, only the summary rollup.
+
+        From/To date range (client's second explicit ask this session):
+        scopes which weeks are LISTED below, so a specific period can be
+        reviewed on its own rather than scrolling the entire history. The
+        Total Debtor as per Books tile, however, is always computed from
+        the FULL history up to `to_date` (see compute_tb_cross_check_
+        summary's own docstring) - a party untouched again inside a
+        narrow display window still owes their last known balance, and
+        scoping the running total to the same narrow window would
+        silently understate it, not just narrow what's shown.
         """
         store = get_store()
-        rows = store.all_weekly_snapshot_rows()
+        all_rows = store.all_weekly_snapshot_rows()
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
-        summary = compute_tb_cross_check_summary(rows)
+        today = date.today()
+        try:
+            from_date = date.fromisoformat(request.args.get("from_date", ""))
+        except ValueError:
+            from_date = financial_year_start(today)
+        try:
+            to_date = date.fromisoformat(request.args.get("to_date", ""))
+        except ValueError:
+            to_date = today
+
+        rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
+        summary = compute_tb_cross_check_summary(all_rows, as_of=to_date)
         return render_template(
-            "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness
+            "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness,
+            from_date=from_date.isoformat(), to_date=to_date.isoformat(),
         )
 
     @app.route("/reports/branch-totals")

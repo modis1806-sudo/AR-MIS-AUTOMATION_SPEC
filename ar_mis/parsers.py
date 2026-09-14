@@ -339,7 +339,20 @@ def parse_ledger_closing_balances(raw_xml: str) -> dict[str, Decimal]:
     if ledger_elements:
         balances: dict[str, Decimal] = {}
         for ledger_el in ledger_elements:
-            name = ledger_el.get("NAME") or _text(ledger_el.find("NAME"))
+            # CONFIRMED against a real Charze ledger: the NAME attribute
+            # can carry stray whitespace/control characters baked into
+            # the ledger's own name inside Tally itself (a real ledger
+            # came back as "RAASHI ENTERPRISES\r\n\r\n") - unlike every
+            # voucher-side name field in this module (PARTYLEDGERNAME,
+            # LEDGERNAME), which is always read through _text() and so
+            # always comes back trimmed. Reading the attribute raw here
+            # let the exact same real ledger produce two different
+            # strings depending on which extraction pulled it, so a
+            # voucher posted against it could never match this pull's
+            # own key. Stripped the same way every other name in this
+            # file already is - not a new rule, just applying the
+            # existing one consistently.
+            name = (ledger_el.get("NAME") or "").strip() or _text(ledger_el.find("NAME"))
             closing = _text(ledger_el.find("CLOSINGBALANCE"), "0")
             if name:
                 balances[name] = _parse_decimal_amount(closing)
