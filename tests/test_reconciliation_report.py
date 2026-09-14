@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from ar_mis.models import WeeklySnapshotRow
-from ar_mis.reconciliation_report import compute_tb_cross_check_summary
+from ar_mis.reconciliation_report import compute_tb_cross_check_summary, compute_unreconciled_parties
 
 
 def _row(party_id, branch_id, week_ending, reconciled, difference, closing_extracted=Decimal("0.00")):
@@ -116,3 +116,42 @@ def test_as_of_never_drops_a_party_whose_latest_week_falls_outside_a_narrower_wi
     rows = [_row("P1", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("-1000.00"))]
     summary = compute_tb_cross_check_summary(rows, as_of=date(2026, 3, 1))
     assert summary.total_debtor_as_per_books == Decimal("-1000.00")
+
+
+# ---- compute_unreconciled_parties (export list behind the tile) ----------
+
+
+def test_unreconciled_parties_excludes_clean_parties():
+    rows = [
+        _row("P1", "KOL", date(2026, 1, 5), True, Decimal("0.00")),
+        _row("P2", "KOL", date(2026, 1, 5), False, Decimal("500.00")),
+    ]
+    mismatched = compute_unreconciled_parties(rows)
+    assert [r.party_id for r in mismatched] == ["P2"]
+
+
+def test_unreconciled_parties_uses_only_the_latest_week_per_party():
+    rows = [
+        _row("P1", "KOL", date(2026, 1, 5), False, Decimal("500.00")),
+        _row("P1", "KOL", date(2026, 1, 12), True, Decimal("0.00")),
+    ]
+    assert compute_unreconciled_parties(rows) == []
+
+
+def test_unreconciled_parties_sorted_by_absolute_difference_descending():
+    rows = [
+        _row("SMALL", "KOL", date(2026, 1, 5), False, Decimal("50.00")),
+        _row("BIG", "KOL", date(2026, 1, 5), False, Decimal("-9000.00")),
+        _row("MEDIUM", "KOL", date(2026, 1, 5), False, Decimal("500.00")),
+    ]
+    mismatched = compute_unreconciled_parties(rows)
+    assert [r.party_id for r in mismatched] == ["BIG", "MEDIUM", "SMALL"]
+
+
+def test_unreconciled_parties_respects_as_of():
+    rows = [
+        _row("P1", "KOL", date(2026, 1, 5), True, Decimal("0.00")),
+        _row("P1", "KOL", date(2026, 1, 19), False, Decimal("50.00")),
+    ]
+    assert compute_unreconciled_parties(rows, as_of=date(2026, 1, 12)) == []
+    assert len(compute_unreconciled_parties(rows, as_of=date(2026, 1, 19))) == 1

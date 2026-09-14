@@ -137,6 +137,45 @@ _RECEIPT_JOURNAL_HEADERS = [
 _RECEIPT_JOURNAL_MONEY_COLUMNS = [8, 9]
 
 
+_UNRECONCILED_PARTIES_HEADERS = [
+    "Party", "Branch", "Week Ending", "Opening", "Sales", "Credit Notes", "Debit Notes",
+    "Receipts", "Journals", "Closing (Workings)", "Closing (TB/Tally)", "Difference",
+]
+# Opening, Sales, Credit Notes, Debit Notes, Receipts, Journals,
+# Closing (Workings), Closing (TB/Tally), Difference.
+_UNRECONCILED_PARTIES_MONEY_COLUMNS = [4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+
+def build_unreconciled_parties_workbook(rows: list, as_of) -> Workbook:
+    """rows: the WeeklySnapshotRow list from
+    ar_mis.reconciliation_report.compute_unreconciled_parties - already
+    reduced to each party's current (as-of `as_of`) state and sorted by
+    absolute difference, largest first. Same TB Cross-Check field set as
+    the on-screen table, so nothing in the download can read differently
+    from what a Maker was just looking at.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Unreconciled Parties"
+    ws.append([f"Unreconciled Parties - TB Cross-Check, as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, _UNRECONCILED_PARTIES_HEADERS)
+
+    for row in rows:
+        ws.append(
+            [
+                row.party_id, row.branch_id, row.week_ending,
+                float(row.opening), float(row.sales), float(row.credit_notes), float(row.debit_notes),
+                float(row.receipts), float(row.journals),
+                float(row.closing_computed), float(row.closing_extracted), float(row.difference),
+            ]
+        )
+        _apply_inr_format(ws, _UNRECONCILED_PARTIES_MONEY_COLUMNS)
+    _autosize(ws)
+    return wb
+
+
 def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> Workbook:
     wb = Workbook()
     ws = wb.active

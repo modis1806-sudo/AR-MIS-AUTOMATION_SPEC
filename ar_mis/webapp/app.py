@@ -49,12 +49,13 @@ from ar_mis.drift_correction import (
 )
 from ar_mis.pipeline import process_branch_data
 from ar_mis.reconciliation import isolate_drift
-from ar_mis.reconciliation_report import compute_tb_cross_check_summary
+from ar_mis.reconciliation_report import compute_tb_cross_check_summary, compute_unreconciled_parties
 from ar_mis.seed import BRANCH_SCOPED_CSV_TEMPLATE, parse_seed_rows_for_branch, seed as seed_pre_mis
 from ar_mis.register_export import (
     build_credit_note_register_workbook,
     build_receipt_journal_register_workbook,
     build_sales_dn_register_workbook,
+    build_unreconciled_parties_workbook,
 )
 from ar_mis.registers import (
     build_bill_reference_lookup,
@@ -1230,6 +1231,36 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness,
             from_date=from_date.isoformat(), to_date=to_date.isoformat(),
+        )
+
+    @app.route("/reports/tb-cross-check/export-unreconciled")
+    def export_unreconciled_parties():
+        """Client's explicit ask: a one-click export of exactly the
+        parties behind the "Parties currently showing a difference"
+        tile, so a Maker doesn't have to scroll and eyeball the full TB
+        Cross-Check table for the handful of non-zero Difference rows.
+        Uses the same as-of-`to_date` latest-per-party state as that
+        tile (see compute_unreconciled_parties), never the display-range-
+        filtered table - the export must always match the tile's count.
+        """
+        today = date.today()
+        try:
+            to_date = date.fromisoformat(request.args.get("to_date", ""))
+        except ValueError:
+            to_date = today
+
+        store = get_store()
+        all_rows = store.all_weekly_snapshot_rows()
+        store.close()
+
+        mismatched = compute_unreconciled_parties(all_rows, as_of=to_date)
+        wb = build_unreconciled_parties_workbook(mismatched, to_date)
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True, download_name=f"Unreconciled_Parties_{to_date.isoformat()}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     @app.route("/reports/branch-totals")

@@ -1475,6 +1475,76 @@ def test_tb_cross_check_as_of_excludes_a_week_recorded_after_the_chosen_to_date(
     assert b"1,200.00" not in resp.data
 
 
+def test_tb_cross_check_offers_export_link_only_when_something_is_mismatched(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("-1000.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("-1000.00")})
+    store.close()
+
+    clean = client.get("/reports/tb-cross-check")
+    assert b"Export list" not in clean.data
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P2", "P2", "KOL", Decimal("0.00")))
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number="SB/1",
+        branch_id="KOL", party_ledger_name="P2",
+        entries=[
+            LedgerEntry(party_ledger_name="P2", amount_as_extracted=Decimal("-1000.00"), bill_name="SB/1", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Sales", amount_as_extracted=Decimal("1000.00")),
+        ],
+    )
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 12), [voucher], {"P2": Decimal("900.00")})
+    store.close()
+
+    mismatched = client.get("/reports/tb-cross-check")
+    assert b"Export list" in mismatched.data
+
+
+def test_export_unreconciled_parties_downloads_a_workbook(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("-1000.00")})
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check/export-unreconciled?to_date=2026-04-05")
+    assert resp.status_code == 200
+    assert resp.mimetype == _XLSX_MIMETYPE
+    assert "Unreconciled_Parties" in resp.headers["Content-Disposition"]
+    assert len(resp.data) > 0
+
+
+def test_export_unreconciled_parties_excludes_reconciled_parties(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+    from io import BytesIO as _BytesIO
+    from openpyxl import load_workbook
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("CLEAN", "CLEAN", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("BAD", "BAD", "KOL", Decimal("0.00")))
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 5), [],
+        {"CLEAN": Decimal("0.00"), "BAD": Decimal("-500.00")},
+    )
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check/export-unreconciled?to_date=2026-04-05")
+    wb = load_workbook(_BytesIO(resp.data))
+    ws = wb.active
+    party_ids = [row[0].value for row in ws.iter_rows(min_row=4)]
+    assert party_ids == ["BAD"]
+
+
 # ---- Reports: Branch Sales + CN + DN Total ---------------------------------
 
 

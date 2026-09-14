@@ -28,7 +28,12 @@
   <div class="kpi-tile">
     <div class="kpi-label">Parties currently showing a difference</div>
     <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.parties_with_current_difference else 'color:#166534;' }}">{{ summary.parties_with_current_difference }}</div>
-    <div class="kpi-caption">As of {{ to_date }}</div>
+    <div class="kpi-caption">
+      As of {{ to_date }}
+      {% if summary.parties_with_current_difference %}
+      — <a href="{{ url_for('export_unreconciled_parties', to_date=to_date) }}">Export list</a>
+      {% endif %}
+    </div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Total absolute difference (current)</div>

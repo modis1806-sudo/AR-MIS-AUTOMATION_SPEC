@@ -29,6 +29,20 @@ class TBCrossCheckSummary:
     total_debtor_as_per_books: Decimal
 
 
+def _latest_per_party(rows: list[WeeklySnapshotRow], as_of: date | None) -> list[WeeklySnapshotRow]:
+    """Shared reduction behind both compute_tb_cross_check_summary and
+    compute_unreconciled_parties - only each party's most recently
+    recorded week (on or before `as_of`, when given) reflects their
+    CURRENT state; earlier weeks for the same party are history, not
+    still-open exceptions.
+    """
+    eligible = rows if as_of is None else [r for r in rows if r.week_ending <= as_of]
+    latest_by_party: dict[tuple[str, str], WeeklySnapshotRow] = {}
+    for row in sorted(eligible, key=lambda r: r.week_ending):
+        latest_by_party[(row.party_id, row.branch_id)] = row
+    return list(latest_by_party.values())
+
+
 def compute_tb_cross_check_summary(
     rows: list[WeeklySnapshotRow], as_of: date | None = None
 ) -> TBCrossCheckSummary:
@@ -58,16 +72,29 @@ def compute_tb_cross_check_summary(
     immediately compare against Tally's own Sundry Debtors total for the
     same date to confirm the pull is complete and correct.
     """
-    eligible = rows if as_of is None else [r for r in rows if r.week_ending <= as_of]
-    latest_by_party: dict[tuple[str, str], WeeklySnapshotRow] = {}
-    for row in sorted(eligible, key=lambda r: r.week_ending):
-        latest_by_party[(row.party_id, row.branch_id)] = row
-
-    mismatched = [r for r in latest_by_party.values() if not r.reconciled]
+    latest = _latest_per_party(rows, as_of)
+    mismatched = [r for r in latest if not r.reconciled]
     return TBCrossCheckSummary(
         parties_with_current_difference=len(mismatched),
         total_current_absolute_difference=sum((abs(r.difference) for r in mismatched), Decimal("0.00")),
-        total_debtor_as_per_books=sum(
-            (r.closing_extracted for r in latest_by_party.values()), Decimal("0.00")
-        ),
+        total_debtor_as_per_books=sum((r.closing_extracted for r in latest), Decimal("0.00")),
     )
+
+
+def compute_unreconciled_parties(
+    rows: list[WeeklySnapshotRow], as_of: date | None = None
+) -> list[WeeklySnapshotRow]:
+    """The actual rows behind TBCrossCheckSummary.parties_with_current_
+    difference - client's explicit ask: an "export unreconciled parties"
+    action next to that tile, rather than making a Maker scroll the full
+    TB Cross-Check table hunting for the non-zero Difference rows by eye.
+    Same latest-per-party-as-of-`as_of` reduction as the summary tile, so
+    the exported list can never disagree with the count shown on screen.
+    Sorted by absolute difference, largest first - the ones most worth a
+    human's attention lead the file, not whatever order the database
+    happens to return.
+    """
+    latest = _latest_per_party(rows, as_of)
+    mismatched = [r for r in latest if not r.reconciled]
+    mismatched.sort(key=lambda r: abs(r.difference), reverse=True)
+    return mismatched
