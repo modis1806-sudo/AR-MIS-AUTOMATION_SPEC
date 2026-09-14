@@ -6,18 +6,31 @@
 <p><a class="btn" href="{{ url_for('branch_new') }}">+ Add Branch</a></p>
 
 {% if branches %}
+<div class="table-scroll">
 <table>
   <thead>
-    <tr><th>Branch ID</th><th>Branch Name</th><th>Tally Company Name</th><th>Host</th><th>Port</th><th></th></tr>
+    <tr>
+      <th>Branch ID</th><th>Branch Name</th><th>Tally Company Name</th><th>Host</th><th>Port</th>
+      <th>Data on Record</th><th></th>
+    </tr>
   </thead>
   <tbody>
   {% for b in branches %}
+    {% set summary = data_summaries.get(b.branch_id) %}
     <tr>
       <td>{{ b.branch_id }}</td>
       <td>{{ b.branch_name }}</td>
       <td>{{ b.tally_company_name }}</td>
       <td>{{ b.tally_host }}</td>
       <td>{{ b.tally_port }}</td>
+      <td>
+        {% if summary %}
+          {{ summary.earliest_week_start }} to {{ summary.latest_week_end }}
+          <span class="trend">({{ summary.week_count }} week{{ 's' if summary.week_count != 1 else '' }})</span>
+        {% else %}
+          <span style="color:#9ca3af;">No data yet</span>
+        {% endif %}
+      </td>
       <td class="row-actions">
         <a href="{{ url_for('branch_edit', branch_id=b.branch_id) }}">Edit</a>
         &nbsp;·&nbsp;
@@ -25,11 +38,21 @@
               onsubmit="return confirm('Remove {{ b.branch_name }}?');">
           <button type="submit">Delete</button>
         </form>
+        {% if summary %}
+        &nbsp;·&nbsp;
+        <form method="post" action="{{ url_for('branch_delete_week', branch_id=b.branch_id) }}" style="display:inline"
+              onsubmit="return confirm('Delete the week ending {{ summary.latest_week_end }} for {{ b.branch_name }}? This removes every invoice, credit note, receipt and journal row this system recorded for that week, so it can be re-extracted. Earlier weeks are never affected.');">
+          <input type="hidden" name="week_ending" value="{{ summary.latest_week_end }}">
+          <button type="submit" style="color:#dc2626;">Delete latest week</button>
+        </form>
+        {% endif %}
       </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
+<p style="font-size:12px;color:#6b7280;margin-top:10px;">Only the most recently recorded week for a branch can be deleted — every earlier week's closing balance is the opening balance the next week rolled forward from, so deleting out of order would strand that chain.</p>
 {% else %}
 <div class="card empty">No branches configured yet.</div>
 {% endif %}

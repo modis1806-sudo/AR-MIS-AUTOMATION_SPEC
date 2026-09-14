@@ -160,8 +160,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def branches_list():
         store = get_store()
         branches = store.list_branches()
+        data_summaries = {b.branch_id: store.branch_data_summary(b.branch_id) for b in branches}
         store.close()
-        return render_template("branches_list.html", branches=branches)
+        return render_template("branches_list.html", branches=branches, data_summaries=data_summaries)
 
     @app.route("/branches/new", methods=["GET", "POST"])
     @requires_role("maker")
@@ -241,6 +242,34 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.delete_branch(branch_id)
         store.close()
         flash("Branch removed.", "success")
+        return redirect(url_for("branches_list"))
+
+    @app.route("/branches/<branch_id>/delete-week", methods=["POST"])
+    @requires_role("maker")
+    def branch_delete_week(branch_id):
+        """Undoes exactly one mistaken extraction - client's explicit
+        ask: with no way to remove bad data today, an error caught right
+        after Save (wrong company, wrong range) is stuck forever. Only
+        ever removes the branch's own latest recorded week (see
+        Store.delete_branch_week's own docstring for why); Store itself
+        enforces that even if this route is ever reached with a stale
+        week_ending value, so it fails loudly rather than deleting the
+        wrong week.
+        """
+        store = get_store()
+        try:
+            week_ending = date.fromisoformat(request.form["week_ending"])
+        except (KeyError, ValueError):
+            flash("That delete request was missing its week - please try again.", "error")
+            store.close()
+            return redirect(url_for("branches_list"))
+
+        try:
+            store.delete_branch_week(branch_id, week_ending)
+            flash(f"Deleted the week ending {week_ending.isoformat()} for '{branch_id}' - re-extract when ready.", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        store.close()
         return redirect(url_for("branches_list"))
 
     def _default_test_range() -> tuple[date, date]:

@@ -902,3 +902,123 @@ def test_last_extraction_at_across_all_branches_is_the_most_recent_of_any(store)
     assert store.last_extraction_at() == datetime(2026, 4, 20, 9, 0, 0)
     # Per-branch still returns only that branch's own most recent run.
     assert store.last_extraction_at("B1") == datetime(2026, 4, 8, 9, 0, 0)
+
+
+# ---- Branch Master data-coverage summary + delete-latest-week -----------
+# Client's explicit ask: with no way today to undo a mistaken extraction,
+# an error caught right after Save is stuck in the system forever. Two
+# real calendar weeks (Mon 2026-03-30 - Sun 2026-04-05, then Mon 2026-04-06
+# - Sun 2026-04-12) built via the real pipeline, matching exactly how the
+# merged Test & Save Extraction flow now saves one week at a time.
+
+
+def _run_week(store, week_ending, voucher_number, invoice_date, party="ACME"):
+    from ar_mis.pipeline import process_branch_data
+
+    store.upsert_customer_master(CustomerMasterRecord(party, party, "KOL", Decimal("0.00")))
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=invoice_date, voucher_number=voucher_number,
+        branch_id="KOL", party_ledger_name=party,
+        entries=[
+            LedgerEntry(party_ledger_name=party, amount_as_extracted=Decimal("-1000.00"),
+                        bill_name=voucher_number, bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("1000.00")),
+        ],
+    )
+    return process_branch_data(store, "KOL", "Kolkata", week_ending, [voucher], {party: Decimal("-1000.00")})
+
+
+def test_week_endings_for_branch_is_empty_before_any_extraction(store):
+    assert store.week_endings_for_branch("KOL") == []
+    assert store.branch_data_summary("KOL") is None
+
+
+def test_branch_data_summary_reports_earliest_start_latest_end_and_count(store):
+    _run_week(store, date(2026, 4, 5), "SB/1", date(2026, 4, 2))
+    _run_week(store, date(2026, 4, 12), "SB/2", date(2026, 4, 9))
+
+    assert store.week_endings_for_branch("KOL") == [date(2026, 4, 5), date(2026, 4, 12)]
+    summary = store.branch_data_summary("KOL")
+    assert summary == {
+        "earliest_week_start": date(2026, 3, 30),
+        "latest_week_end": date(2026, 4, 12),
+        "week_count": 2,
+    }
+
+
+def test_delete_branch_week_refuses_a_week_that_is_not_the_latest(store):
+    _run_week(store, date(2026, 4, 5), "SB/1", date(2026, 4, 2))
+    _run_week(store, date(2026, 4, 12), "SB/2", date(2026, 4, 9))
+
+    with pytest.raises(ValueError, match="most recently recorded"):
+        store.delete_branch_week("KOL", date(2026, 4, 5))
+
+    # Nothing was touched by the refused attempt.
+    assert len(store.all_sales_dn_rows("KOL")) == 2
+    assert store.week_endings_for_branch("KOL") == [date(2026, 4, 5), date(2026, 4, 12)]
+
+
+def test_delete_branch_week_refuses_when_branch_has_no_data(store):
+    with pytest.raises(ValueError, match="most recently recorded"):
+        store.delete_branch_week("KOL", date(2026, 4, 5))
+
+
+def test_delete_branch_week_removes_only_the_latest_weeks_data(store):
+    _run_week(store, date(2026, 4, 5), "SB/1", date(2026, 4, 2))
+    _run_week(store, date(2026, 4, 12), "SB/2", date(2026, 4, 9))
+
+    store.delete_branch_week("KOL", date(2026, 4, 12))
+
+    assert store.week_endings_for_branch("KOL") == [date(2026, 4, 5)]
+    remaining = store.all_sales_dn_rows("KOL")
+    assert [r.voucher_number for r in remaining] == ["SB/1"]
+    assert store.logged_voucher_keys("KOL", "ACME") == {
+        ("Sales", "SB/1", "2026-04-02", "1000.00")
+    }
+    # extraction_log row for the deleted week is gone - only week 1's remains.
+    cur = store.conn.execute("SELECT week_ending FROM extraction_log WHERE branch_id='KOL'")
+    assert [r[0] for r in cur.fetchall()] == ["2026-04-05"]
+
+
+def test_delete_branch_week_cascades_to_invoice_follow_up(store):
+    _run_week(store, date(2026, 4, 5), "SB/1", date(2026, 4, 2))
+
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="KOL", voucher_number="SB/1", party_id="ACME",
+                         next_action="Call customer"),
+        today=date(2026, 4, 6),
+    )
+    assert store.get_invoice_follow_up("KOL", "SB/1", "ACME") is not None
+
+    store.delete_branch_week("KOL", date(2026, 4, 5))
+
+    assert store.get_invoice_follow_up("KOL", "SB/1", "ACME") is None
+
+
+def test_delete_branch_week_removes_only_that_weeks_drift_findings(store):
+    from ar_mis.reconciliation import DriftFinding
+
+    _run_week(store, date(2026, 4, 5), "SB/1", date(2026, 4, 2))
+    _run_week(store, date(2026, 4, 12), "SB/2", date(2026, 4, 9))
+
+    backdated_voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 3), voucher_number="SB/BACKDATED",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-500.00"))],
+    )
+    week1_finding = DriftFinding(
+        party_ledger_name="ACME", voucher_type="Sales", voucher_number="SB/BACKDATED",
+        voucher_date=date(2026, 4, 3), flipped_amount=Decimal("500.00"),
+        attributed_week=date(2026, 4, 5), voucher=backdated_voucher,
+    )
+    week2_finding = DriftFinding(
+        party_ledger_name="ACME", voucher_type="Sales", voucher_number="SB/BACKDATED2",
+        voucher_date=date(2026, 4, 10), flipped_amount=Decimal("500.00"),
+        attributed_week=date(2026, 4, 12), voucher=backdated_voucher,
+    )
+    store.record_drift_findings("KOL", [week1_finding, week2_finding], datetime(2026, 4, 13, 9, 0, 0))
+
+    store.delete_branch_week("KOL", date(2026, 4, 12))
+
+    remaining = store.all_drift_findings()
+    assert [r.finding.voucher_number for r in remaining] == ["SB/BACKDATED"]

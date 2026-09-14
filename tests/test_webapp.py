@@ -118,6 +118,78 @@ def test_test_extraction_page_with_no_branches_prompts_to_add_one(client):
     assert b"Add one in Branch Master" in resp.data
 
 
+def test_branches_list_shows_no_data_yet_before_any_extraction(client):
+    _add_branch(client)
+    resp = client.get("/branches")
+    assert b"No data yet" in resp.data
+
+
+def test_branches_list_shows_data_coverage_after_a_save(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
+    resp = client.get("/branches")
+    assert b"2026-01-05" in resp.data and b"2026-01-11" in resp.data
+    assert b"1 week" in resp.data
+    assert b"Delete latest week" in resp.data
+
+
+def test_branch_delete_week_removes_it_and_allows_reextraction(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
+    resp = client.post(
+        "/branches/KOL/delete-week", data={"week_ending": _SINGLE_WEEK_END}, follow_redirects=True
+    )
+    assert b"Deleted the week ending" in resp.data
+    assert b"No data yet" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_sales_dn_rows("KOL") == []
+    assert store.week_endings_for_branch("KOL") == []
+    store.close()
+
+    # Re-extracting the same week now succeeds rather than being skipped.
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
+    assert b"RECONCILED CLEAN" in resp.data
+
+
+def test_branch_delete_week_refuses_a_week_that_is_not_the_latest(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": "2026-01-05", "snapped_to": "2026-01-18"},
+    )
+    resp = client.post(
+        "/branches/KOL/delete-week", data={"week_ending": "2026-01-11"}, follow_redirects=True
+    )
+    assert b"most recently recorded" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.week_endings_for_branch("KOL") == [date(2026, 1, 11), date(2026, 1, 18)]
+    store.close()
+
+
+def test_checker_cannot_reach_branch_delete_week(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.post(
+        "/branches/KOL/delete-week", data={"week_ending": "2026-01-11"}, follow_redirects=True
+    )
+    assert b"available for your role" in resp.data
+
+
 class FakeTallyClientOK:
     def __init__(self, branch, timeout_seconds=15.0):
         self.branch = branch

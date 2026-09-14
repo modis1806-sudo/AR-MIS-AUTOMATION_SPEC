@@ -22,7 +22,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from ar_mis.config import BranchConfig
+from ar_mis.config import BranchConfig, week_start
 from ar_mis.models import (
     CreditNoteRegisterRow,
     CustomerMasterRecord,
@@ -785,6 +785,118 @@ class Store:
     def all_week_endings(self) -> list[date]:
         cur = self.conn.execute("SELECT DISTINCT week_ending FROM weekly_snapshot ORDER BY week_ending")
         return [date.fromisoformat(row[0]) for row in cur.fetchall()]
+
+    def week_endings_for_branch(self, branch_id: str) -> list[date]:
+        """Every week_ending this branch has recorded data for, oldest
+        first - the authoritative "what's already in the system" list
+        Branch Master shows, and what delete_branch_week checks against
+        to enforce its latest-week-only guard below.
+        """
+        cur = self.conn.execute(
+            "SELECT DISTINCT week_ending FROM weekly_snapshot WHERE branch_id=? ORDER BY week_ending",
+            (branch_id,),
+        )
+        return [date.fromisoformat(row[0]) for row in cur.fetchall()]
+
+    def branch_data_summary(self, branch_id: str) -> dict | None:
+        """Coverage summary for the Branch Master screen: the earliest
+        and latest week already on record for this branch, and how many
+        weeks in between - so an operator can see what's already been
+        extracted before running another extraction, without having to
+        open a register and hunt for it. None if nothing has been
+        recorded for this branch yet.
+        """
+        weeks = self.week_endings_for_branch(branch_id)
+        if not weeks:
+            return None
+        return {
+            "earliest_week_start": week_start(weeks[0]),
+            "latest_week_end": weeks[-1],
+            "week_count": len(weeks),
+        }
+
+    def delete_branch_week(self, branch_id: str, week_ending: date) -> None:
+        """Deletes every row this system wrote for one branch's one
+        Monday-Sunday week - the client's explicit ask: a mistaken
+        extraction currently can't be undone at all, so a genuine error
+        (wrong company loaded, wrong range typed) is stuck in the system
+        forever with no way to reextract cleanly.
+
+        Deliberately restricted to the branch's OWN latest recorded week,
+        not any arbitrary past week: every week after the first rolls its
+        Opening Balance forward from the immediately preceding week's own
+        closing (get_latest_closing/rollforward.resolve_opening_balances).
+        Deleting an earlier week out from under a later one that's still
+        on record would leave that later week's opening balance dangling -
+        rolled forward from data that no longer exists, with no
+        mechanism here to notice or repair it. Deleting only ever the
+        newest week keeps the chain intact: nothing downstream depends
+        on it yet, since nothing downstream exists yet.
+
+        sales_dn_register/credit_note_register/receipt_journal_register
+        carry no week_ending column of their own (see their own CREATE
+        TABLE comments) - identity there is branch + voucher + party, not
+        a batch/run id - so rows belonging to this week are found by date
+        falling inside [week_start(week_ending), week_ending], the same
+        boundary every extraction (live or manual) now saves against
+        (ar_mis.config.split_into_weeks). Any invoice_follow_up row for an
+        invoice being deleted goes with it - a human's PTP/next-action
+        note about an invoice this system is about to forget has nothing
+        left to attach to.
+
+        Deliberately does NOT touch weekly_movement: design doc item 15's
+        Weekly Movement Register is its own frozen, explicitly-recorded
+        history (never silently recomputed - see its own CREATE TABLE
+        comment), so a week already recorded there stays exactly as
+        recorded; re-extracting after this delete does not retroactively
+        fix it - re-record that sheet separately if it's now stale.
+        """
+        weeks = self.week_endings_for_branch(branch_id)
+        if not weeks or week_ending != weeks[-1]:
+            raise ValueError(
+                f"Only the most recently recorded week for '{branch_id}' can be deleted - "
+                "every earlier week's closing balance is the opening balance the next week "
+                "rolled forward from, and deleting out of order would strand that chain."
+            )
+        w_start_s = week_start(week_ending).isoformat()
+        w_end_s = week_ending.isoformat()
+
+        orphaned_invoices = self.conn.execute(
+            "SELECT voucher_number, party_id FROM sales_dn_register"
+            " WHERE branch_id=? AND invoice_date BETWEEN ? AND ?",
+            (branch_id, w_start_s, w_end_s),
+        ).fetchall()
+        for voucher_number, party_id in orphaned_invoices:
+            self.conn.execute(
+                "DELETE FROM invoice_follow_up WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                (branch_id, voucher_number, party_id),
+            )
+
+        self.conn.execute(
+            "DELETE FROM sales_dn_register WHERE branch_id=? AND invoice_date BETWEEN ? AND ?",
+            (branch_id, w_start_s, w_end_s),
+        )
+        self.conn.execute(
+            "DELETE FROM credit_note_register WHERE branch_id=? AND cn_date BETWEEN ? AND ?",
+            (branch_id, w_start_s, w_end_s),
+        )
+        self.conn.execute(
+            "DELETE FROM receipt_journal_register WHERE branch_id=? AND txn_date BETWEEN ? AND ?",
+            (branch_id, w_start_s, w_end_s),
+        )
+        self.conn.execute(
+            "DELETE FROM voucher_log WHERE branch_id=? AND week_ending=?", (branch_id, w_end_s)
+        )
+        self.conn.execute(
+            "DELETE FROM extraction_log WHERE branch_id=? AND week_ending=?", (branch_id, w_end_s)
+        )
+        self.conn.execute(
+            "DELETE FROM drift_finding WHERE branch_id=? AND attributed_week=?", (branch_id, w_end_s)
+        )
+        self.conn.execute(
+            "DELETE FROM weekly_snapshot WHERE branch_id=? AND week_ending=?", (branch_id, w_end_s)
+        )
+        self.conn.commit()
 
     def latest_weekly_snapshot_closing_total(self) -> Decimal | None:
         """Summed closing_computed across every party for the most recent
