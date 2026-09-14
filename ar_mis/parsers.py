@@ -160,6 +160,23 @@ def _text(el: ET.Element | None, default: str = "") -> str:
     return stripped if stripped else default
 
 
+def _find_ci(el: ET.Element, tag: str) -> ET.Element | None:
+    """Case-insensitive direct-child lookup. A field requested via a
+    plain `<FETCH>` always renders in ALL CAPS (CLOSINGBALANCE), but a
+    field requested via `<NATIVEMETHOD>` renders using the exact case
+    given in the request (e.g. ClosingBalance) - the same live Sundry
+    Debtors ledger can come back either way depending on which mechanism
+    a given request uses, and this codebase has needed both. `.find()`
+    is case-sensitive and would silently miss the second shape, reading
+    back a default rather than the real value with no error at all.
+    """
+    target = tag.lower()
+    for child in el:
+        if child.tag.lower() == target:
+            return child
+    return None
+
+
 _FOREX_AMOUNT = re.compile(r"=\s*(-?[\d,]+\.?\d*)\s*[^\d\s]*\s*$")
 
 
@@ -352,8 +369,8 @@ def parse_ledger_closing_balances(raw_xml: str) -> dict[str, Decimal]:
             # own key. Stripped the same way every other name in this
             # file already is - not a new rule, just applying the
             # existing one consistently.
-            name = (ledger_el.get("NAME") or "").strip() or _text(ledger_el.find("NAME"))
-            closing = _text(ledger_el.find("CLOSINGBALANCE"), "0")
+            name = (ledger_el.get("NAME") or "").strip() or _text(_find_ci(ledger_el, "NAME"))
+            closing = _text(_find_ci(ledger_el, "CLOSINGBALANCE"), "0")
             if name:
                 balances[name] = _parse_decimal_amount(closing)
         return balances

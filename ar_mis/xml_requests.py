@@ -132,17 +132,27 @@ def ytd_sundry_debtors_request(company_name: str, fy_start: date, as_of: date) -
     formula (most likely confused with UI terminology), so Tally silently
     dropped the whole field rather than erroring.
 
-    v4 (current): switches to REPORTNAME "Group Summary" - the actual
-    built-in Tally screen shown when a human drills from Trial Balance
-    into one specific group (Display > Trial Balance > Sundry Debtors),
-    which is inherently period-scoped by nature. Passes the target group
-    via SVVIEWNAME (Tally's documented mechanism for naming which node of
-    a drillable report to open), alongside SVCURRENTGROUP kept as a
-    second attempt at the same intent in case only one of the two is
-    actually read for this specific report - unlike "Trial Balance",
-    which confirmed ignoring SVCURRENTGROUP outright.
+    v4: REPORTNAME "Group Summary" (the built-in screen shown when a
+    human drills from Trial Balance into one specific group), with the
+    target group passed via both SVVIEWNAME and SVCURRENTGROUP.
+    CONFIRMED BROKEN: byte-identical to v2's output - "Group Summary" as
+    a REPORTNAME had no effect at all; Tally rendered the same whole-
+    company Trial Balance regardless.
 
-    MUST be re-verified the same way all three previous attempts were:
+    v5 (current, client-supplied candidate): keeps v1's exact ledger
+    selection (raw `<TYPE>Collection</TYPE>` of `<TYPE>Ledger</TYPE>`,
+    BELONGSTO/CHILDOF under Sundry Debtors - already proven to find the
+    right 964 ledgers), but replaces `<FETCH>` with `<NATIVEMETHOD>` for
+    each field, plus `ISFIXED="No" ISINITIALIZE="Yes"` on the COLLECTION
+    itself. The reasoning this time is more targeted than v1-v4's: FETCH
+    likely just serializes whatever's already cached on the object
+    (matching what v1 proved - a stale value regardless of date), while
+    NATIVEMETHOD explicitly invokes the object's own native computation
+    method, which may genuinely read the STATICVARIABLES period context
+    rather than a cached attribute. Untested by this project against a
+    real Tally instance before now.
+
+    MUST be re-verified the same way all four previous attempts were:
     pull the same ledger for two different `as_of` dates and confirm the
     values now genuinely differ AND match Tally's own F2:Period-scoped
     figure for that exact ledger - before trusting this in a real save.
@@ -150,22 +160,33 @@ def ytd_sundry_debtors_request(company_name: str, fy_start: date, as_of: date) -
     company = escape(company_name)
     return f"""<ENVELOPE>
  <HEADER>
-  <TALLYREQUEST>Export Data</TALLYREQUEST>
+  <VERSION>1</VERSION>
+  <TALLYREQUEST>EXPORT</TALLYREQUEST>
+  <TYPE>COLLECTION</TYPE>
+  <ID>GroupLedgerTrialBalance</ID>
  </HEADER>
  <BODY>
-  <EXPORTDATA>
-   <REQUESTDESC>
-    <REPORTNAME>Group Summary</REPORTNAME>
-    <STATICVARIABLES>
-     <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
-     <SVFROMDATE>{_tally_date(fy_start)}</SVFROMDATE>
-     <SVTODATE>{_tally_date(as_of)}</SVTODATE>
-     <SVVIEWNAME>Sundry Debtors</SVVIEWNAME>
-     <SVCURRENTGROUP>Sundry Debtors</SVCURRENTGROUP>
-     <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-    </STATICVARIABLES>
-   </REQUESTDESC>
-  </EXPORTDATA>
+  <DESC>
+   <STATICVARIABLES>
+    <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
+    <SVFROMDATE TYPE="Date">{_tally_date(fy_start)}</SVFROMDATE>
+    <SVTODATE TYPE="Date">{_tally_date(as_of)}</SVTODATE>
+    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+   </STATICVARIABLES>
+   <TDL>
+    <TDLMESSAGE>
+     <COLLECTION NAME="GroupLedgerTrialBalance" ISMODIFY="No" ISFIXED="No" ISINITIALIZE="Yes">
+      <TYPE>Ledger</TYPE>
+      <CHILDOF>Sundry Debtors</CHILDOF>
+      <BELONGSTO>Yes</BELONGSTO>
+      <NATIVEMETHOD>Name</NATIVEMETHOD>
+      <NATIVEMETHOD>Parent</NATIVEMETHOD>
+      <NATIVEMETHOD>OpeningBalance</NATIVEMETHOD>
+      <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD>
+     </COLLECTION>
+    </TDLMESSAGE>
+   </TDL>
+  </DESC>
  </BODY>
 </ENVELOPE>"""
 

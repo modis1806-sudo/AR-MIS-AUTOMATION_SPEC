@@ -279,6 +279,26 @@ def test_parse_ledger_closing_balances_strips_stray_characters_baked_into_the_na
     assert balances == {"RAASHI ENTERPRISES": Decimal("-46.00")}
 
 
+def test_parse_ledger_closing_balances_handles_nativemethod_mixed_case_tags():
+    # A <NATIVEMETHOD>ClosingBalance</NATIVEMETHOD> request renders the
+    # field back using that exact mixed case, unlike a plain <FETCH>
+    # field which always comes back as ALL CAPS (CLOSINGBALANCE) - both
+    # shapes have now been used against this exact real Sundry Debtors
+    # pull, so both must parse correctly.
+    raw = (
+        "<ENVELOPE>\n"
+        ' <LEDGER NAME="AARTH ELECTRICALS">\n'
+        "  <Name>AARTH ELECTRICALS</Name>\n"
+        "  <Parent>Sanjay Singhania (Market)</Parent>\n"
+        "  <OpeningBalance>-79484.00</OpeningBalance>\n"
+        "  <ClosingBalance>-730.00</ClosingBalance>\n"
+        " </LEDGER>\n"
+        "</ENVELOPE>"
+    )
+    balances = parse_ledger_closing_balances(raw)
+    assert balances == {"AARTH ELECTRICALS": Decimal("-730.00")}
+
+
 def test_parse_ledger_closing_balances_handles_real_display_report_shape():
     # Confirmed against a real manually-exported Trial Balance: Tally's
     # "Display Report" shape has no LEDGER element at all - each party is
