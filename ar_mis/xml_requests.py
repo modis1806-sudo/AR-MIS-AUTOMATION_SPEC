@@ -105,57 +105,58 @@ def ytd_sundry_debtors_request(company_name: str, fy_start: date, as_of: date) -
     """Export request for the full Sundry Debtors ledger group's closing
     balances as of a specific date, for the Section 4.1/4.2 cross-check.
 
-    CANDIDATE FIX v4, NOT YET LIVE-CONFIRMED. History, in order (all
-    against the same real Charze ledger, live-verified via two pulls at
-    genuinely different `as_of` dates each time - see this project's own
-    diagnostics CLI):
+    CONFIRMED CORRECT (v5) against a live TallyPrime instance: pulled the
+    same real ledger (AARTH ELECTRICALS) for two genuinely different
+    `as_of` dates and got two genuinely different closing balances -
+    -730.00 for 2026-04-02, -79484.00 for 2026-09-14 - matching Tally's
+    own F2:Period-scoped figure for that exact ledger exactly. Four
+    earlier shapes were tried and live-disproven first (kept below as
+    engineering history - each taught something the next one needed):
 
-    v1 (original): raw `<TYPE>Collection</TYPE>` of `<TYPE>Ledger</TYPE>`,
-    `<FETCH>CLOSINGBALANCE,OPENINGBALANCE</FETCH>`. CONFIRMED BROKEN:
-    both dates returned the exact same cached figure - the raw object
-    fields ignore SVFROMDATE/SVTODATE entirely. Ledger SELECTION itself
-    (BELONGSTO/CHILDOF under Sundry Debtors) was separately confirmed
-    correct - it found all 964 real debtor ledgers, including ones under
-    custom sub-groups.
+    v1: raw `<TYPE>Collection</TYPE>` of `<TYPE>Ledger</TYPE>` with
+    `<FETCH>CLOSINGBALANCE,OPENINGBALANCE</FETCH>`. BROKEN: both dates
+    returned the exact same cached figure - the raw object fields ignore
+    SVFROMDATE/SVTODATE entirely. Ledger SELECTION itself (BELONGSTO/
+    CHILDOF under Sundry Debtors) was separately confirmed correct even
+    here - it found all 964 real debtor ledgers, including ones under
+    custom sub-groups - which is why v5 below keeps it unchanged.
 
     v2: REPORTNAME-based "Trial Balance" export with SVCURRENTGROUP set
-    to Sundry Debtors. CONFIRMED PARTIALLY WORKING: the two dates now
-    returned genuinely different figures - but SVCURRENTGROUP had no
-    scoping effect. The response was the whole company's Trial Balance
-    at primary-group level; Sundry Debtors doesn't even appear as its
-    own row there (nested inside Current Assets), and group totals
-    aren't what a per-party cross-check needs anyway.
+    to Sundry Debtors. PARTIALLY WORKING: the two dates returned
+    genuinely different figures - but SVCURRENTGROUP had no scoping
+    effect. The response was the whole company's Trial Balance at
+    primary-group level; Sundry Debtors doesn't even appear as its own
+    row there (nested inside Current Assets), and group totals aren't
+    what a per-party cross-check needs anyway.
 
     v3: v1's ledger selection + a COMPUTE field using `$$ClosingBalance`.
-    CONFIRMED BROKEN WORSE: the CLOSINGBALANCE field vanished from the
-    response entirely - `$$ClosingBalance` is not a recognized TDL system
-    formula (most likely confused with UI terminology), so Tally silently
+    BROKEN WORSE: the CLOSINGBALANCE field vanished from the response
+    entirely - `$$ClosingBalance` is not a recognized TDL system formula
+    (most likely confused with UI terminology), so Tally silently
     dropped the whole field rather than erroring.
 
     v4: REPORTNAME "Group Summary" (the built-in screen shown when a
-    human drills from Trial Balance into one specific group), with the
-    target group passed via both SVVIEWNAME and SVCURRENTGROUP.
-    CONFIRMED BROKEN: byte-identical to v2's output - "Group Summary" as
-    a REPORTNAME had no effect at all; Tally rendered the same whole-
-    company Trial Balance regardless.
+    human drills from Trial Balance into one specific group), target
+    group passed via both SVVIEWNAME and SVCURRENTGROUP. BROKEN: byte-
+    identical to v2's output - "Group Summary" as a REPORTNAME had no
+    effect at all.
 
-    v5 (current, client-supplied candidate): keeps v1's exact ledger
-    selection (raw `<TYPE>Collection</TYPE>` of `<TYPE>Ledger</TYPE>`,
-    BELONGSTO/CHILDOF under Sundry Debtors - already proven to find the
-    right 964 ledgers), but replaces `<FETCH>` with `<NATIVEMETHOD>` for
-    each field, plus `ISFIXED="No" ISINITIALIZE="Yes"` on the COLLECTION
-    itself. The reasoning this time is more targeted than v1-v4's: FETCH
-    likely just serializes whatever's already cached on the object
-    (matching what v1 proved - a stale value regardless of date), while
-    NATIVEMETHOD explicitly invokes the object's own native computation
-    method, which may genuinely read the STATICVARIABLES period context
-    rather than a cached attribute. Untested by this project against a
-    real Tally instance before now.
+    v5 (current, client-supplied candidate - the one that worked): keeps
+    v1's exact ledger selection but replaces `<FETCH>` with
+    `<NATIVEMETHOD>` for each field, plus `ISFIXED="No"
+    ISINITIALIZE="Yes"` on the COLLECTION. FETCH apparently just
+    serializes whatever's already cached on the object (matching v1's
+    proven-stale result); NATIVEMETHOD explicitly invokes the object's
+    own native computation method, which genuinely reads the
+    STATICVARIABLES period context instead of a cached attribute.
 
-    MUST be re-verified the same way all four previous attempts were:
-    pull the same ledger for two different `as_of` dates and confirm the
-    values now genuinely differ AND match Tally's own F2:Period-scoped
-    figure for that exact ledger - before trusting this in a real save.
+    One output-shape consequence worth remembering: a NATIVEMETHOD field
+    renders using the exact case given in the request (e.g.
+    ClosingBalance), unlike a FETCH field which always renders ALL CAPS
+    (CLOSINGBALANCE) - parsers.parse_ledger_closing_balances was hardened
+    with a case-insensitive lookup (parsers._find_ci) to handle both
+    shapes, since the Manual Upload path's own real fixtures still use
+    the all-caps form.
     """
     company = escape(company_name)
     return f"""<ENVELOPE>
