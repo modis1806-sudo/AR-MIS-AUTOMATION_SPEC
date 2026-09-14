@@ -30,7 +30,7 @@ from flask import Flask, flash, redirect, render_template, request, send_file, s
 
 from ar_mis.ageing_matrix import compute_ageing_matrix
 from ar_mis.branch_totals import compute_branch_sales_cn_dn_totals
-from ar_mis.config import BranchConfig, financial_year_start
+from ar_mis.config import BranchConfig, financial_year_start, snap_to_full_weeks, split_into_weeks, week_start
 from ar_mis.dashboard import compute_ar_snapshot, compute_branch_ageing_schedule
 from ar_mis.exception_register import (
     compute_negative_open_amount_invoices,
@@ -243,14 +243,39 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash("Branch removed.", "success")
         return redirect(url_for("branches_list"))
 
+    def _default_test_range() -> tuple[date, date]:
+        """Defaults to the most recently completed Monday-Sunday week,
+        regardless of what day it is today - "the previous whole week",
+        per the client's own weekly rule below.
+        """
+        this_week_start = week_start(date.today())
+        last_week_end = this_week_start - timedelta(days=1)
+        return week_start(last_week_end), last_week_end
+
     @app.route("/test-extraction", methods=["GET", "POST"])
     @requires_role("maker")
     def test_extraction():
+        """One page for both checking and committing a live Tally pull -
+        client's explicit ask: a separate Extract & Save page risked
+        testing one date range and saving a different one (confirmed live:
+        exactly this happened once, from a stale date left in a second
+        page's form). Testing here always shows the range that a
+        follow-up Save would actually use, since a Save (see
+        test_extraction_save below) is only ever offered against the same
+        snapped range this test just ran.
+
+        Client's explicit, permanent rule: the reporting week is always
+        Monday through Sunday, fixed to the calendar - never the raw
+        dates typed in. Whatever range the operator picks gets extended
+        outward (ar_mis.config.snap_to_full_weeks) to the enclosing full
+        weeks, then split into one real week per ar_mis.config.
+        split_into_weeks - never narrowed, per this app's own never-
+        discard principle, and never a partial week silently included.
+        """
         store = get_store()
         branches = store.list_branches()
         result = None
-        default_to = date.today()
-        default_from = default_to - timedelta(days=7)
+        default_from, default_to = _default_test_range()
 
         if request.method == "POST":
             branch_id = request.form.get("branch_id", "")
@@ -264,9 +289,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 )
 
             # Any range the operator picks - a week, a month, a full
-            # financial year for a first-time backfill. No artificial
-            # min/max: this is a diagnostic tool, not the weekly production
-            # cadence (which cli.py fixes to 7 days by design).
+            # financial year for a first-time backfill - gets snapped
+            # outward to full Monday-Sunday weeks below; no artificial
+            # min/max on what can be requested.
             try:
                 from_date = date.fromisoformat(request.form["from_date"])
                 to_date = date.fromisoformat(request.form["to_date"])
@@ -284,6 +309,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     "test_extraction.html", branches=branches, result=None,
                     default_from=from_date.isoformat(), default_to=to_date.isoformat(),
                 )
+
+            snapped_from, snapped_to = snap_to_full_weeks(from_date, to_date)
 
             steps: list[tuple[str, bool, str]] = []
             # Uses TallyClient's default timeout (see tally_client.
@@ -306,7 +333,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
             if all_ok_so_far:
                 try:
-                    vouchers_by_type = client.fetch_all_voucher_types(from_date, to_date)
+                    vouchers_by_type = client.fetch_all_voucher_types(snapped_from, snapped_to)
                     counts = ", ".join(f"{vt.value}: {len(vs)}" for vt, vs in vouchers_by_type.items())
                     steps.append(("Voucher extraction", True, counts or "0 vouchers in range"))
                 except TallyConnectionError as exc:
@@ -316,14 +343,28 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
             if all_ok_so_far:
                 try:
-                    balances = client.fetch_ytd_sundry_debtors(from_date, to_date)
+                    balances = client.fetch_ytd_sundry_debtors(snapped_from, snapped_to)
                     steps.append(("Sundry Debtors pull", True, f"{len(balances)} ledger(s) found"))
                 except TallyConnectionError as exc:
                     steps.append(("Sundry Debtors pull", False, str(exc)))
 
+            all_ok = all(ok for _, ok, _ in steps)
+            weeks = [
+                {
+                    "start": w_start.isoformat(), "end": w_end.isoformat(),
+                    "already_recorded": store.has_weekly_snapshot_for_branch_week(branch_id, w_end),
+                }
+                for w_start, w_end in split_into_weeks(snapped_from, snapped_to)
+            ]
+
             result = {
-                "branch": branch, "steps": steps, "all_ok": all(ok for _, ok, _ in steps),
-                "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+                "mode": "test",
+                "branch": branch, "steps": steps, "all_ok": all_ok,
+                "requested_from": from_date.isoformat(), "requested_to": to_date.isoformat(),
+                "snapped_from": snapped_from.isoformat(), "snapped_to": snapped_to.isoformat(),
+                "was_snapped": (from_date, to_date) != (snapped_from, snapped_to),
+                "weeks": weeks,
+                "any_week_new": any(not w["already_recorded"] for w in weeks),
             }
             default_from, default_to = from_date, to_date
 
@@ -333,103 +374,97 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             default_from=default_from.isoformat(), default_to=default_to.isoformat(),
         )
 
-    @app.route("/extract-and-save", methods=["GET", "POST"])
+    @app.route("/test-extraction/save", methods=["POST"])
     @requires_role("maker")
-    def extract_and_save():
-        """The genuine live-Tally commit action, missing from this webapp
-        until now - Test Extraction (above) is diagnostic-only and writes
-        nothing; Manual Upload writes data but only from uploaded files.
-        This is the same write path Manual Upload uses
-        (process_branch_data), sourced from a live Tally pull instead,
-        mirroring exactly what ar_mis.pipeline.build_branch_runner (the
-        CLI's own live path) does - including the Section 4.2 YTD full-
-        pull drift check, so a backdated entry is caught here too, not
-        only when running via Manual Upload or the CLI.
+    def test_extraction_save():
+        """The genuine live-Tally commit action - only ever reached from a
+        successful Test Extraction result above, posting back the exact
+        same (already snapped, week-aligned) range that was just tested,
+        so what gets saved is never a different range than what was
+        checked.
 
-        Refuses outright if this branch/week already has recorded data,
-        the same conflict rule Manual Upload enforces - first one in
-        wins, no silent overwrite. `week_ending` is a single date (not a
-        from/to range like the diagnostic Test Extraction page): the
-        7-day window and the Sundry Debtors YTD cutoff are both derived
-        from it, matching the CLI's own weekly cadence, since this data
-        becomes a real weekly_snapshot row, not just a diagnostic count.
+        Same write path Manual Upload uses (process_branch_data),
+        sourced from a live Tally pull instead, mirroring
+        ar_mis.pipeline.build_branch_runner (the CLI's own live path) -
+        including the Section 4.2 YTD full-pull drift check per week, so
+        a backdated entry is caught here too.
+
+        A multi-week range is saved one real Monday-Sunday week at a
+        time, in chronological order - required, not just tidy: each
+        week's opening balance rolls forward from the immediately
+        preceding week's own just-saved closing
+        (rollforward.resolve_opening_balances), so processing out of
+        order or skipping ahead past a failure would silently corrupt
+        every later week's opening. A week that already has recorded
+        data is skipped (first one in wins, same conflict rule Manual
+        Upload enforces) without stopping the run; a genuine extraction
+        failure on one week DOES stop the run, rather than risk building
+        every later week's opening on top of a gap.
         """
         store = get_store()
         branches = store.list_branches()
-        default_week_ending = date.today()
-        result = None
 
-        if request.method == "POST":
-            branch_id = request.form.get("branch_id", "")
-            branch = store.get_branch(branch_id)
-            if branch is None:
-                flash("Select a branch first.", "error")
-                store.close()
-                return render_template(
-                    "extract_and_save.html", branches=branches, result=None,
-                    default_week_ending=default_week_ending.isoformat(),
-                )
+        branch_id = request.form.get("branch_id", "")
+        branch = store.get_branch(branch_id)
+        if branch is None:
+            flash("Select a branch first.", "error")
+            store.close()
+            default_from, default_to = _default_test_range()
+            return render_template(
+                "test_extraction.html", branches=branches, result=None,
+                default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+            )
 
-            try:
-                week_ending = date.fromisoformat(request.form["week_ending"])
-            except (KeyError, ValueError):
-                flash("Enter a valid week-ending date.", "error")
-                store.close()
-                return render_template(
-                    "extract_and_save.html", branches=branches, result=None,
-                    default_week_ending=default_week_ending.isoformat(),
-                )
-            default_week_ending = week_ending
+        try:
+            snapped_from = date.fromisoformat(request.form["snapped_from"])
+            snapped_to = date.fromisoformat(request.form["snapped_to"])
+        except (KeyError, ValueError):
+            flash("That save request was missing its date range - please run the test again.", "error")
+            store.close()
+            default_from, default_to = _default_test_range()
+            return render_template(
+                "test_extraction.html", branches=branches, result=None,
+                default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+            )
+        # Defensive re-snap - the form fields are hidden inputs carrying
+        # values this same server already computed, but never trust a
+        # posted value as pre-validated.
+        snapped_from, snapped_to = snap_to_full_weeks(snapped_from, snapped_to)
 
-            if store.has_weekly_snapshot_for_branch_week(branch_id, week_ending):
-                result = {
-                    "branch": branch, "week_ending": week_ending.isoformat(),
-                    "refused": True,
-                    "detail": (
-                        f"Branch '{branch.branch_name}' already has recorded data for the week "
-                        f"ending {week_ending.isoformat()}. Refusing to overwrite - a genuine "
-                        "correction needs a deliberate, separate action."
-                    ),
-                }
-                store.close()
-                return render_template(
-                    "extract_and_save.html", branches=branches, result=result,
-                    default_week_ending=default_week_ending.isoformat(),
-                )
+        client = TallyClient(branch=branch)
+        week_results = []
 
-            from_date = week_ending - timedelta(days=6)
-            fy_start = financial_year_start(week_ending)
-            client = TallyClient(branch=branch)
+        for w_start, w_end in split_into_weeks(snapped_from, snapped_to):
+            if store.has_weekly_snapshot_for_branch_week(branch_id, w_end):
+                week_results.append({
+                    "start": w_start.isoformat(), "end": w_end.isoformat(), "status": "skipped",
+                    "detail": f"Already has recorded data for the week ending {w_end.isoformat()} - not overwritten.",
+                })
+                continue
 
+            fy_start = financial_year_start(w_end)
             try:
                 client.confirm_current_company()
-                vouchers_by_type = client.fetch_all_voucher_types(from_date, week_ending)
+                vouchers_by_type = client.fetch_all_voucher_types(w_start, w_end)
                 all_vouchers = [v for vs in vouchers_by_type.values() for v in vs]
                 closing_extracted = {
                     name: flip_sign(balance)
-                    for name, balance in client.fetch_ytd_sundry_debtors(fy_start, week_ending).items()
+                    for name, balance in client.fetch_ytd_sundry_debtors(fy_start, w_end).items()
                 }
             except (CompanyMismatchError, TallyConnectionError) as exc:
-                result = {
-                    "branch": branch, "week_ending": week_ending.isoformat(),
-                    "refused": True, "detail": f"Extraction failed: {exc}",
-                }
-                store.close()
-                return render_template(
-                    "extract_and_save.html", branches=branches, result=result,
-                    default_week_ending=default_week_ending.isoformat(),
-                )
+                week_results.append({
+                    "start": w_start.isoformat(), "end": w_end.isoformat(), "status": "failed",
+                    "detail": f"Extraction failed: {exc}",
+                })
+                break  # later weeks would roll forward from a gap - stop here, don't guess onward
 
             outcome = process_branch_data(
-                store, branch.branch_id, branch.branch_name, week_ending, all_vouchers, closing_extracted
+                store, branch.branch_id, branch.branch_name, w_end, all_vouchers, closing_extracted
             )
 
-            # Section 4.2: a separate full YTD pull, diffed against
-            # everything ever logged, to catch backdated entries an
-            # incremental weekly pull structurally cannot see.
             drift_findings = []
             try:
-                ytd_vouchers_by_type = client.fetch_all_voucher_types(fy_start, week_ending)
+                ytd_vouchers_by_type = client.fetch_all_voucher_types(fy_start, w_end)
                 ytd_vouchers = [v for vs in ytd_vouchers_by_type.values() for v in vs]
                 party_names = set(closing_extracted)
                 logged_keys = {p: store.logged_voucher_keys(branch.branch_id, p) for p in party_names}
@@ -437,18 +472,23 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 drift_findings = isolate_drift(branch.branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
                 store.record_drift_findings(branch.branch_id, drift_findings, datetime.now())
             except TallyConnectionError as exc:
-                flash(f"Data was saved, but the YTD drift check could not run: {exc}", "error")
+                flash(f"Week ending {w_end.isoformat()} was saved, but its YTD drift check could not run: {exc}", "error")
 
-            result = {
-                "branch": branch, "week_ending": week_ending.isoformat(),
-                "refused": False, "outcome": outcome, "drift_findings": drift_findings,
-                "fy_start": fy_start.isoformat(),
-            }
+            week_results.append({
+                "start": w_start.isoformat(), "end": w_end.isoformat(), "status": "saved",
+                "outcome": outcome, "drift_findings": drift_findings,
+            })
 
+        result = {
+            "mode": "save", "branch": branch,
+            "snapped_from": snapped_from.isoformat(), "snapped_to": snapped_to.isoformat(),
+            "week_results": week_results,
+        }
         store.close()
+        default_from, default_to = snapped_from, snapped_to
         return render_template(
-            "extract_and_save.html", branches=branches, result=result,
-            default_week_ending=default_week_ending.isoformat(),
+            "test_extraction.html", branches=branches, result=result,
+            default_from=default_from.isoformat(), default_to=default_to.isoformat(),
         )
 
     @app.route("/discover", methods=["GET", "POST"])

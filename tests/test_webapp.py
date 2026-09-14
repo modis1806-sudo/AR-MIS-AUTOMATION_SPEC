@@ -206,8 +206,17 @@ def test_test_extraction_reports_connection_failure_clearly(client, monkeypatch)
     assert b"Voucher extraction" not in resp.data
 
 
-# ---- Extract & Save (the live-Tally commit path, distinct from the ------
-# ---- diagnostic-only Test Extraction page above) -------------------------
+# ---- Test & Save Extraction: the save half ------------------------------
+# ---- (POST /test-extraction/save, only ever reached from a successful ---
+# ---- Test Extraction result on the same page) ----------------------------
+
+# 2026-01-05 is a Monday, so a request for exactly that single day snaps
+# to the full Monday-Sunday week 2026-01-05..2026-01-11 with no other
+# week involved - keeps these tests to one week without needing a
+# separate mid-week-snap test (that's covered in test_config.py and the
+# dedicated multi-week test below).
+_SINGLE_WEEK_START = "2026-01-05"
+_SINGLE_WEEK_END = "2026-01-11"
 
 
 class FakeTallyClientForCommit:
@@ -215,7 +224,10 @@ class FakeTallyClientForCommit:
     parsed into registers), this voucher sets party_ledger_name at the
     VOUCHER level too - required for build_sales_dn_register_row to
     attribute it to a customer, per Voucher.party_ledger_name's own
-    docstring.
+    docstring. Ignores the requested date range and always returns the
+    same voucher - fine here since these tests exercise the save/skip/
+    fail plumbing, not date filtering (that's parser-level, tested
+    elsewhere).
     """
 
     def __init__(self, branch, timeout_seconds=15.0):
@@ -226,7 +238,7 @@ class FakeTallyClientForCommit:
 
     def fetch_all_voucher_types(self, from_date, to_date):
         voucher = Voucher(
-            voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 3), voucher_number="SB/1",
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 5), voucher_number="SB/1",
             branch_id=self.branch.branch_id, party_ledger_name="Acme",
             entries=[
                 LedgerEntry(party_ledger_name="Acme", amount_as_extracted=Decimal("-1000.00"), bill_name="SB/1", bill_type="New Ref"),
@@ -249,69 +261,125 @@ class FakeTallyClientMismatch(FakeTallyClientForCommit):
         return {"Acme": Decimal("-999.00")}
 
 
-def test_extract_and_save_page_with_no_branches_prompts_to_add_one(client):
-    resp = client.get("/extract-and-save")
-    assert b"Add one in Branch Master" in resp.data
+def _run_test_extraction(client, from_date, to_date):
+    return client.post(
+        "/test-extraction",
+        data={"branch_id": "KOL", "from_date": from_date, "to_date": to_date},
+    )
 
 
-def test_extract_and_save_writes_data_and_shows_reconciled_clean(client, monkeypatch):
+def test_test_extraction_save_writes_data_and_shows_reconciled_clean(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
     _add_branch(client)
-    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
     assert resp.status_code == 200
     assert b"RECONCILED CLEAN" in resp.data
     assert b"No YTD drift found" in resp.data
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 1, 5))) == 1
+    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
     assert len(store.all_sales_dn_rows("KOL")) == 1
     store.close()
 
 
-def test_extract_and_save_mismatch_still_writes_data(client, monkeypatch):
+def test_test_extraction_save_mismatch_still_writes_data(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientMismatch)
     _add_branch(client)
-    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
     assert b"RECONCILIATION MISMATCH" in resp.data
     assert b"still recorded" in resp.data
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 1, 5))) == 1
+    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
     store.close()
 
 
-def test_extract_and_save_refuses_when_already_recorded(client, monkeypatch):
+def test_test_extraction_save_skips_a_week_already_recorded(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
     _add_branch(client)
-    client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
-    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
-    assert b"NOT PROCESSED" in resp.data
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
+    assert b"SKIPPED" in resp.data
     assert b"already has recorded data" in resp.data
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 1, 5))) == 1
+    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
     store.close()
 
 
-def test_extract_and_save_reports_connection_failure_and_writes_nothing(client, monkeypatch):
+def test_test_extraction_save_reports_connection_failure_and_writes_nothing(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientUnreachable)
     _add_branch(client)
-    resp = client.post("/extract-and-save", data={"branch_id": "KOL", "week_ending": "2026-01-05"})
-    assert b"NOT PROCESSED" in resp.data
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+    )
+    assert b"FAILED" in resp.data
     assert b"Could not reach Tally" in resp.data
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert store.weekly_snapshots_for_week(date(2026, 1, 5)) == []
+    assert store.weekly_snapshots_for_week(date(2026, 1, 11)) == []
     store.close()
 
 
-def test_checker_cannot_reach_extract_and_save(roleless_client):
+def test_test_extraction_save_stops_at_first_failed_week_in_a_multi_week_range(client, monkeypatch):
+    # A week request spanning 2026-01-05..2026-01-18 covers two Monday-
+    # Sunday weeks. FakeTallyClientFailsSecondWeek fails only on the
+    # second one - the run must save the first week, then stop rather
+    # than guess an opening balance for anything past the failure.
+    class FakeTallyClientFailsSecondWeek(FakeTallyClientForCommit):
+        calls = 0
+
+        def confirm_current_company(self):
+            type(self).calls += 1
+            if type(self).calls > 1:
+                from ar_mis.tally_client import TallyConnectionError
+
+                raise TallyConnectionError("Could not reach Tally")
+
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientFailsSecondWeek)
+    _add_branch(client)
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": "2026-01-05", "snapped_to": "2026-01-18"},
+    )
+    assert b"RECONCILED CLEAN" in resp.data  # first week
+    assert b"FAILED" in resp.data  # second week
+    assert b"were not attempted" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
+    assert store.weekly_snapshots_for_week(date(2026, 1, 18)) == []
+    store.close()
+
+
+def test_checker_cannot_reach_test_extraction_save(roleless_client):
     roleless_client.post("/choose-role", data={"role": "checker"})
-    resp = roleless_client.get("/extract-and-save", follow_redirects=True)
+    resp = roleless_client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "snapped_from": _SINGLE_WEEK_START, "snapped_to": _SINGLE_WEEK_END},
+        follow_redirects=True,
+    )
     assert b"available for your role" in resp.data
 
 
