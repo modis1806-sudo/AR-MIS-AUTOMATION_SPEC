@@ -176,6 +176,46 @@ def build_unreconciled_parties_workbook(rows: list, as_of) -> Workbook:
     return wb
 
 
+_TB_CROSS_CHECK_HEADERS = [
+    "Party", "Branch", "Week Ending", "Opening", "Sales", "Credit Notes", "Debit Notes",
+    "Receipts", "Journals", "Closing (Workings)", "Closing (TB/Tally)", "Difference", "Reconciled",
+]
+# Opening, Sales, Credit Notes, Debit Notes, Receipts, Journals,
+# Closing (Workings), Closing (TB/Tally), Difference.
+_TB_CROSS_CHECK_MONEY_COLUMNS = [4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+
+def build_tb_cross_check_workbook(rows: list, from_date, to_date) -> Workbook:
+    """rows: the WeeklySnapshotRow list the tb_cross_check_report route
+    already scoped to [from_date, to_date] for the on-screen table - the
+    complete report, mismatches and clean rows alike, in the same order
+    the Maker was just looking at it, so they can apply their own filter
+    in Excel rather than getting only the pre-filtered unreconciled list
+    (see build_unreconciled_parties_workbook, a separate, narrower export).
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "TB Cross-Check"
+    ws.append([f"TB Reconciliation Cross-Check - {from_date} to {to_date}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, _TB_CROSS_CHECK_HEADERS)
+
+    for row in rows:
+        ws.append(
+            [
+                row.party_id, row.branch_id, row.week_ending,
+                float(row.opening), float(row.sales), float(row.credit_notes), float(row.debit_notes),
+                float(row.receipts), float(row.journals),
+                float(row.closing_computed), float(row.closing_extracted), float(row.difference),
+                "Yes" if row.reconciled else "No",
+            ]
+        )
+        _apply_inr_format(ws, _TB_CROSS_CHECK_MONEY_COLUMNS)
+    _autosize(ws)
+    return wb
+
+
 def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> Workbook:
     wb = Workbook()
     ws = wb.active

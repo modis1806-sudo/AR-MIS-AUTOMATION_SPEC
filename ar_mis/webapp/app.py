@@ -60,6 +60,7 @@ from ar_mis.register_export import (
     build_credit_note_register_workbook,
     build_receipt_journal_register_workbook,
     build_sales_dn_register_workbook,
+    build_tb_cross_check_workbook,
     build_unreconciled_parties_workbook,
 )
 from ar_mis.registers import (
@@ -1386,6 +1387,42 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness,
             from_date=from_date.isoformat(), to_date=to_date.isoformat(),
+        )
+
+    @app.route("/reports/tb-cross-check/export.xlsx")
+    def tb_cross_check_export():
+        """Client's explicit ask: not just the narrow unreconciled-parties
+        list (export_unreconciled_parties below), but the complete TB
+        Cross-Check table as displayed on screen - every row in the
+        chosen from/to date range, reconciled and mismatched alike - so a
+        Maker can apply their own filter/pivot in Excel instead of being
+        limited to this screen's own search/filter. Uses the exact same
+        from_date/to_date scoping as tb_cross_check_report, so the
+        download always matches what was on screen when it was clicked.
+        """
+        today = date.today()
+        try:
+            from_date = date.fromisoformat(request.args.get("from_date", ""))
+        except ValueError:
+            from_date = financial_year_start(today)
+        try:
+            to_date = date.fromisoformat(request.args.get("to_date", ""))
+        except ValueError:
+            to_date = today
+
+        store = get_store()
+        all_rows = store.all_weekly_snapshot_rows()
+        store.close()
+
+        rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
+        wb = build_tb_cross_check_workbook(rows, from_date, to_date)
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True,
+            download_name=f"TB_Cross_Check_{from_date.isoformat()}_to_{to_date.isoformat()}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     @app.route("/reports/tb-cross-check/export-unreconciled")

@@ -1974,6 +1974,40 @@ def test_tb_cross_check_offers_export_link_only_when_something_is_mismatched(cli
     assert b"Export list" in mismatched.data
 
 
+def test_tb_cross_check_offers_export_to_excel_link(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/tb-cross-check")
+    assert b"Export to Excel" in resp.data
+    assert b"/reports/tb-cross-check/export.xlsx" in resp.data
+
+
+def test_tb_cross_check_export_downloads_the_complete_report_not_just_mismatches(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+    from openpyxl import load_workbook
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("CLEAN", "CLEAN", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("BAD", "BAD", "KOL", Decimal("0.00")))
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 5), [],
+        {"CLEAN": Decimal("-1000.00"), "BAD": Decimal("-500.00")},
+    )
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check/export.xlsx?from_date=2026-01-01&to_date=2026-04-05")
+    assert resp.status_code == 200
+    assert resp.mimetype == _XLSX_MIMETYPE
+    assert "TB_Cross_Check" in resp.headers["Content-Disposition"]
+
+    wb = load_workbook(BytesIO(resp.data))
+    ws = wb["TB Cross-Check"]
+    party_col_values = [row[0].value for row in ws.iter_rows(min_row=4)]
+    assert "CLEAN" in party_col_values
+    assert "BAD" in party_col_values
+
+
 def test_export_unreconciled_parties_downloads_a_workbook(client):
     from ar_mis.models import CustomerMasterRecord
     from ar_mis.pipeline import process_branch_data

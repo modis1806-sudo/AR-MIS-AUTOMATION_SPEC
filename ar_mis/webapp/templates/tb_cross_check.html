@@ -44,6 +44,7 @@
 <p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. The table below is scoped to {{ from_date }} to {{ to_date }} for browsing; the tiles never shrink just because a narrower range is on screen. Searching or filtering the table only changes which rows you're looking at — it never touches the three tiles above.</p>
 
 {% if rows %}
+<p style="margin-bottom:8px;"><a class="btn secondary" href="{{ url_for('tb_cross_check_export', from_date=from_date, to_date=to_date) }}">Export to Excel</a></p>
 <div class="table-tools" data-tt="tbcheck">
   <input type="search" data-tt-search placeholder="Search party, branch...">
   <span data-tt-filters></span>
