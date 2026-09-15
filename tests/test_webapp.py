@@ -613,6 +613,35 @@ def test_catch_up_party_form_renders(client):
     assert b'name="anchor_balance"' in resp.data
 
 
+def test_catch_up_party_form_suggests_real_sundry_debtor_ledgers(client, monkeypatch):
+    """Party Name is the identity everything else this tool builds gets
+    keyed to - a typo or a near-duplicate ledger name (see the
+    AARTH ELECTRICALS case) would anchor the wrong party silently. The
+    form should offer the live Sundry Debtors ledger list as suggestions,
+    the same names fetch_ytd_sundry_debtors would validate against on
+    submit, not leave this to free-text recall.
+    """
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientCatchUp)
+    _add_branch(client)
+    resp = client.get("/branches/KOL/catch-up-party")
+    assert resp.status_code == 200
+    assert b'list="sundry-debtor-ledgers"' in resp.data
+    assert b"Narendra Trading Company" in resp.data
+    assert b"Other Existing Party" in resp.data
+
+
+def test_catch_up_party_form_degrades_gracefully_when_tally_unreachable(client):
+    """No monkeypatch here - the real TallyClient hits a nothing-listening
+    localhost port, so this proves the form still renders (with a plain
+    text fallback) rather than crashing the page.
+    """
+    _add_branch(client)
+    resp = client.get("/branches/KOL/catch-up-party")
+    assert resp.status_code == 200
+    assert b'name="party_name"' in resp.data
+    assert b"Could not reach Tally" in resp.data
+
+
 def test_catch_up_party_reconciles_clean_and_builds_the_register_row(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientCatchUp)
     _add_branch(client)

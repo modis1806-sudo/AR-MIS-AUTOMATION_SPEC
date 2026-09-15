@@ -16,7 +16,15 @@
 <div class="card">
 <form method="post">
   <label>Party Name (exactly as it appears in Tally)</label>
-  <input name="party_name" required placeholder="e.g. Narendra Trading Company" value="{{ prefill_party_name or '' }}">
+  <input name="party_name" required placeholder="e.g. Narendra Trading Company" value="{{ prefill_party_name or '' }}" list="sundry-debtor-ledgers" autocomplete="off">
+  {% if ledger_names|default([]) %}
+  <datalist id="sundry-debtor-ledgers">
+    {% for name in ledger_names %}<option value="{{ name }}">{% endfor %}
+  </datalist>
+  <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">Suggestions are the real Sundry Debtor ledgers in Tally right now. If the party you want isn't in the list, step 1 above (fixing the ledger's group) hasn't taken effect yet - don't type the name anyway.</p>
+  {% elif tally_error %}
+  <p style="font-size:12px;color:#b91c1c;margin:4px 0 0;">Could not reach Tally to suggest ledger names ({{ tally_error }}) - type the name exactly as it appears there.</p>
+  {% endif %}
 
   <label>Balance as of (the anchor date)</label>
   <input type="date" name="anchor_date" required>

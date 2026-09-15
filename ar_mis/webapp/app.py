@@ -392,9 +392,19 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         if request.method == "GET":
             store.close()
+            today = date.today()
+            ledger_names: list[str] = []
+            tally_error = None
+            try:
+                client = TallyClient(branch=branch)
+                client.confirm_current_company()
+                ledger_names = sorted(client.fetch_ytd_sundry_debtors(financial_year_start(today), today))
+            except (CompanyMismatchError, TallyConnectionError) as exc:
+                tally_error = str(exc)
             return render_template(
-                "catch_up_party.html", branch=branch, today=date.today().isoformat(),
+                "catch_up_party.html", branch=branch, today=today.isoformat(),
                 prefill_party_name=request.args.get("party_name", ""),
+                ledger_names=ledger_names, tally_error=tally_error,
             )
 
         party_name = request.form.get("party_name", "").strip()
