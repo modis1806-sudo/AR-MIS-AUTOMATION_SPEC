@@ -1859,6 +1859,8 @@ def test_tb_cross_check_has_search_filter_and_selection_scaffolding(client):
     assert b'data-tt-filter data-tt-col="branch"' in resp.data
     assert b'data-tt-filter data-tt-col="reconciled"' in resp.data
     assert b'data-tt-sum="tbcheck:difference"' in resp.data
+    assert b'data-tt-sum="tbcheck:closing_tb"' in resp.data
+    assert b'data-tt-col="closing_tb"' in resp.data
     assert b"data-tt-select-all" in resp.data
     assert b"data-tt-row-select" in resp.data
 

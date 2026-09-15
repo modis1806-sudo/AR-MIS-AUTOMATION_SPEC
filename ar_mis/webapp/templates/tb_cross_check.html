@@ -50,6 +50,7 @@
   <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
   <span class="tt-count" data-tt-count></span>
   <span class="tt-selected" data-tt-selected-count>0 selected</span>
+  <span class="tt-count">Total Debtor (TB) of these rows: <strong data-tt-sum="tbcheck:closing_tb">0.00</strong></span>
   <span class="tt-count">Difference of these rows: <strong data-tt-sum="tbcheck:difference">0.00</strong></span>
 </div>
 {% endif %}
@@ -78,7 +79,7 @@
       <td>{{ row.receipts|inr }}</td>
       <td>{{ row.journals|inr }}</td>
       <td>{{ row.closing_computed|inr }}</td>
-      <td>{{ row.closing_extracted|inr }}</td>
+      <td data-tt-col="closing_tb" data-value="{{ row.closing_extracted }}">{{ row.closing_extracted|inr }}</td>
       <td data-tt-col="difference" data-value="{{ row.difference }}" {% if row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>{{ row.difference|inr }}</td>
       <td data-tt-col="reconciled">{% if row.reconciled %}<span class="pill ok">Yes</span>{% else %}<span class="pill fail">No</span>{% endif %}</td>
     </tr>
