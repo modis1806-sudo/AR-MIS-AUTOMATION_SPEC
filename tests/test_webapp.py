@@ -2012,6 +2012,104 @@ def test_export_unreconciled_parties_excludes_reconciled_parties(client):
     assert party_ids == ["BAD"]
 
 
+# ---- Reports: AR Concentration Risk ----------------------------------------
+
+
+def test_concentration_risk_renders_with_no_data(client):
+    resp = client.get("/reports/concentration-risk")
+    assert resp.status_code == 200
+    assert b"AR Concentration Risk" in resp.data
+    assert b"No parties on record yet" in resp.data
+
+
+def test_concentration_risk_shows_total_ar_and_ranked_parties(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("BIG", "BIG", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("SMALL", "SMALL", "KOL", Decimal("0.00")))
+    # closing_extracted must already be post-sign-flip (Section 2.3) by the
+    # time it reaches process_branch_data - Dr positive, a real debtor.
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 5), [],
+        {"BIG": Decimal("9000.00"), "SMALL": Decimal("1000.00")},
+    )
+    store.close()
+
+    resp = client.get("/reports/concentration-risk?as_of=2026-04-05")
+    assert resp.status_code == 200
+    assert b"10,000.00" in resp.data  # Total AR
+    text = resp.data.decode()
+    assert text.index("BIG") < text.index("SMALL")  # ranked largest first
+    assert b"90.00%" in resp.data
+
+
+def test_concentration_risk_matches_tb_cross_checks_total_debtor_figure(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("125000.00")})
+    store.close()
+
+    tb = client.get("/reports/tb-cross-check?to_date=2026-04-05")
+    conc = client.get("/reports/concentration-risk?as_of=2026-04-05")
+    assert b"1,25,000.00" in tb.data
+    assert b"1,25,000.00" in conc.data
+
+
+def test_concentration_risk_respects_top_n_selection(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    for i in range(1, 8):
+        store.upsert_customer_master(CustomerMasterRecord(f"P{i}", f"P{i}", "KOL", Decimal("0.00")))
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 5), [],
+        {f"P{i}": Decimal(str(i * 1000)) for i in range(1, 8)},
+    )
+    store.close()
+
+    resp = client.get("/reports/concentration-risk?as_of=2026-04-05&top_n=5")
+    text = resp.data.decode()
+    # Top 5 by outstanding are P7..P3 - P1 and P2 must not appear in the ranked table.
+    assert "P7" in text and "P3" in text
+    assert ">P1<" not in text and ">P2<" not in text
+
+
+def test_concentration_risk_has_search_filter_scaffolding(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("1000.00")})
+    store.close()
+
+    resp = client.get("/reports/concentration-risk?as_of=2026-04-05")
+    assert b'data-tt="concrisk"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+
+
+def test_reports_home_links_to_concentration_risk(client):
+    resp = client.get("/reports")
+    assert b"AR Concentration Risk" in resp.data
+
+
+def test_concentration_risk_reachable_by_checker(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.get("/reports/concentration-risk")
+    assert resp.status_code == 200
+
+
 # ---- Reports: Branch Sales + CN + DN Total ---------------------------------
 
 

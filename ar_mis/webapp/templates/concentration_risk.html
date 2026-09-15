@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Concentration Risk{% endblock %}
+{% block content %}
+<h1>AR Concentration Risk</h1>
+<p class="subtitle">Are receivables spread across many customers, or does a handful of them make up most of the exposure — a risk in its own right, independent of whether any of them are currently overdue. Ranked by each party's own current Tally closing balance (Section 2.3 sign convention: Dr positive), so a credit-balance party sorts to the bottom rather than inflating anyone's share. Total AR here is the same figure as TB Cross-Check's own "Total Debtor as per Books" tile — this screen never disagrees with that one.</p>
+
+{% include "_freshness.html" %}
+
+<form class="as-of-form" method="get">
+  <div>
+    <label for="as_of">As of</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
+  </div>
+  <div>
+    <label for="top_n">Show top</label>
+    <select id="top_n" name="top_n">
+      <option value="5" {% if top_n == 5 %}selected{% endif %}>5</option>
+      <option value="10" {% if top_n == 10 %}selected{% endif %}>10</option>
+      <option value="20" {% if top_n == 20 %}selected{% endif %}>20</option>
+    </select>
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
+<div class="kpi-grid" style="margin-bottom:20px;">
+  <div class="kpi-tile">
+    <div class="kpi-label">Total AR</div>
+    <div class="kpi-value">{{ summary.total_ar|inr }}</div>
+    <div class="kpi-caption">As of {{ as_of }} — every party's latest Tally closing on or before this date, summed.</div>
+  </div>
+  <div class="kpi-tile {{ 'warn' if summary.top_n_percent >= 50 else '' }}">
+    <div class="kpi-label">Top {{ top_n }} = % of Total AR</div>
+    <div class="kpi-value">{{ "%.2f"|format(summary.top_n_percent) }}%</div>
+    <div class="kpi-caption">{{ summary.top_n_total|inr }} across the top {{ top_n }} parties shown below.</div>
+  </div>
+</div>
+
+{% if summary.top_parties %}
+<div class="table-tools" data-tt="concrisk">
+  <input type="search" data-tt-search placeholder="Search party, branch...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+</div>
+{% endif %}
+<div class="table-scroll">
+<table data-tt-table="concrisk">
+  <thead>
+    <tr>
+      <th>Rank</th><th>Party</th><th data-tt-filter data-tt-col="branch">Branch</th>
+      <th>Outstanding</th><th>% of Total AR</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in summary.top_parties %}
+    <tr data-tt-row>
+      <td>{{ loop.index }}</td>
+      <td>{{ p.party_id }}</td>
+      <td data-tt-col="branch">{{ p.branch_id }}</td>
+      <td>{{ p.outstanding|inr }}</td>
+      <td {% if p.percent_of_total >= 10 %}style="color:#b45309; font-weight:600;"{% endif %}>{{ "%.2f"|format(p.percent_of_total) }}%</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">No parties on record yet — run an extraction first.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

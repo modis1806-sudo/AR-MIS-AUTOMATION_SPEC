@@ -50,7 +50,11 @@ from ar_mis.drift_correction import (
 )
 from ar_mis.pipeline import process_branch_data
 from ar_mis.reconciliation import isolate_drift
-from ar_mis.reconciliation_report import compute_tb_cross_check_summary, compute_unreconciled_parties
+from ar_mis.reconciliation_report import (
+    compute_concentration_risk,
+    compute_tb_cross_check_summary,
+    compute_unreconciled_parties,
+)
 from ar_mis.seed import BRANCH_SCOPED_CSV_TEMPLATE, parse_seed_rows_for_branch, seed as seed_pre_mis
 from ar_mis.register_export import (
     build_credit_note_register_workbook,
@@ -1412,6 +1416,40 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return send_file(
             buf, as_attachment=True, download_name=f"Unreconciled_Parties_{to_date.isoformat()}.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    @app.route("/reports/concentration-risk")
+    def concentration_risk_report():
+        """AR concentration risk (client's explicit ask): are receivables
+        spread across many customers, or does a handful of them make up
+        most of the exposure - a risk in its own right, independent of
+        whether any of them happen to be overdue right now. Uses the
+        exact same latest-per-party-as-of-`as_of` reduction and the same
+        closing_extracted figure as TB Cross-Check's own "Total Debtor
+        as per Books" tile, so this screen's Total AR can never quietly
+        disagree with that one.
+        """
+        today = date.today()
+        try:
+            as_of = date.fromisoformat(request.args.get("as_of", ""))
+        except ValueError:
+            as_of = today
+        try:
+            top_n = int(request.args.get("top_n", "10"))
+        except ValueError:
+            top_n = 10
+        if top_n not in (5, 10, 20):
+            top_n = 10
+
+        store = get_store()
+        all_rows = store.all_weekly_snapshot_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        summary = compute_concentration_risk(all_rows, as_of=as_of, top_n=top_n)
+        return render_template(
+            "concentration_risk.html", summary=summary, freshness=freshness,
+            as_of=as_of.isoformat(), top_n=top_n,
         )
 
     @app.route("/reports/branch-totals")

@@ -29,6 +29,22 @@ class TBCrossCheckSummary:
     total_debtor_as_per_books: Decimal
 
 
+@dataclass
+class ConcentrationRiskParty:
+    party_id: str
+    branch_id: str
+    outstanding: Decimal
+    percent_of_total: Decimal
+
+
+@dataclass
+class ConcentrationRiskSummary:
+    total_ar: Decimal
+    top_parties: list[ConcentrationRiskParty]
+    top_n_total: Decimal
+    top_n_percent: Decimal
+
+
 def _latest_per_party(rows: list[WeeklySnapshotRow], as_of: date | None) -> list[WeeklySnapshotRow]:
     """Shared reduction behind both compute_tb_cross_check_summary and
     compute_unreconciled_parties - only each party's most recently
@@ -98,3 +114,50 @@ def compute_unreconciled_parties(
     mismatched = [r for r in latest if not r.reconciled]
     mismatched.sort(key=lambda r: abs(r.difference), reverse=True)
     return mismatched
+
+
+def compute_concentration_risk(
+    rows: list[WeeklySnapshotRow], as_of: date | None = None, top_n: int = 10
+) -> ConcentrationRiskSummary:
+    """AR concentration risk (client's explicit ask): are receivables
+    spread across many customers, or does a handful of them make up most
+    of the exposure - a real risk in its own right, independent of
+    whether any of them are currently overdue.
+
+    Same latest-per-party-as-of-`as_of` reduction, and the same
+    `closing_extracted` figure (Tally's own stated truth, never this
+    app's own workings), as compute_tb_cross_check_summary's
+    `total_debtor_as_per_books` - deliberately, so this screen's "Total
+    AR" can never quietly disagree with the number already shown on TB
+    Cross-Check. Ranked by each party's own signed outstanding (Dr
+    positive/Cr negative, Section 2.3) descending, so real debtors lead
+    and a credit-balance party sorts to the bottom rather than
+    inflating anyone's concentration figure.
+
+    `percent_of_total` is computed against the full `total_ar` (every
+    party, not just the ones shown) - a party can be a startling
+    percentage of a small total AR base even while sitting well down
+    the absolute-amount ranking, so the percentage always reflects
+    reality, never just the visible top_n slice.
+    """
+    latest = _latest_per_party(rows, as_of)
+    total_ar = sum((r.closing_extracted for r in latest), Decimal("0.00"))
+    ranked = sorted(latest, key=lambda r: r.closing_extracted, reverse=True)[:top_n]
+
+    def _percent(amount: Decimal) -> Decimal:
+        if total_ar == 0:
+            return Decimal("0.00")
+        return (amount / total_ar * 100).quantize(Decimal("0.01"))
+
+    top_parties = [
+        ConcentrationRiskParty(
+            party_id=r.party_id, branch_id=r.branch_id,
+            outstanding=r.closing_extracted, percent_of_total=_percent(r.closing_extracted),
+        )
+        for r in ranked
+    ]
+    top_n_total = sum((p.outstanding for p in top_parties), Decimal("0.00"))
+    return ConcentrationRiskSummary(
+        total_ar=total_ar, top_parties=top_parties,
+        top_n_total=top_n_total, top_n_percent=_percent(top_n_total),
+    )

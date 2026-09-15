@@ -2,7 +2,11 @@ from datetime import date
 from decimal import Decimal
 
 from ar_mis.models import WeeklySnapshotRow
-from ar_mis.reconciliation_report import compute_tb_cross_check_summary, compute_unreconciled_parties
+from ar_mis.reconciliation_report import (
+    compute_concentration_risk,
+    compute_tb_cross_check_summary,
+    compute_unreconciled_parties,
+)
 
 
 def _row(party_id, branch_id, week_ending, reconciled, difference, closing_extracted=Decimal("0.00")):
@@ -155,3 +159,82 @@ def test_unreconciled_parties_respects_as_of():
     ]
     assert compute_unreconciled_parties(rows, as_of=date(2026, 1, 12)) == []
     assert len(compute_unreconciled_parties(rows, as_of=date(2026, 1, 19))) == 1
+
+
+# ---- Concentration Risk (client's explicit ask) --------------------------
+
+
+def test_concentration_risk_empty_history():
+    summary = compute_concentration_risk([])
+    assert summary.total_ar == Decimal("0.00")
+    assert summary.top_parties == []
+    assert summary.top_n_total == Decimal("0.00")
+    assert summary.top_n_percent == Decimal("0.00")
+
+
+def test_concentration_risk_ranks_by_outstanding_descending():
+    rows = [
+        _row("SMALL", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("1000.00")),
+        _row("BIG", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("9000.00")),
+        _row("MEDIUM", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("5000.00")),
+    ]
+    summary = compute_concentration_risk(rows, top_n=10)
+    assert [p.party_id for p in summary.top_parties] == ["BIG", "MEDIUM", "SMALL"]
+    assert summary.total_ar == Decimal("15000.00")
+
+
+def test_concentration_risk_percent_of_total_is_correct():
+    rows = [
+        _row("A", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("7500.00")),
+        _row("B", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("2500.00")),
+    ]
+    summary = compute_concentration_risk(rows, top_n=10)
+    a = next(p for p in summary.top_parties if p.party_id == "A")
+    b = next(p for p in summary.top_parties if p.party_id == "B")
+    assert a.percent_of_total == Decimal("75.00")
+    assert b.percent_of_total == Decimal("25.00")
+    assert summary.top_n_total == Decimal("10000.00")
+    assert summary.top_n_percent == Decimal("100.00")
+
+
+def test_concentration_risk_respects_top_n_limit():
+    rows = [
+        _row(f"P{i}", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal(str(i * 100)))
+        for i in range(1, 6)
+    ]
+    summary = compute_concentration_risk(rows, top_n=2)
+    assert len(summary.top_parties) == 2
+    assert [p.party_id for p in summary.top_parties] == ["P5", "P4"]
+    # top_n_percent reflects only the top 2, but against the FULL total AR.
+    full_total = sum(Decimal(str(i * 100)) for i in range(1, 6))
+    assert summary.total_ar == full_total
+    assert summary.top_n_total == Decimal("900.00")  # 500 + 400
+
+
+def test_concentration_risk_uses_only_the_latest_week_per_party():
+    rows = [
+        _row("A", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("1000.00")),
+        _row("A", "KOL", date(2026, 1, 12), True, Decimal("0.00"), closing_extracted=Decimal("4000.00")),
+    ]
+    summary = compute_concentration_risk(rows)
+    assert summary.total_ar == Decimal("4000.00")
+    assert summary.top_parties[0].outstanding == Decimal("4000.00")
+
+
+def test_concentration_risk_as_of_excludes_a_week_recorded_after_that_date():
+    rows = [
+        _row("A", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("1000.00")),
+        _row("A", "KOL", date(2026, 1, 19), True, Decimal("0.00"), closing_extracted=Decimal("4000.00")),
+    ]
+    summary = compute_concentration_risk(rows, as_of=date(2026, 1, 12))
+    assert summary.total_ar == Decimal("1000.00")
+
+
+def test_concentration_risk_credit_balance_party_sorts_to_the_bottom_not_inflated():
+    rows = [
+        _row("DEBTOR", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("5000.00")),
+        _row("CREDIT_BAL", "KOL", date(2026, 1, 5), True, Decimal("0.00"), closing_extracted=Decimal("-2000.00")),
+    ]
+    summary = compute_concentration_risk(rows, top_n=10)
+    assert [p.party_id for p in summary.top_parties] == ["DEBTOR", "CREDIT_BAL"]
+    assert summary.total_ar == Decimal("3000.00")
