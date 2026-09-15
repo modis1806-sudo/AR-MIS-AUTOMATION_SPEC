@@ -387,7 +387,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         if request.method == "GET":
             store.close()
-            return render_template("catch_up_party.html", branch=branch, today=date.today().isoformat())
+            return render_template(
+                "catch_up_party.html", branch=branch, today=date.today().isoformat(),
+                prefill_party_name=request.args.get("party_name", ""),
+            )
 
         party_name = request.form.get("party_name", "").strip()
         raw_anchor_date = request.form.get("anchor_date", "")
@@ -1519,6 +1522,48 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         else:
             flash(f"Voucher incorporated under week ending {week_ending.isoformat()} - reconciled clean.", "success")
         return redirect(url_for("drift_findings_report"))
+
+    @app.route("/reports/register-exceptions")
+    def register_exceptions_review():
+        """Durable review log for "vouchers not added to a register"
+        (registers.RegisterBuildExceptions) - the same real gap Drift
+        Findings fixed for backdated entries, now fixed here too: this
+        was previously shown once on the result page of the run that
+        found it, then gone. Two dispositions, mirroring Drift Findings'
+        own acknowledge/incorporate split: "reviewed, no action needed"
+        (the exclusion is genuinely correct, e.g. a real Sundry Creditor)
+        or "resolved via catch-up" (the party was onboarded through
+        Catch Up a Party - this only records that the call was made).
+        """
+        store = get_store()
+        records = store.all_register_build_exceptions()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        open_count = sum(1 for r in records if r.status == "open")
+        return render_template(
+            "register_exceptions.html", records=records, open_count=open_count, freshness=freshness,
+        )
+
+    @app.route("/reports/register-exceptions/<int:exception_id>/review", methods=["POST"])
+    @requires_role("maker")
+    def register_exception_review_submit(exception_id):
+        status = request.form.get("status", "")
+        reviewed_by = request.form.get("reviewed_by", "").strip()
+        reviewed_note = request.form.get("reviewed_note", "").strip()
+
+        if status not in ("reviewed_no_action", "resolved_via_catchup"):
+            flash("Choose a valid review outcome.", "error")
+            return redirect(url_for("register_exceptions_review"))
+        if not reviewed_by:
+            flash("Enter your name to review an exception.", "error")
+            return redirect(url_for("register_exceptions_review"))
+
+        store = get_store()
+        store.review_register_build_exception(exception_id, status, reviewed_by, datetime.now(), reviewed_note)
+        store.close()
+        flash("Exception reviewed.", "success")
+        return redirect(url_for("register_exceptions_review"))
 
     return app
 

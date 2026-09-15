@@ -3,7 +3,7 @@ pages. Test Extraction hits ar_mis.tally_client.TallyClient, which is
 monkeypatched here the same way test_cli.py does - no live Tally is
 reachable from this build environment (see README).
 """
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -1079,6 +1079,136 @@ def test_manual_upload_shows_register_build_exceptions_for_non_debtor_journal(cl
     assert b"RECONCILED CLEAN" in resp.data
     assert b"JV/9001" in resp.data
     assert b"No leg of this voucher touches a tracked Sundry Debtor" in resp.data
+    assert b"Some Creditor Pvt Ltd" in resp.data  # the voucher's own party hint, not guessed
+
+
+def test_manual_upload_register_build_exception_is_persisted_for_later_review(client):
+    _add_manual_upload_branch(client)
+    _seed_manual_upload_openings(client)
+    sales_xml = (MANUAL_UPLOAD_FIXTURES / "voucher_collection_sales.xml").read_bytes()
+    tb_xml = (MANUAL_UPLOAD_FIXTURES / "ledger_closing_balances.xml").read_bytes()
+    journal_xml = b"""<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260403</DATE>
+  <VOUCHERNUMBER>JV/9001</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Journal</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>Some Creditor Pvt Ltd</PARTYLEDGERNAME>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Some Creditor Pvt Ltd</LEDGERNAME>
+   <AMOUNT>-50000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Bank Loan Account</LEDGERNAME>
+   <AMOUNT>50000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    client.post(
+        "/manual-upload",
+        data={
+            "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+            "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+            "voucher_Journal": (BytesIO(journal_xml), "journal.xml"),
+            "trial_balance": (BytesIO(tb_xml), "tb.xml"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    # Still there after the result page is long gone - the whole point.
+    resp = client.get("/reports/register-exceptions")
+    assert resp.status_code == 200
+    assert b"JV/9001" in resp.data
+    assert b"Some Creditor Pvt Ltd" in resp.data
+    assert b"Open" in resp.data
+
+
+def test_register_exception_can_be_reviewed_as_no_action(client):
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_register_build_exceptions(
+        "KOL", date(2026, 4, 7), [("JV/9001", "Some Creditor Pvt Ltd", "No leg of this voucher touches a tracked Sundry Debtor")],
+        datetime(2026, 4, 7, 9, 0, 0),
+    )
+    exception_id = store.all_register_build_exceptions()[0].id
+    store.close()
+
+    resp = client.post(
+        f"/reports/register-exceptions/{exception_id}/review",
+        data={"status": "reviewed_no_action", "reviewed_by": "Priya", "reviewed_note": "Genuine creditor"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Exception reviewed" in resp.data
+    assert b"Reviewed" in resp.data
+    assert b"Genuine creditor" in resp.data
+
+
+def test_register_exception_review_requires_a_name(client):
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    exception_id = store.all_register_build_exceptions()[0].id
+    store.close()
+
+    resp = client.post(
+        f"/reports/register-exceptions/{exception_id}/review",
+        data={"status": "reviewed_no_action", "reviewed_by": ""},
+        follow_redirects=True,
+    )
+    assert b"Enter your name" in resp.data
+
+
+def test_register_exceptions_review_has_search_filter_and_selection_scaffolding(client):
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    store.close()
+
+    resp = client.get("/reports/register-exceptions")
+    assert b'data-tt="regexceptions"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+    assert b'data-tt-filter data-tt-col="status"' in resp.data
+    assert b"data-tt-select-all" in resp.data
+    assert b"data-tt-row-select" in resp.data
+
+
+def test_register_exceptions_review_reachable_by_checker(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.get("/reports/register-exceptions")
+    assert resp.status_code == 200
+
+
+def test_checker_cannot_submit_a_register_exception_review(roleless_client):
+    from ar_mis.storage import Store
+
+    store = Store(roleless_client.application.config["DB_PATH"])
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    exception_id = store.all_register_build_exceptions()[0].id
+    store.close()
+
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.post(
+        f"/reports/register-exceptions/{exception_id}/review",
+        data={"status": "reviewed_no_action", "reviewed_by": "Priya"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"available for your role" in resp.data
+
+
+def test_register_exceptions_review_links_to_catch_up_party_prefilled(client):
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("SB/1", "Narendra Trading Company", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    store.close()
+
+    resp = client.get("/reports/register-exceptions")
+    assert b"/branches/KOL/catch-up-party?party_name=Narendra+Trading+Company" in resp.data
 
 
 def test_manual_upload_refuses_when_already_recorded(client):

@@ -443,3 +443,38 @@ class FYRolloverSnapshot:
     open_amount_at_rollover: Decimal
     rolled_over_by: str
     rolled_over_at: date
+
+
+@dataclass(frozen=True)
+class RegisterBuildExceptionRecord:
+    """A registers.RegisterBuildExceptions.unattributable_party entry as
+    persisted (Store.append_register_build_exceptions) - the same real
+    gap DriftFindingRecord fixed for backdated entries, now fixed here
+    too: this was previously shown once on the result page of the run
+    that found it, then gone.
+
+    `status` is a human review marker, exactly like DriftFindingRecord's
+    own `acknowledged`/`incorporated` split - an audit trail only, never
+    itself touching weekly_snapshot or any register:
+      - "open": not yet reviewed.
+      - "reviewed_no_action": a human checked Tally and confirmed the
+        exclusion is genuinely correct (e.g. the ledger really is a
+        Sundry Creditor) - zero effect on any figure, just a record that
+        someone looked.
+      - "resolved_via_catchup": the party was onboarded through Catch Up
+        a Party (ar_mis.webapp.app.catch_up_party) - the real fix is
+        that separate run; this only records that the call was made,
+        by whom, and why (`reviewed_note`).
+    """
+
+    id: int
+    branch_id: str
+    week_ending: date
+    voucher_number: str
+    party_ledger_name: str
+    reason: str
+    logged_at: datetime
+    status: str = "open"
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    reviewed_note: str | None = None

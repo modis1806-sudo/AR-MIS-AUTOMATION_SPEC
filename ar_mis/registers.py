@@ -80,7 +80,10 @@ class RegisterBuildExceptions:
     """Vouchers this module could not confidently place into a register,
     collected rather than silently dropped or guessed at - matching this
     whole system's "never silent" principle. Each entry is a
-    (voucher_number, reason) pair.
+    (voucher_number, party_ledger_name, reason) triple - party_ledger_name
+    is "" when the voucher itself carries no usable party hint (no
+    PARTYLEDGERNAME at all, or more than one tracked debtor touched),
+    never guessed at just to fill the field.
     """
 
     unattributable_party: list[tuple[str, str]]
@@ -120,7 +123,7 @@ def build_sales_dn_register_row(
 
     if not voucher.party_ledger_name:
         exceptions.unattributable_party.append(
-            (voucher.voucher_number, "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
+            (voucher.voucher_number, "", "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
         )
         return None
 
@@ -231,13 +234,16 @@ def build_credit_note_register_row(
     matched_parties = {e.party_ledger_name for e in voucher.entries if e.party_ledger_name in tracked_party_names}
     if not matched_parties:
         exceptions.unattributable_party.append(
-            (voucher.voucher_number, "No leg of this voucher touches a tracked Sundry Debtor - not a customer credit note")
+            (
+                voucher.voucher_number, voucher.party_ledger_name or "",
+                "No leg of this voucher touches a tracked Sundry Debtor - not a customer credit note",
+            )
         )
         return None
     if len(matched_parties) > 1:
         exceptions.unattributable_party.append(
             (
-                voucher.voucher_number,
+                voucher.voucher_number, "",
                 f"Touches multiple tracked debtors ({', '.join(sorted(matched_parties))}) in one voucher - "
                 "needs a human look, not a guess",
             )
@@ -313,14 +319,14 @@ def build_receipt_journal_register_rows(
     matched_entries = [e for e in voucher.entries if e.party_ledger_name in tracked_party_names]
     if not matched_entries:
         exceptions.unattributable_party.append(
-            (voucher.voucher_number, "No leg of this voucher touches a tracked Sundry Debtor")
+            (voucher.voucher_number, voucher.party_ledger_name or "", "No leg of this voucher touches a tracked Sundry Debtor")
         )
         return []
     matched_parties = {e.party_ledger_name for e in matched_entries}
     if len(matched_parties) > 1:
         exceptions.unattributable_party.append(
             (
-                voucher.voucher_number,
+                voucher.voucher_number, "",
                 f"Touches multiple tracked debtors ({', '.join(sorted(matched_parties))}) in one voucher - "
                 "needs a human look, not a guess",
             )

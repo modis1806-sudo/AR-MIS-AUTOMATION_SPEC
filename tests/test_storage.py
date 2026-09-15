@@ -1026,3 +1026,64 @@ def test_delete_branch_week_removes_only_that_weeks_drift_findings(store):
 
     remaining = store.all_drift_findings()
     assert [r.finding.voucher_number for r in remaining] == ["SB/BACKDATED"]
+
+
+# ---- Register Build Exceptions (review log) --------------------------
+
+
+def test_append_and_read_back_register_build_exceptions(store):
+    store.append_register_build_exceptions(
+        "KOL", date(2026, 4, 5),
+        [("SB/0142", "Ghost Party", "No customer_master record for 'Ghost Party'")],
+        datetime(2026, 4, 7, 9, 0, 0),
+    )
+    records = store.all_register_build_exceptions()
+    assert len(records) == 1
+    r = records[0]
+    assert r.branch_id == "KOL"
+    assert r.week_ending == date(2026, 4, 5)
+    assert r.voucher_number == "SB/0142"
+    assert r.party_ledger_name == "Ghost Party"
+    assert r.reason == "No customer_master record for 'Ghost Party'"
+    assert r.logged_at == datetime(2026, 4, 7, 9, 0, 0)
+    assert r.status == "open"
+    assert r.reviewed_by is None
+
+
+def test_append_register_build_exceptions_handles_empty_party_name(store):
+    store.append_register_build_exceptions(
+        "KOL", date(2026, 4, 5),
+        [("SB/0999", "", "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")],
+        datetime(2026, 4, 7, 9, 0, 0),
+    )
+    records = store.all_register_build_exceptions()
+    assert records[0].party_ledger_name == ""
+
+
+def test_all_register_build_exceptions_open_ones_come_first(store):
+    store.append_register_build_exceptions("KOL", date(2026, 4, 5), [("SB/1", "P1", "reason 1")], datetime(2026, 4, 7, 9, 0))
+    store.append_register_build_exceptions("KOL", date(2026, 4, 12), [("SB/2", "P2", "reason 2")], datetime(2026, 4, 14, 9, 0))
+    records = store.all_register_build_exceptions()
+    reviewed_id = next(r.id for r in records if r.voucher_number == "SB/1")
+    store.review_register_build_exception(reviewed_id, "reviewed_no_action", "Priya", datetime(2026, 4, 15, 9, 0), "genuine SC")
+
+    records = store.all_register_build_exceptions()
+    assert records[0].voucher_number == "SB/2"  # still-open one leads
+    assert records[0].status == "open"
+    assert records[1].voucher_number == "SB/1"
+    assert records[1].status == "reviewed_no_action"
+
+
+def test_review_register_build_exception_records_disposition(store):
+    store.append_register_build_exceptions("KOL", date(2026, 4, 5), [("SB/1", "Narendra Trading Company", "reason")], datetime(2026, 4, 7, 9, 0))
+    exception_id = store.all_register_build_exceptions()[0].id
+
+    store.review_register_build_exception(
+        exception_id, "resolved_via_catchup", "Priya", datetime(2026, 4, 20, 11, 0), "Onboarded via Catch Up a Party"
+    )
+
+    record = store.all_register_build_exceptions()[0]
+    assert record.status == "resolved_via_catchup"
+    assert record.reviewed_by == "Priya"
+    assert record.reviewed_at == datetime(2026, 4, 20, 11, 0)
+    assert record.reviewed_note == "Onboarded via Catch Up a Party"

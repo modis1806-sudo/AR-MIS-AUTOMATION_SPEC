@@ -71,13 +71,14 @@
     {% if result.outcome.register_build_exceptions %}
     <p style="font-weight:600; margin-top:16px;">Vouchers not added to a register (reconciliation is unaffected — these never touched a tracked customer's balance):</p>
     <table>
-      <thead><tr><th>Voucher</th><th>Reason</th></tr></thead>
+      <thead><tr><th>Voucher</th><th>Party</th><th>Reason</th></tr></thead>
       <tbody>
-      {% for voucher_number, reason in result.outcome.register_build_exceptions %}
-        <tr><td>{{ voucher_number }}</td><td>{{ reason }}</td></tr>
+      {% for voucher_number, party_ledger_name, reason in result.outcome.register_build_exceptions %}
+        <tr><td>{{ voucher_number }}</td><td>{{ party_ledger_name or '—' }}</td><td>{{ reason }}</td></tr>
       {% endfor %}
       </tbody>
     </table>
+    <p style="font-size:12px;color:#6b7280;">Once checked against Tally, review these permanently in <a href="{{ url_for('register_exceptions_review') }}">Register Exceptions Review</a>.</p>
     {% endif %}
 
     {% if result.drift_findings %}

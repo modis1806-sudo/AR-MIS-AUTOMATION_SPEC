@@ -16,7 +16,7 @@
 <div class="card">
 <form method="post">
   <label>Party Name (exactly as it appears in Tally)</label>
-  <input name="party_name" required placeholder="e.g. Narendra Trading Company">
+  <input name="party_name" required placeholder="e.g. Narendra Trading Company" value="{{ prefill_party_name or '' }}">
 
   <label>Balance as of (the anchor date)</label>
   <input type="date" name="anchor_date" required>

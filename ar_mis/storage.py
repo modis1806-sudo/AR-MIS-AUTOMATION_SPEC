@@ -36,6 +36,7 @@ from ar_mis.models import (
     PTPStatus,
     PTPStatusLogRow,
     ReceiptJournalRegisterRow,
+    RegisterBuildExceptionRecord,
     RegisterClassification,
     SalesDNRegisterRow,
     Voucher,
@@ -63,7 +64,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -374,6 +375,36 @@ ALTER TABLE drift_finding ADD COLUMN incorporated_week_ending TEXT;
     9: """
 ALTER TABLE weekly_snapshot ADD COLUMN period_start TEXT;
 UPDATE weekly_snapshot SET period_start = date(week_ending, '-6 days') WHERE period_start IS NULL;
+""",
+    # A "vouchers not added to a register" exception (registers.
+    # RegisterBuildExceptions) was previously shown once on the result
+    # page of the run that found it, then gone - the exact same gap
+    # DriftFindingRecord (MIGRATIONS[7]) fixed for backdated entries,
+    # now fixed here too, client's explicit ask this session: a review
+    # workflow needs something durable to review. `status` is a human
+    # audit trail only ("reviewed_no_action"/"resolved_via_catchup"),
+    # like `acknowledged` on drift_finding - it never touches
+    # weekly_snapshot or any register itself; the actual fix for a
+    # "resolved_via_catchup" case is the separate Catch Up a Party run,
+    # this table only records that a human made that call and why. No
+    # UNIQUE constraint (unlike drift_finding): each SAVE run logs its
+    # own truthful snapshot of that run's own exceptions, and a given
+    # voucher_number is only ever seen in the one run whose date range
+    # covers it, so duplicates across runs aren't the real risk here.
+    10: """
+CREATE TABLE IF NOT EXISTS register_build_exception (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    week_ending TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_ledger_name TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    logged_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    reviewed_by TEXT,
+    reviewed_at TEXT,
+    reviewed_note TEXT
+);
 """,
 }
 
@@ -1469,6 +1500,69 @@ class Store:
             "UPDATE drift_finding SET incorporated=1, incorporated_by=?, incorporated_at=?,"
             " incorporated_week_ending=? WHERE id=?",
             (incorporated_by, incorporated_at.isoformat(), week_ending.isoformat(), finding_id),
+        )
+        self.conn.commit()
+
+    def append_register_build_exceptions(
+        self, branch_id: str, week_ending: date, exceptions: list[tuple[str, str, str]], logged_at: datetime
+    ) -> None:
+        """Persists this run's own "vouchers not added to a register"
+        exceptions (registers.RegisterBuildExceptions.unattributable_party
+        - (voucher_number, party_ledger_name, reason) triples) so they can
+        be reviewed later instead of vanishing the moment the result page
+        is closed. Called once per SAVE run (both live extraction and
+        manual upload share process_branch_data, so both get this for
+        free) - always a plain append, never checked against what's
+        already on record, since a given voucher_number only ever falls
+        inside the one run whose date range covers it.
+        """
+        for voucher_number, party_ledger_name, reason in exceptions:
+            self.conn.execute(
+                "INSERT INTO register_build_exception"
+                " (branch_id, week_ending, voucher_number, party_ledger_name, reason, logged_at, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, 'open')",
+                (branch_id, week_ending.isoformat(), voucher_number, party_ledger_name, reason, logged_at.isoformat()),
+            )
+        self.conn.commit()
+
+    def _register_build_exception_from_row(self, r: sqlite3.Row) -> RegisterBuildExceptionRecord:
+        return RegisterBuildExceptionRecord(
+            id=r["id"],
+            branch_id=r["branch_id"],
+            week_ending=date.fromisoformat(r["week_ending"]),
+            voucher_number=r["voucher_number"],
+            party_ledger_name=r["party_ledger_name"],
+            reason=r["reason"],
+            logged_at=datetime.fromisoformat(r["logged_at"]),
+            status=r["status"],
+            reviewed_by=r["reviewed_by"],
+            reviewed_at=datetime.fromisoformat(r["reviewed_at"]) if r["reviewed_at"] else None,
+            reviewed_note=r["reviewed_note"],
+        )
+
+    def all_register_build_exceptions(self) -> list[RegisterBuildExceptionRecord]:
+        """Every persisted exception, open ones first (most actionable),
+        most recently logged first within each group."""
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute(
+            "SELECT * FROM register_build_exception ORDER BY (status != 'open'), logged_at DESC, id DESC"
+        )
+        return [self._register_build_exception_from_row(r) for r in cur.fetchall()]
+
+    def review_register_build_exception(
+        self, exception_id: int, status: str, reviewed_by: str, reviewed_at: datetime, reviewed_note: str
+    ) -> None:
+        """Records a human's disposition of one exception - an audit
+        trail only (exactly like drift_finding's `acknowledged`), never
+        itself touching weekly_snapshot or any register. `status` must be
+        "reviewed_no_action" or "resolved_via_catchup" (never "open" -
+        there is no un-reviewing an exception here, matching every other
+        review marker in this system).
+        """
+        self.conn.execute(
+            "UPDATE register_build_exception SET status=?, reviewed_by=?, reviewed_at=?, reviewed_note=?"
+            " WHERE id=?",
+            (status, reviewed_by, reviewed_at.isoformat(), reviewed_note, exception_id),
         )
         self.conn.commit()
 

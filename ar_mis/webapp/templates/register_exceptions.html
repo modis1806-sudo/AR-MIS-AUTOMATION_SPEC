@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Register Exceptions Review{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<h1>Register Exceptions Review</h1>
+<p class="subtitle">Every voucher that Test &amp; Save Extraction or Manual Upload could not confidently place into a register — kept here permanently instead of vanishing once that run's result page is closed. Two outcomes: "Reviewed, no action" if you've checked Tally and the exclusion is genuinely correct (e.g. a real Sundry Creditor) — zero effect on any figure, just a record that someone looked. "Resolved via catch-up" if the party turned out to be a real Sundry Debtor wrongly excluded — use <a href="{{ url_for('branches_list') }}">Catch Up a Party</a> first to actually fix the data, then come back here and record it.</p>
+
+{% include "_freshness.html" %}
+
+<div class="kpi-grid" style="margin-bottom:20px;">
+  <div class="kpi-tile">
+    <div class="kpi-label">Not yet reviewed</div>
+    <div class="kpi-value" style="{{ 'color:#b91c1c;' if open_count else 'color:#166534;' }}">{{ open_count }}</div>
+  </div>
+</div>
+
+{% if records %}
+<div class="table-tools" data-tt="regexceptions">
+  <input type="search" data-tt-search placeholder="Search party, voucher no...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+</div>
+{% endif %}
+<div class="table-scroll">
+<table data-tt-table="regexceptions">
+  <thead>
+    <tr>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th data-tt-filter data-tt-col="branch">Branch</th><th>Week Ending</th><th>Voucher</th><th>Party</th>
+      <th>Reason</th><th>Logged</th><th data-tt-filter data-tt-col="status">Status</th>
+      {% if session.role == "maker" %}<th>Actions</th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in records %}
+    <tr data-tt-row {% if r.status == 'open' %}style="background:#fef2f2;"{% endif %}>
+      <td><input type="checkbox" data-tt-row-select value="{{ r.id }}"></td>
+      <td data-tt-col="branch">{{ r.branch_id }}</td>
+      <td>{{ r.week_ending }}</td>
+      <td>{{ r.voucher_number }}</td>
+      <td>{{ r.party_ledger_name or '—' }}</td>
+      <td>{{ r.reason }}</td>
+      <td>{{ r.logged_at.strftime('%d %b %Y, %I:%M %p') }}</td>
+      <td data-tt-col="status">
+        {% if r.status == 'reviewed_no_action' %}
+          <span class="pill ok">Reviewed — no action</span>
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">by {{ r.reviewed_by }} on {{ r.reviewed_at.strftime('%d %b %Y') }}{% if r.reviewed_note %} — {{ r.reviewed_note }}{% endif %}</div>
+        {% elif r.status == 'resolved_via_catchup' %}
+          <span class="pill status-active">Resolved via catch-up</span>
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">by {{ r.reviewed_by }} on {{ r.reviewed_at.strftime('%d %b %Y') }}{% if r.reviewed_note %} — {{ r.reviewed_note }}{% endif %}</div>
+        {% else %}
+          <span class="pill fail">Open</span>
+        {% endif %}
+      </td>
+      {% if session.role == "maker" %}
+      <td>
+        {% if r.status == 'open' %}
+        <div style="display:flex; flex-direction:column; gap:8px; min-width:240px;">
+          {% if r.party_ledger_name %}
+          <a class="btn secondary" style="text-align:center; padding:6px 10px; font-size:12px;"
+             href="{{ url_for('catch_up_party', branch_id=r.branch_id, party_name=r.party_ledger_name) }}">Catch up {{ r.party_ledger_name }}</a>
+          {% endif %}
+          <form method="post" action="{{ url_for('register_exception_review_submit', exception_id=r.id) }}" style="display:flex; flex-direction:column; gap:6px;">
+            <select name="status" style="padding:6px 8px;" required>
+              <option value="">Choose outcome…</option>
+              <option value="reviewed_no_action">Reviewed — no action needed</option>
+              <option value="resolved_via_catchup">Resolved via catch-up</option>
+            </select>
+            <input name="reviewed_note" placeholder="Note (optional)" style="padding:6px 8px;">
+            <input name="reviewed_by" placeholder="Your name" style="padding:6px 8px;" required>
+            <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Save review</button>
+          </form>
+        </div>
+        {% endif %}
+      </td>
+      {% endif %}
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="empty">No exceptions on record.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

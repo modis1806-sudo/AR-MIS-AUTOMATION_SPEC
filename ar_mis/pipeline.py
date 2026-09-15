@@ -142,7 +142,12 @@ def process_branch_data(
             )
 
     register_exceptions = _build_and_persist_registers(store, branch_id, all_vouchers)
-    store.record_extraction_run(branch_id, week_ending, extracted_at or datetime.now())
+    resolved_extracted_at = extracted_at or datetime.now()
+    store.record_extraction_run(branch_id, week_ending, resolved_extracted_at)
+    if register_exceptions.unattributable_party:
+        store.append_register_build_exceptions(
+            branch_id, week_ending, register_exceptions.unattributable_party, resolved_extracted_at
+        )
 
     if failed:
         detail = (
@@ -202,7 +207,7 @@ def _build_and_persist_registers(
                 if not voucher.party_ledger_name
                 else f"No customer_master record for '{voucher.party_ledger_name}'"
             )
-            exceptions.unattributable_party.append((voucher.voucher_number, reason))
+            exceptions.unattributable_party.append((voucher.voucher_number, voucher.party_ledger_name or "", reason))
             continue
         row = build_sales_dn_register_row(voucher, customer, exceptions)
         if row is not None:
