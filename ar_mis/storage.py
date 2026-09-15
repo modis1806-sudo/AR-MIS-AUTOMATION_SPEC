@@ -64,7 +64,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -414,6 +414,14 @@ CREATE TABLE IF NOT EXISTS register_build_exception (
     # past what was approved for them.
     11: """
 ALTER TABLE customer_master ADD COLUMN credit_limit TEXT NOT NULL DEFAULT '10000000.00';
+""",
+    # A reviewer couldn't tell "no leg touches a tracked debtor" on a
+    # Journal (mundane - a freight vendor payment) from the identical
+    # message on a Credit Note (worth a second look), since both
+    # builders share that exact wording. Existing rows get '' - true
+    # gap for anything logged before this migration, never guessed at.
+    12: """
+ALTER TABLE register_build_exception ADD COLUMN voucher_type TEXT NOT NULL DEFAULT '';
 """,
 }
 
@@ -1530,24 +1538,24 @@ class Store:
         self.conn.commit()
 
     def append_register_build_exceptions(
-        self, branch_id: str, week_ending: date, exceptions: list[tuple[str, str, str]], logged_at: datetime
+        self, branch_id: str, week_ending: date, exceptions: list[tuple[str, str, str, str]], logged_at: datetime
     ) -> None:
         """Persists this run's own "vouchers not added to a register"
         exceptions (registers.RegisterBuildExceptions.unattributable_party
-        - (voucher_number, party_ledger_name, reason) triples) so they can
-        be reviewed later instead of vanishing the moment the result page
-        is closed. Called once per SAVE run (both live extraction and
-        manual upload share process_branch_data, so both get this for
-        free) - always a plain append, never checked against what's
-        already on record, since a given voucher_number only ever falls
-        inside the one run whose date range covers it.
+        - (voucher_number, party_ledger_name, voucher_type, reason)
+        4-tuples) so they can be reviewed later instead of vanishing the
+        moment the result page is closed. Called once per SAVE run (both
+        live extraction and manual upload share process_branch_data, so
+        both get this for free) - always a plain append, never checked
+        against what's already on record, since a given voucher_number
+        only ever falls inside the one run whose date range covers it.
         """
-        for voucher_number, party_ledger_name, reason in exceptions:
+        for voucher_number, party_ledger_name, voucher_type, reason in exceptions:
             self.conn.execute(
                 "INSERT INTO register_build_exception"
-                " (branch_id, week_ending, voucher_number, party_ledger_name, reason, logged_at, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, 'open')",
-                (branch_id, week_ending.isoformat(), voucher_number, party_ledger_name, reason, logged_at.isoformat()),
+                " (branch_id, week_ending, voucher_number, party_ledger_name, voucher_type, reason, logged_at, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+                (branch_id, week_ending.isoformat(), voucher_number, party_ledger_name, voucher_type, reason, logged_at.isoformat()),
             )
         self.conn.commit()
 
@@ -1558,6 +1566,7 @@ class Store:
             week_ending=date.fromisoformat(r["week_ending"]),
             voucher_number=r["voucher_number"],
             party_ledger_name=r["party_ledger_name"],
+            voucher_type=r["voucher_type"],
             reason=r["reason"],
             logged_at=datetime.fromisoformat(r["logged_at"]),
             status=r["status"],

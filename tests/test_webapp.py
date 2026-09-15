@@ -1171,6 +1171,7 @@ def test_manual_upload_shows_register_build_exceptions_for_non_debtor_journal(cl
     assert b"JV/9001" in resp.data
     assert b"No leg of this voucher touches a tracked Sundry Debtor" in resp.data
     assert b"Some Creditor Pvt Ltd" in resp.data  # the voucher's own party hint, not guessed
+    assert b"Journal" in resp.data  # voucher type, not just the message text
 
 
 def test_manual_upload_register_build_exception_is_persisted_for_later_review(client):
@@ -1218,7 +1219,8 @@ def test_register_exception_can_be_reviewed_as_no_action(client):
 
     store = Store(client.application.config["DB_PATH"])
     store.append_register_build_exceptions(
-        "KOL", date(2026, 4, 7), [("JV/9001", "Some Creditor Pvt Ltd", "No leg of this voucher touches a tracked Sundry Debtor")],
+        "KOL", date(2026, 4, 7),
+        [("JV/9001", "Some Creditor Pvt Ltd", "Journal", "No leg of this voucher touches a tracked Sundry Debtor")],
         datetime(2026, 4, 7, 9, 0, 0),
     )
     exception_id = store.all_register_build_exceptions()[0].id
@@ -1239,7 +1241,7 @@ def test_register_exception_review_requires_a_name(client):
     from ar_mis.storage import Store
 
     store = Store(client.application.config["DB_PATH"])
-    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "Journal", "reason")], datetime(2026, 4, 7, 9, 0, 0))
     exception_id = store.all_register_build_exceptions()[0].id
     store.close()
 
@@ -1255,7 +1257,7 @@ def test_register_exceptions_review_has_search_filter_and_selection_scaffolding(
     from ar_mis.storage import Store
 
     store = Store(client.application.config["DB_PATH"])
-    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "Journal", "reason")], datetime(2026, 4, 7, 9, 0, 0))
     store.close()
 
     resp = client.get("/reports/register-exceptions")
@@ -1277,7 +1279,7 @@ def test_checker_cannot_submit_a_register_exception_review(roleless_client):
     from ar_mis.storage import Store
 
     store = Store(roleless_client.application.config["DB_PATH"])
-    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "Journal", "reason")], datetime(2026, 4, 7, 9, 0, 0))
     exception_id = store.all_register_build_exceptions()[0].id
     store.close()
 
@@ -1295,7 +1297,7 @@ def test_register_exceptions_review_links_to_catch_up_party_prefilled(client):
     from ar_mis.storage import Store
 
     store = Store(client.application.config["DB_PATH"])
-    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("SB/1", "Narendra Trading Company", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("SB/1", "Narendra Trading Company", "Sales", "reason")], datetime(2026, 4, 7, 9, 0, 0))
     store.close()
 
     resp = client.get("/reports/register-exceptions")

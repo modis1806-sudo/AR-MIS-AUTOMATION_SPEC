@@ -207,7 +207,9 @@ def _build_and_persist_registers(
                 if not voucher.party_ledger_name
                 else f"No customer_master record for '{voucher.party_ledger_name}'"
             )
-            exceptions.unattributable_party.append((voucher.voucher_number, voucher.party_ledger_name or "", reason))
+            exceptions.unattributable_party.append(
+                (voucher.voucher_number, voucher.party_ledger_name or "", voucher.voucher_type.value, reason)
+            )
             continue
         row = build_sales_dn_register_row(voucher, customer, exceptions)
         if row is not None:

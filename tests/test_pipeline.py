@@ -171,7 +171,7 @@ def test_voucher_with_no_party_ledger_name_is_flagged_not_dropped_silently(store
 
     assert outcome.outcome == ExtractionOutcome.PASS
     assert outcome.register_build_exceptions == [
-        ("SB/0999", "", "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
+        ("SB/0999", "", "Sales", "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
     ]
     assert store.all_sales_dn_rows("KOL") == []
 
@@ -185,7 +185,7 @@ def test_sales_voucher_for_party_missing_from_customer_master_is_flagged(store):
     outcome = process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {})
 
     assert outcome.outcome == ExtractionOutcome.PASS
-    assert outcome.register_build_exceptions == [("SB/0142", "Ghost Party", "No customer_master record for 'Ghost Party'")]
+    assert outcome.register_build_exceptions == [("SB/0142", "Ghost Party", "Sales", "No customer_master record for 'Ghost Party'")]
     assert store.all_sales_dn_rows("KOL") == []
 
 

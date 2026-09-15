@@ -119,10 +119,10 @@
       {% if cr.outcome.register_build_exceptions %}
       <p style="font-weight:600; margin-top:16px;">Vouchers not added to a register (reconciliation is unaffected — these never touched a tracked customer's balance):</p>
       <table>
-        <thead><tr><th>Voucher</th><th>Party</th><th>Reason</th></tr></thead>
+        <thead><tr><th>Voucher</th><th>Party</th><th>Voucher Type</th><th>Reason</th></tr></thead>
         <tbody>
-        {% for voucher_number, party_ledger_name, reason in cr.outcome.register_build_exceptions %}
-          <tr><td>{{ voucher_number }}</td><td>{{ party_ledger_name or '—' }}</td><td>{{ reason }}</td></tr>
+        {% for voucher_number, party_ledger_name, voucher_type, reason in cr.outcome.register_build_exceptions %}
+          <tr><td>{{ voucher_number }}</td><td>{{ party_ledger_name or '—' }}</td><td>{{ voucher_type }}</td><td>{{ reason }}</td></tr>
         {% endfor %}
         </tbody>
       </table>

@@ -480,6 +480,7 @@ class RegisterBuildExceptionRecord:
     week_ending: date
     voucher_number: str
     party_ledger_name: str
+    voucher_type: str
     reason: str
     logged_at: datetime
     status: str = "open"

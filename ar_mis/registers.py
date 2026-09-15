@@ -80,13 +80,18 @@ class RegisterBuildExceptions:
     """Vouchers this module could not confidently place into a register,
     collected rather than silently dropped or guessed at - matching this
     whole system's "never silent" principle. Each entry is a
-    (voucher_number, party_ledger_name, reason) triple - party_ledger_name
-    is "" when the voucher itself carries no usable party hint (no
-    PARTYLEDGERNAME at all, or more than one tracked debtor touched),
-    never guessed at just to fill the field.
+    (voucher_number, party_ledger_name, voucher_type, reason) 4-tuple -
+    party_ledger_name is "" when the voucher itself carries no usable
+    party hint (no PARTYLEDGERNAME at all, or more than one tracked
+    debtor touched), never guessed at just to fill the field.
+    voucher_type is VoucherType.value ("Sales", "Credit Note", "Debit
+    Note", "Receipt", or "Journal") - without it, a reviewer can't tell
+    "no leg touches a tracked debtor" on a Journal (mundane - a freight
+    vendor payment) from the same message on a Credit Note (worth a
+    second look), since both builders share this exact wording.
     """
 
-    unattributable_party: list[tuple[str, str]]
+    unattributable_party: list[tuple[str, str, str, str]]
 
     def __init__(self) -> None:
         self.unattributable_party = []
@@ -123,7 +128,7 @@ def build_sales_dn_register_row(
 
     if not voucher.party_ledger_name:
         exceptions.unattributable_party.append(
-            (voucher.voucher_number, "", "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
+            (voucher.voucher_number, "", voucher.voucher_type.value, "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")
         )
         return None
 
@@ -235,7 +240,7 @@ def build_credit_note_register_row(
     if not matched_parties:
         exceptions.unattributable_party.append(
             (
-                voucher.voucher_number, voucher.party_ledger_name or "",
+                voucher.voucher_number, voucher.party_ledger_name or "", voucher.voucher_type.value,
                 "No leg of this voucher touches a tracked Sundry Debtor - not a customer credit note",
             )
         )
@@ -243,7 +248,7 @@ def build_credit_note_register_row(
     if len(matched_parties) > 1:
         exceptions.unattributable_party.append(
             (
-                voucher.voucher_number, "",
+                voucher.voucher_number, "", voucher.voucher_type.value,
                 f"Touches multiple tracked debtors ({', '.join(sorted(matched_parties))}) in one voucher - "
                 "needs a human look, not a guess",
             )
@@ -319,14 +324,14 @@ def build_receipt_journal_register_rows(
     matched_entries = [e for e in voucher.entries if e.party_ledger_name in tracked_party_names]
     if not matched_entries:
         exceptions.unattributable_party.append(
-            (voucher.voucher_number, voucher.party_ledger_name or "", "No leg of this voucher touches a tracked Sundry Debtor")
+            (voucher.voucher_number, voucher.party_ledger_name or "", voucher.voucher_type.value, "No leg of this voucher touches a tracked Sundry Debtor")
         )
         return []
     matched_parties = {e.party_ledger_name for e in matched_entries}
     if len(matched_parties) > 1:
         exceptions.unattributable_party.append(
             (
-                voucher.voucher_number, "",
+                voucher.voucher_number, "", voucher.voucher_type.value,
                 f"Touches multiple tracked debtors ({', '.join(sorted(matched_parties))}) in one voucher - "
                 "needs a human look, not a guess",
             )

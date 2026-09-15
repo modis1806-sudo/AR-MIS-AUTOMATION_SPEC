@@ -52,10 +52,10 @@ class BranchRunOutcome:
     but it's worth a human noticing, so it's still surfaced separately in
     the report's Exceptions section rather than blended into Party Detail.
     """
-    register_build_exceptions: list[tuple[str, str, str]] = field(default_factory=list)
-    """(voucher_number, party_ledger_name, reason) triples this run's
-    registers.py build step could not confidently place into a register
-    (registers.RegisterBuildExceptions) - e.g. a voucher with no
+    register_build_exceptions: list[tuple[str, str, str, str]] = field(default_factory=list)
+    """(voucher_number, party_ledger_name, voucher_type, reason) 4-tuples
+    this run's registers.py build step could not confidently place into a
+    register (registers.RegisterBuildExceptions) - e.g. a voucher with no
     PARTYLEDGERNAME. party_ledger_name is "" when the voucher itself
     carries no usable party hint.
     """

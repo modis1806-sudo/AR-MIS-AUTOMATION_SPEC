@@ -157,7 +157,7 @@ def test_build_sales_dn_register_row_missing_party_is_flagged_not_dropped_silent
     exceptions = RegisterBuildExceptions()
     row = build_sales_dn_register_row(voucher, CUSTOMER, exceptions)
     assert row is None
-    assert exceptions.unattributable_party == [("INV999", "", "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")]
+    assert exceptions.unattributable_party == [("INV999", "", "Sales", "No PARTYLEDGERNAME on this voucher - cannot attribute to a customer")]
 
 
 def test_build_sales_dn_register_row_rejects_wrong_voucher_type():

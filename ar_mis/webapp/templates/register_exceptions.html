@@ -29,6 +29,7 @@
     <tr>
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Week Ending</th><th>Voucher</th><th>Party</th>
+      <th data-tt-filter data-tt-col="voucher_type">Voucher Type</th>
       <th>Reason</th><th>Logged</th><th data-tt-filter data-tt-col="status">Status</th>
       {% if session.role == "maker" %}<th>Actions</th>{% endif %}
     </tr>
@@ -41,6 +42,7 @@
       <td>{{ r.week_ending }}</td>
       <td>{{ r.voucher_number }}</td>
       <td>{{ r.party_ledger_name or '—' }}</td>
+      <td data-tt-col="voucher_type">{{ r.voucher_type or '—' }}</td>
       <td>{{ r.reason }}</td>
       <td>{{ r.logged_at.strftime('%d %b %Y, %I:%M %p') }}</td>
       <td data-tt-col="status">
@@ -78,7 +80,7 @@
       {% endif %}
     </tr>
   {% else %}
-    <tr><td colspan="9" class="empty">No exceptions on record.</td></tr>
+    <tr><td colspan="10" class="empty">No exceptions on record.</td></tr>
   {% endfor %}
   </tbody>
 </table>
