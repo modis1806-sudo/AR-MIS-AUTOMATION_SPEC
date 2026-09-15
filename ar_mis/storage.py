@@ -922,14 +922,22 @@ class Store:
         sales_dn_register/credit_note_register/receipt_journal_register
         carry no week_ending column of their own (see their own CREATE
         TABLE comments) - identity there is branch + voucher + party, not
-        a batch/run id - so rows belonging to this run are found by date
-        falling inside [period_start, week_ending], read back from this
-        exact run's own weekly_snapshot rows (client's own reversal:
-        extraction no longer runs on a fixed calendar grid, so this range
-        can no longer be derived by formula - see ar_mis.config's own
-        docstring). Any invoice_follow_up row for an invoice being
-        deleted goes with it - a human's PTP/next-action note about an
-        invoice this system is about to forget has nothing left to
+        a batch/run id. Rows belonging to this run are found via
+        voucher_log instead of a derived date range: voucher_log is
+        itself reliably scoped by (branch_id, week_ending) with no such
+        dependency, so reading back the exact (voucher_type,
+        voucher_number, party_ledger_name) triples this run logged there
+        - before that table's own rows are deleted below - gives an exact
+        identity match rather than a guessed range. This replaces an
+        earlier version that derived [period_start, week_ending] from
+        this run's own weekly_snapshot row: if period_start was ever
+        missing or wrong for a run (confirmed live - a real branch's
+        September extraction), that BETWEEN match silently deleted zero
+        register rows while the weekly_snapshot row still vanished
+        cleanly, leaving orphaned register rows with nothing anywhere
+        indicating it happened. Any invoice_follow_up row for an invoice
+        being deleted goes with it - a human's PTP/next-action note about
+        an invoice this system is about to forget has nothing left to
         attach to.
 
         Deliberately does NOT touch weekly_movement: design doc item 15's
@@ -946,36 +954,37 @@ class Store:
                 "every earlier week's closing balance is the opening balance the next week "
                 "rolled forward from, and deleting out of order would strand that chain."
             )
-        period_start_row = self.conn.execute(
-            "SELECT period_start FROM weekly_snapshot WHERE branch_id=? AND week_ending=? LIMIT 1",
-            (branch_id, week_ending.isoformat()),
-        ).fetchone()
-        w_start_s = period_start_row[0]
         w_end_s = week_ending.isoformat()
 
-        orphaned_invoices = self.conn.execute(
-            "SELECT voucher_number, party_id FROM sales_dn_register"
-            " WHERE branch_id=? AND invoice_date BETWEEN ? AND ?",
-            (branch_id, w_start_s, w_end_s),
+        logged_vouchers = self.conn.execute(
+            "SELECT voucher_type, voucher_number, party_ledger_name FROM voucher_log"
+            " WHERE branch_id=? AND week_ending=?",
+            (branch_id, w_end_s),
         ).fetchall()
-        for voucher_number, party_id in orphaned_invoices:
+        sales_dn_identities = {(vn, p) for vt, vn, p in logged_vouchers if vt in ("Sales", "Debit Note")}
+        credit_note_identities = {(vn, p) for vt, vn, p in logged_vouchers if vt == "Credit Note"}
+        receipt_journal_identities = {(vn, p) for vt, vn, p in logged_vouchers if vt in ("Receipt", "Journal")}
+
+        for voucher_number, party_id in sales_dn_identities:
             self.conn.execute(
                 "DELETE FROM invoice_follow_up WHERE branch_id=? AND voucher_number=? AND party_id=?",
                 (branch_id, voucher_number, party_id),
             )
+            self.conn.execute(
+                "DELETE FROM sales_dn_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                (branch_id, voucher_number, party_id),
+            )
+        for voucher_number, party_id in credit_note_identities:
+            self.conn.execute(
+                "DELETE FROM credit_note_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                (branch_id, voucher_number, party_id),
+            )
+        for voucher_number, party_id in receipt_journal_identities:
+            self.conn.execute(
+                "DELETE FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                (branch_id, voucher_number, party_id),
+            )
 
-        self.conn.execute(
-            "DELETE FROM sales_dn_register WHERE branch_id=? AND invoice_date BETWEEN ? AND ?",
-            (branch_id, w_start_s, w_end_s),
-        )
-        self.conn.execute(
-            "DELETE FROM credit_note_register WHERE branch_id=? AND cn_date BETWEEN ? AND ?",
-            (branch_id, w_start_s, w_end_s),
-        )
-        self.conn.execute(
-            "DELETE FROM receipt_journal_register WHERE branch_id=? AND txn_date BETWEEN ? AND ?",
-            (branch_id, w_start_s, w_end_s),
-        )
         self.conn.execute(
             "DELETE FROM voucher_log WHERE branch_id=? AND week_ending=?", (branch_id, w_end_s)
         )

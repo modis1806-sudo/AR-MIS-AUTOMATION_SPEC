@@ -1024,6 +1024,40 @@ def test_delete_branch_week_cascades_to_invoice_follow_up(store):
     assert store.get_invoice_follow_up("KOL", "SB/1", "ACME") is None
 
 
+def test_delete_branch_week_cleans_up_registers_even_when_period_start_is_missing(store):
+    """Live-confirmed real incident: a run with no usable period_start
+    (e.g. a caller that predates that field, or genuinely has no start
+    date of its own) used to leave sales_dn_register/credit_note_register/
+    receipt_journal_register rows permanently orphaned - the old
+    date-range delete derived its range from this same period_start, so
+    a None there silently matched zero rows while the weekly_snapshot row
+    itself still vanished cleanly (its own delete has no such dependency).
+    Deleting via voucher_log's own reliable (branch_id, week_ending)
+    scoping instead must not have this failure mode.
+    """
+    from ar_mis.pipeline import process_branch_data
+
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 2), voucher_number="SB/NOSTART",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-500.00"),
+                        bill_name="SB/NOSTART", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("500.00")),
+        ],
+    )
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 5), [voucher], {"ACME": Decimal("-500.00")}, period_start=None
+    )
+    assert len(store.all_sales_dn_rows("KOL")) == 1
+
+    store.delete_branch_week("KOL", date(2026, 4, 5))
+
+    assert store.week_endings_for_branch("KOL") == []
+    assert store.all_sales_dn_rows("KOL") == []
+
+
 def test_delete_branch_week_removes_only_that_weeks_drift_findings(store):
     from ar_mis.reconciliation import DriftFinding
 
