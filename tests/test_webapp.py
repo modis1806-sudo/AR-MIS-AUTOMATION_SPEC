@@ -844,6 +844,68 @@ def test_customers_list_shows_never_reconciled_parties(client):
     assert b"Never" in resp.data
 
 
+def test_customers_list_shows_default_one_crore_credit_limit(client):
+    _seed_customer(client)
+    resp = client.get("/customers")
+    # Maker sees the raw, plain-decimal value in an editable input (no
+    # comma grouping - it must round-trip through Decimal() on submit).
+    assert b'value="10000000.00"' in resp.data
+
+
+def test_customers_list_shows_formatted_credit_limit_to_a_checker(roleless_client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(roleless_client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme", "KOL", Decimal("0.00")))
+    store.close()
+
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.get("/customers")
+    assert b"1,00,00,000.00" in resp.data
+
+
+def test_set_credit_limit_updates_the_list(client):
+    _seed_customer(client)
+    resp = client.post(
+        "/customers/set-credit-limit",
+        data={"party_id": "P1", "branch_id": "KOL", "credit_limit": "2500000.00"},
+        follow_redirects=True,
+    )
+    assert b"Credit limit for P1 set to" in resp.data
+    assert b"25,00,000.00" in resp.data
+
+
+def test_set_credit_limit_rejects_an_invalid_amount(client):
+    _seed_customer(client)
+    resp = client.post(
+        "/customers/set-credit-limit",
+        data={"party_id": "P1", "branch_id": "KOL", "credit_limit": "not-a-number"},
+        follow_redirects=True,
+    )
+    assert b"is not a valid credit limit amount" in resp.data
+    # Unchanged - still the default.
+    assert b'value="10000000.00"' in resp.data
+
+
+def test_checker_cannot_set_credit_limit(roleless_client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(roleless_client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme", "KOL", Decimal("0.00")))
+    store.close()
+
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.post(
+        "/customers/set-credit-limit",
+        data={"party_id": "P1", "branch_id": "KOL", "credit_limit": "2500000.00"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"available for your role" in resp.data
+
+
 def test_mark_reconciled_updates_the_list(client):
     _seed_customer(client)
     resp = client.post(

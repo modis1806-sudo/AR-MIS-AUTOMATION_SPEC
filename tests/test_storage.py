@@ -304,6 +304,31 @@ def test_set_credit_period_days_raises_for_unknown_party(store):
         store.set_credit_period_days("GHOST", "KOL", 45)
 
 
+def test_new_customer_master_defaults_to_one_crore_credit_limit(store):
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00")))
+    assert store.get_customer_master("P1", "KOL").credit_limit == Decimal("10000000.00")
+
+
+def test_set_credit_limit(store):
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00")))
+    store.set_credit_limit("P1", "KOL", Decimal("2500000.00"))
+    assert store.get_customer_master("P1", "KOL").credit_limit == Decimal("2500000.00")
+
+
+def test_set_credit_limit_raises_for_unknown_party(store):
+    with pytest.raises(ValueError, match="No customer_master record"):
+        store.set_credit_limit("GHOST", "KOL", Decimal("500000.00"))
+
+
+def test_upsert_customer_master_preserves_credit_limit_on_repeat_calls(store):
+    # Master-data sync (a name refresh) must never silently reset an
+    # already-edited credit limit back to the record's own default.
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00")))
+    store.set_credit_limit("P1", "KOL", Decimal("2500000.00"))
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp Renamed", "KOL", Decimal("0.00")))
+    assert store.get_customer_master("P1", "KOL").credit_limit == Decimal("2500000.00")
+
+
 def test_set_party_grouping(store):
     store.upsert_customer_master(CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00")))
     store.set_party_grouping("P1", "KOL", PartyGrouping.RELATED_PARTY)

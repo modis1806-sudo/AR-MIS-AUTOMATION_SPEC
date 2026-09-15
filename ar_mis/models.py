@@ -134,6 +134,13 @@ class CustomerMasterRecord:
     (item 6) defaults to 30 and is overridable per party; a change here
     only affects invoices created after the change — it never
     retroactively recalculates an already-computed Due Date.
+
+    `credit_limit` (client's explicit ask) defaults to Rs 1,00,00,000 (one
+    crore) and is editable per party from Customer Master - purely a
+    reference figure this reporting layer displays and can flag against;
+    it has no authority to block a sale in Tally (the primary accounting
+    system), since this tool is a secondary reporting layer, not the
+    system of record.
     """
 
     party_id: str
@@ -142,6 +149,7 @@ class CustomerMasterRecord:
     pre_mis_outstanding: Decimal
     grouping: PartyGrouping | None = None
     credit_period_days: int = 30
+    credit_limit: Decimal = Decimal("10000000.00")
 
 
 @dataclass(frozen=True)

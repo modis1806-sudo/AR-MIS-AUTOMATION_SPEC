@@ -769,6 +769,29 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(f"Marked reconciled by {reconciled_by}.", "success")
         return redirect(url_for("customers_list"))
 
+    @app.route("/customers/set-credit-limit", methods=["POST"])
+    @requires_role("maker")
+    def customers_set_credit_limit():
+        party_id = request.form.get("party_id", "")
+        branch_id = request.form.get("branch_id", "")
+        raw_limit = request.form.get("credit_limit", "").strip()
+        try:
+            new_limit = to_money(Decimal(raw_limit))
+        except InvalidOperation:
+            flash(f"'{raw_limit}' is not a valid credit limit amount.", "error")
+            return redirect(url_for("customers_list"))
+
+        store = get_store()
+        try:
+            store.set_credit_limit(party_id, branch_id, new_limit)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            store.close()
+            return redirect(url_for("customers_list"))
+        store.close()
+        flash(f"Credit limit for {party_id} set to {format_inr(new_limit)}.", "success")
+        return redirect(url_for("customers_list"))
+
     def _decode_upload(file_storage) -> str:
         """Same UTF-8-then-UTF-16 fallback as TallyClient._post - a
         manually exported Tally file can use either encoding depending

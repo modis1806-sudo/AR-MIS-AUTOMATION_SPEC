@@ -64,7 +64,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -406,6 +406,15 @@ CREATE TABLE IF NOT EXISTS register_build_exception (
     reviewed_note TEXT
 );
 """,
+    # Client's explicit ask: a reference credit limit per party, editable
+    # from Customer Master, defaulting to Rs 1,00,00,000 (one crore) -
+    # purely informational in this secondary reporting layer (it has no
+    # power to block a sale in Tally, the actual system of record), but
+    # a starting point for flagging a party whose exposure has grown
+    # past what was approved for them.
+    11: """
+ALTER TABLE customer_master ADD COLUMN credit_limit TEXT NOT NULL DEFAULT '10000000.00';
+""",
 }
 
 
@@ -531,15 +540,15 @@ class Store:
 
     def upsert_customer_master(self, record: CustomerMasterRecord) -> None:
         """Create-or-refresh party reference data. Explicitly does NOT
-        touch pre_mis_outstanding, grouping, or credit_period_days for a
-        party that already exists — those fields only move via
-        record_pre_mis_adjustment, set_party_grouping, and
-        set_credit_period_days respectively (item 7's editable-fields
-        list). Safe to call every week for master-data sync (name
-        changes etc.) without risking any of the fields that must never
-        move through this path. A brand-new party gets `record`'s own
-        grouping/credit_period_days (None/30 by default) as its starting
-        point.
+        touch pre_mis_outstanding, grouping, credit_period_days, or
+        credit_limit for a party that already exists — those fields only
+        move via record_pre_mis_adjustment, set_party_grouping,
+        set_credit_period_days, and set_credit_limit respectively (item
+        7's editable-fields list). Safe to call every week for
+        master-data sync (name changes etc.) without risking any of the
+        fields that must never move through this path. A brand-new party
+        gets `record`'s own grouping/credit_period_days/credit_limit
+        (None/30/one crore by default) as its starting point.
         """
         existing = self.conn.execute(
             "SELECT pre_mis_outstanding FROM customer_master WHERE party_id=? AND branch_id=?",
@@ -548,8 +557,8 @@ class Store:
         if existing is None:
             self.conn.execute(
                 "INSERT INTO customer_master"
-                " (party_id, branch_id, party_name, pre_mis_outstanding, grouping, credit_period_days)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                " (party_id, branch_id, party_name, pre_mis_outstanding, grouping, credit_period_days, credit_limit)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.party_id,
                     record.branch_id,
@@ -557,6 +566,7 @@ class Store:
                     str(record.pre_mis_outstanding),
                     record.grouping.value if record.grouping else None,
                     record.credit_period_days,
+                    str(record.credit_limit),
                 ),
             )
         else:
@@ -580,6 +590,7 @@ class Store:
             pre_mis_outstanding=Decimal(r["pre_mis_outstanding"]),
             grouping=PartyGrouping(r["grouping"]) if r["grouping"] else None,
             credit_period_days=r["credit_period_days"],
+            credit_limit=Decimal(r["credit_limit"]),
         )
 
     def all_customer_masters(self) -> list[CustomerMasterRecord]:
@@ -600,6 +611,7 @@ class Store:
                 pre_mis_outstanding=Decimal(r["pre_mis_outstanding"]),
                 grouping=PartyGrouping(r["grouping"]) if r["grouping"] else None,
                 credit_period_days=r["credit_period_days"],
+                credit_limit=Decimal(r["credit_limit"]),
             )
             for r in cur.fetchall()
         ]
@@ -617,6 +629,20 @@ class Store:
         self.conn.execute(
             "UPDATE customer_master SET credit_period_days=? WHERE party_id=? AND branch_id=?",
             (credit_period_days, party_id, branch_id),
+        )
+        self.conn.commit()
+
+    def set_credit_limit(self, party_id: str, branch_id: str, credit_limit: Decimal) -> None:
+        """Client's explicit ask: the one sanctioned way to change a
+        party's reference credit limit (default Rs 1,00,00,000). Purely
+        informational in this secondary reporting layer - it cannot and
+        does not enforce anything in Tally, the actual system of record.
+        """
+        if not self.customer_master_exists(party_id, branch_id):
+            raise ValueError(f"No customer_master record for {party_id}/{branch_id}")
+        self.conn.execute(
+            "UPDATE customer_master SET credit_limit=? WHERE party_id=? AND branch_id=?",
+            (str(credit_limit), party_id, branch_id),
         )
         self.conn.commit()
 
