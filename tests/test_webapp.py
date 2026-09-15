@@ -711,6 +711,21 @@ def test_customers_list_puts_never_reconciled_before_reconciled(client):
     assert text.index("Needs Review") < text.index("Already Reconciled")
 
 
+def test_customers_list_has_search_filter_and_selection_scaffolding(client):
+    # Client's explicit ask: with 964 real ledgers, scrolling a plain list
+    # is unusable - search/filter/select-all must be present on this
+    # screen (table_tools.js drives it; this only checks the markup it
+    # depends on is actually rendered).
+    _seed_customer(client)
+    resp = client.get("/customers")
+    assert b'data-tt="customers"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-table="customers"' in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+    assert b"data-tt-select-all" in resp.data
+    assert b"data-tt-row-select" in resp.data
+
+
 class FakeTallyClientDiscover:
     def __init__(self, branch, timeout_seconds=15.0):
         self.branch = branch
@@ -1038,6 +1053,17 @@ def test_sales_dn_register_shows_round_off_column(client):
     assert b"Round Off" in resp.data
 
 
+def test_sales_dn_register_has_search_filter_and_selection_scaffolding(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn")
+    assert b'data-tt="salesdn"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+    assert b'data-tt-sum="salesdn:open_amount"' in resp.data
+    assert b"data-tt-select-all" in resp.data
+    assert b"data-tt-row-select" in resp.data
+
+
 def test_credit_note_register_and_receipt_journal_register_render_when_empty(client):
     for path in ("/registers/credit-notes", "/registers/receipts-journals"):
         resp = client.get(path)
@@ -1066,6 +1092,30 @@ def test_credit_note_register_has_an_as_of_date_and_running_summary(client):
     assert b"Total CN Amount" in resp.data
     assert b"Total Unapplied CN Amount" in resp.data
     assert b"Pending Review" in resp.data
+
+
+def test_credit_note_register_has_search_filter_and_selection_scaffolding(client):
+    from ar_mis.models import CustomerMasterRecord, CreditNoteRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/1", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference=None,
+        )
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes")
+    assert b'data-tt="creditnotes"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+    assert b'data-tt-filter data-tt-col="classification"' in resp.data
+    assert b'data-tt-sum="creditnotes:cn_amount"' in resp.data
+    assert b"data-tt-select-all" in resp.data
+    assert b"data-tt-row-select" in resp.data
 
 
 def test_credit_note_register_as_of_date_excludes_a_future_dated_cn_from_the_summary(client):
@@ -1111,6 +1161,31 @@ def test_receipt_journal_register_shows_a_running_summary_of_unapplied_balance(c
     assert resp.status_code == 200
     assert b"Total Unapplied Balance" in resp.data
     assert b"1 unapplied case" in resp.data
+
+
+def test_receipt_journal_register_has_search_filter_and_selection_scaffolding(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt", voucher_number="RCPT/1",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no=None,
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals")
+    assert b'data-tt="receiptjournal"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+    assert b'data-tt-filter data-tt-col="voucher_type"' in resp.data
+    assert b"data-tt-select-all" in resp.data
+    assert b"data-tt-row-select" in resp.data
 
 
 # ---- Excel export -----------------------------------------------------
@@ -1240,6 +1315,17 @@ def test_exception_register_shows_unapplied_cash_after_a_real_extraction(client)
     assert b"5,000.00" in resp.data
 
 
+def test_exception_register_has_search_filter_scaffolding_on_populated_sections(client):
+    _run_a_real_extraction(client)
+    # An overdue-past-due-date view populates Top 20 Overdue Customers -
+    # a section that's always table_tools-enabled once it has rows.
+    resp = client.get("/reports/exceptions?as_of=2026-06-01")
+    assert resp.status_code == 200
+    assert b'data-tt="topoverdue"' in resp.data
+    assert b'data-tt-table="topoverdue"' in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+
+
 def test_exception_register_reachable_by_checker(roleless_client):
     roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/exceptions")
@@ -1268,6 +1354,18 @@ def test_ageing_matrix_shows_extracted_party_and_branch_total(client):
     assert b"A &amp; B Transport Pvt Ltd" in resp.data or b"A & B Transport Pvt Ltd" in resp.data
     assert b"KOL" in resp.data
     assert b"All Branches" in resp.data
+
+
+def test_ageing_matrix_customer_detail_has_search_filter_and_selection_scaffolding(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12")
+    assert b'data-tt="ageingcust"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+    assert b'data-tt-filter data-tt-col="grouping"' in resp.data
+    assert b'data-tt-sum="ageingcust:total_open"' in resp.data
+    assert b"data-tt-select-all" in resp.data
+    assert b"data-tt-row-select" in resp.data
 
 
 def test_ageing_matrix_shows_tally_cross_check_difference_after_extraction(client):
@@ -1394,6 +1492,18 @@ def test_tb_cross_check_shows_clean_reconciliation(client):
     assert resp.status_code == 200
     assert b"A &amp; B Transport" in resp.data or b"A & B Transport" in resp.data
     assert b"1,25,000.00" in resp.data
+
+
+def test_tb_cross_check_has_search_filter_and_selection_scaffolding(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/tb-cross-check")
+    assert b'data-tt="tbcheck"' in resp.data
+    assert b"data-tt-search" in resp.data
+    assert b'data-tt-filter data-tt-col="branch"' in resp.data
+    assert b'data-tt-filter data-tt-col="reconciled"' in resp.data
+    assert b'data-tt-sum="tbcheck:difference"' in resp.data
+    assert b"data-tt-select-all" in resp.data
+    assert b"data-tt-row-select" in resp.data
 
 
 def test_tb_cross_check_shows_mismatch_and_summary_counts(client, monkeypatch):

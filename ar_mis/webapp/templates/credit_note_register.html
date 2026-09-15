@@ -35,26 +35,36 @@
 </div>
 
 {% if display_rows %}
+<div class="table-tools" data-tt="creditnotes">
+  <input type="search" data-tt-search placeholder="Search customer, CN number...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+  <span class="tt-count">CN Amount of these rows: <strong data-tt-sum="creditnotes:cn_amount">0.00</strong></span>
+</div>
 <div class="table-scroll">
-<table>
+<table data-tt-table="creditnotes">
   <thead>
     <tr>
-      <th>Branch</th><th>Date</th><th>Customer</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
-      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th>Classification</th>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th>Customer</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
+      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th>
     </tr>
   </thead>
   <tbody>
   {% for d in display_rows %}
     {% set row = d.row %}
-    <tr>
-      <td>{{ row.branch_id }}</td>
+    <tr data-tt-row>
+      <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.voucher_number }}"></td>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.cn_date }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.bill_allocation_reference or '—' }}</td>
-      <td>{{ row.cn_amount|inr }}</td>
+      <td data-tt-col="cn_amount" data-value="{{ row.cn_amount }}">{{ row.cn_amount|inr }}</td>
       <td>{{ d.unapplied_amount|inr if d.unapplied_amount is not none else '—' }}</td>
-      <td>
+      <td data-tt-col="classification">
         {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
         {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>
         {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}

@@ -47,13 +47,24 @@
 </div>
 
 <div class="section-heading">Customer Detail (with Tally cross-check)</div>
+{% if customer_rows %}
+<div class="table-tools" data-tt="ageingcust">
+  <input type="search" data-tt-search placeholder="Search customer, branch...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+  <span class="tt-count">Total Open of these rows: <strong data-tt-sum="ageingcust:total_open">0.00</strong></span>
+</div>
+{% endif %}
 <div class="table-scroll">
-<table>
+<table data-tt-table="ageingcust">
   <thead>
     <tr>
-      <th>Branch</th>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th data-tt-filter data-tt-col="branch">Branch</th>
       <th>Customer</th>
-      <th>Grouping</th>
+      <th data-tt-filter data-tt-col="grouping">Grouping</th>
       {% for bucket in bucket_order %}<th>{{ bucket }}</th>{% endfor %}
       <th>Total Open</th>
       <th>Tally Closing Balance</th>
@@ -62,19 +73,20 @@
   </thead>
   <tbody>
   {% for row in customer_rows %}
-    <tr>
-      <td>{{ row.branch_id }}</td>
+    <tr data-tt-row>
+      <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.party_id }}"></td>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.party_id }}</td>
-      <td>{{ row.grouping or '—' }}</td>
+      <td data-tt-col="grouping">{{ row.grouping or '—' }}</td>
       {% for bucket in bucket_order %}<td>{{ row.buckets[bucket]|inr }}</td>{% endfor %}
-      <td>{{ row.total_open|inr }}</td>
+      <td data-tt-col="total_open" data-value="{{ row.total_open }}">{{ row.total_open|inr }}</td>
       <td>{{ row.tally_closing_balance|inr if row.tally_closing_balance is not none else 'No Tally figure on record' }}</td>
       <td {% if row.difference is not none and row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>
         {{ row.difference|inr if row.difference is not none else '—' }}
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="{{ 6 + bucket_order|length }}" class="empty">No parties found.</td></tr>
+    <tr><td colspan="{{ 7 + bucket_order|length }}" class="empty">No parties found.</td></tr>
   {% endfor %}
   </tbody>
 </table>

@@ -41,22 +41,35 @@
     <div class="kpi-caption">As of {{ to_date }}</div>
   </div>
 </div>
-<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. The table below is scoped to {{ from_date }} to {{ to_date }} for browsing; the tiles never shrink just because a narrower range is on screen.</p>
+<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. The table below is scoped to {{ from_date }} to {{ to_date }} for browsing; the tiles never shrink just because a narrower range is on screen. Searching or filtering the table only changes which rows you're looking at — it never touches the three tiles above.</p>
 
+{% if rows %}
+<div class="table-tools" data-tt="tbcheck">
+  <input type="search" data-tt-search placeholder="Search party, branch...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+  <span class="tt-count">Difference of these rows: <strong data-tt-sum="tbcheck:difference">0.00</strong></span>
+</div>
+{% endif %}
 <div class="table-scroll">
-<table>
+<table data-tt-table="tbcheck">
   <thead>
     <tr>
-      <th>Party</th><th>Branch</th><th>Week Ending</th><th>Opening</th><th>Sales</th>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th>Party</th><th data-tt-filter data-tt-col="branch">Branch</th><th>Week Ending</th><th>Opening</th><th>Sales</th>
       <th>Credit Notes</th><th>Debit Notes</th><th>Receipts</th><th>Journals</th>
-      <th>Closing (Workings)</th><th>Closing (TB/Tally)</th><th>Difference</th><th>Reconciled</th>
+      <th>Closing (Workings)</th><th>Closing (TB/Tally)</th><th>Difference</th>
+      <th data-tt-filter data-tt-col="reconciled">Reconciled</th>
     </tr>
   </thead>
   <tbody>
   {% for row in rows %}
-    <tr {% if not row.reconciled %}style="background:#fef2f2;"{% endif %}>
+    <tr data-tt-row {% if not row.reconciled %}style="background:#fef2f2;"{% endif %}>
+      <td><input type="checkbox" data-tt-row-select value="{{ row.party_id }}|{{ row.branch_id }}|{{ row.week_ending }}"></td>
       <td>{{ row.party_id }}</td>
-      <td>{{ row.branch_id }}</td>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.week_ending }}</td>
       <td>{{ row.opening|inr }}</td>
       <td>{{ row.sales|inr }}</td>
@@ -66,11 +79,11 @@
       <td>{{ row.journals|inr }}</td>
       <td>{{ row.closing_computed|inr }}</td>
       <td>{{ row.closing_extracted|inr }}</td>
-      <td {% if row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>{{ row.difference|inr }}</td>
-      <td>{% if row.reconciled %}<span class="pill ok">Yes</span>{% else %}<span class="pill fail">No</span>{% endif %}</td>
+      <td data-tt-col="difference" data-value="{{ row.difference }}" {% if row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>{{ row.difference|inr }}</td>
+      <td data-tt-col="reconciled">{% if row.reconciled %}<span class="pill ok">Yes</span>{% else %}<span class="pill fail">No</span>{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="13" class="empty">No weeks recorded yet — run an extraction first.</td></tr>
+    <tr><td colspan="14" class="empty">No weeks recorded yet — run an extraction first.</td></tr>
   {% endfor %}
   </tbody>
 </table>

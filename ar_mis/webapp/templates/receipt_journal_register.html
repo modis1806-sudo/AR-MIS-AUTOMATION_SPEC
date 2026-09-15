@@ -35,13 +35,21 @@
 </div>
 
 {% if display_rows %}
+<div class="table-tools" data-tt="receiptjournal">
+  <input type="search" data-tt-search placeholder="Search customer, voucher no...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+</div>
 <div class="table-scroll">
-<table>
+<table data-tt-table="receiptjournal">
   <thead>
     <tr>
-      <th>Branch</th><th>Date</th><th>Voucher Type</th><th>Voucher No.</th><th>Customer</th>
-      <th>Allocation Type</th><th>Target Doc No.</th><th>Applied Amount</th><th>Unapplied Balance</th>
-      <th>Classification</th><th>DPD at Application</th><th>Age Unapplied Days</th><th>Invoice Fin Year</th>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th data-tt-filter data-tt-col="voucher_type">Voucher Type</th><th>Voucher No.</th><th>Customer</th>
+      <th data-tt-filter data-tt-col="allocation_type">Allocation Type</th><th>Target Doc No.</th><th>Applied Amount</th><th>Unapplied Balance</th>
+      <th data-tt-filter data-tt-col="classification">Classification</th><th>DPD at Application</th><th>Age Unapplied Days</th><th>Invoice Fin Year</th>
       <th>Narration</th>
     </tr>
   </thead>
@@ -49,17 +57,18 @@
   {% for d in display_rows %}
     {% set row = d.row %}
     {% set f = d.fields %}
-    <tr>
-      <td>{{ row.branch_id }}</td>
+    <tr data-tt-row>
+      <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.voucher_number }}"></td>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.txn_date }}</td>
-      <td>{{ row.voucher_type }}</td>
+      <td data-tt-col="voucher_type">{{ row.voucher_type }}</td>
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.party_id }}</td>
-      <td>{% if row.target_doc_no %}Against Ref{% else %}Unapplied{% endif %}</td>
+      <td data-tt-col="allocation_type">{% if row.target_doc_no %}Against Ref{% else %}Unapplied{% endif %}</td>
       <td>{{ row.target_doc_no or '—' }}</td>
       <td>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
       <td>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
-      <td>
+      <td data-tt-col="classification">
         {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
         {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>
         {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}

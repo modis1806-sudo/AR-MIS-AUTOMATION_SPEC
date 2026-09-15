@@ -35,15 +35,24 @@
 </div>
 
 {% if display_rows %}
+<div class="table-tools" data-tt="salesdn">
+  <input type="search" data-tt-search placeholder="Search customer, voucher no...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+  <span class="tt-count">Open Amount of these rows: <strong data-tt-sum="salesdn:open_amount">0.00</strong></span>
+</div>
 <div class="table-scroll">
-<table>
+<table data-tt-table="salesdn">
   <thead>
     <tr>
-      <th>Branch</th><th>Date</th><th>Type</th><th>Voucher No.</th><th>Bill Ref.</th><th>Job ID</th>
-      <th>Customer</th><th>Grouping</th><th>Taxable Value</th><th>CGST</th><th>SGST</th><th>IGST</th>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th data-tt-filter data-tt-col="type">Type</th><th>Voucher No.</th><th>Bill Ref.</th><th>Job ID</th>
+      <th>Customer</th><th data-tt-filter data-tt-col="grouping">Grouping</th><th>Taxable Value</th><th>CGST</th><th>SGST</th><th>IGST</th>
       <th>Round Off</th><th>Invoice Value</th><th>Due Date</th><th>Linked CN No.</th><th>Linked CN Amt</th>
-      <th>Net Receivable</th><th>Receipts Applied</th><th>Open Amount</th><th>Overdue</th><th>DPD</th>
-      <th>Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th>PTP Status</th><th>Next Action</th>
+      <th>Net Receivable</th><th>Receipts Applied</th><th>Open Amount</th><th data-tt-filter data-tt-col="overdue">Overdue</th><th>DPD</th>
+      <th data-tt-filter data-tt-col="bucket">Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th data-tt-filter data-tt-col="ptp_status">PTP Status</th><th>Next Action</th>
       <th>Expected Collection</th>
     </tr>
   </thead>
@@ -52,15 +61,16 @@
     {% set row = d.row %}
     {% set pos = d.position %}
     {% set fu = d.follow_up %}
-    <tr>
-      <td>{{ row.branch_id }}</td>
+    <tr data-tt-row>
+      <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.voucher_number }}|{{ row.bill_allocation_reference }}"></td>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.invoice_date }}</td>
-      <td>{{ row.note_type.value }}</td>
+      <td data-tt-col="type">{{ row.note_type.value }}</td>
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.bill_allocation_reference }}</td>
       <td>{{ row.job_id or '—' }}</td>
       <td>{{ row.party_id }}</td>
-      <td>{{ d.grouping or '—' }}</td>
+      <td data-tt-col="grouping">{{ d.grouping or '—' }}</td>
       <td>{{ row.taxable_value|inr }}</td>
       <td>{{ row.cgst|inr }}</td>
       <td>{{ row.sgst|inr }}</td>
@@ -72,13 +82,13 @@
       <td>{{ pos.linked_cn_amount|inr }}</td>
       <td>{{ (row.invoice_value - pos.linked_cn_amount)|inr }}</td>
       <td>{{ pos.receipts_applied|inr }}</td>
-      <td>{{ pos.open_amount|inr }}</td>
-      <td>{% if pos.is_overdue %}<span class="pill fail">Yes</span>{% else %}<span class="pill ok">No</span>{% endif %}</td>
+      <td data-tt-col="open_amount" data-value="{{ pos.open_amount }}">{{ pos.open_amount|inr }}</td>
+      <td data-tt-col="overdue">{% if pos.is_overdue %}<span class="pill fail">Yes</span>{% else %}<span class="pill ok">No</span>{% endif %}</td>
       <td>{{ pos.days_past_due }}</td>
-      <td>{{ pos.ageing_bucket }}</td>
+      <td data-tt-col="bucket">{{ pos.ageing_bucket }}</td>
       <td>{{ fu.ptp_date if fu else '' or '—' }}</td>
       <td>{{ (fu.ptp_amount|inr) if (fu and fu.ptp_amount is not none) else '—' }}</td>
-      <td>
+      <td data-tt-col="ptp_status">
         {% if d.ptp_status == 'Kept' %}<span class="pill status-kept">Kept</span>
         {% elif d.ptp_status == 'Broken' %}<span class="pill status-broken">Broken</span>
         {% elif d.ptp_status == 'Active' %}<span class="pill status-active">Active</span>

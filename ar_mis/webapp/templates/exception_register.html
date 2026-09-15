@@ -16,12 +16,19 @@
 </form>
 
 <div class="section-heading">Unapplied Cash (net per party)</div>
+{% if unapplied_cash %}
+<div class="table-tools" data-tt="unappliedcash">
+  <input type="search" data-tt-search placeholder="Search party...">
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+</div>
+{% endif %}
 <div class="table-scroll" style="margin-bottom:20px;">
-<table>
+<table data-tt-table="unappliedcash">
   <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
   <tbody>
   {% for row in unapplied_cash %}
-    <tr><td>{{ row.party_id }}</td><td>{{ row.amount|inr }}</td></tr>
+    <tr data-tt-row><td>{{ row.party_id }}</td><td>{{ row.amount|inr }}</td></tr>
   {% else %}
     <tr><td colspan="2" class="empty">Nothing unapplied.</td></tr>
   {% endfor %}
@@ -30,12 +37,19 @@
 </div>
 
 <div class="section-heading">Unapplied Credit Notes (net per party)</div>
+{% if unapplied_cn %}
+<div class="table-tools" data-tt="unappliedcn">
+  <input type="search" data-tt-search placeholder="Search party...">
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+</div>
+{% endif %}
 <div class="table-scroll" style="margin-bottom:20px;">
-<table>
+<table data-tt-table="unappliedcn">
   <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
   <tbody>
   {% for row in unapplied_cn %}
-    <tr><td>{{ row.party_id }}</td><td>{{ row.amount|inr }}</td></tr>
+    <tr data-tt-row><td>{{ row.party_id }}</td><td>{{ row.amount|inr }}</td></tr>
   {% else %}
     <tr><td colspan="2" class="empty">Nothing unapplied.</td></tr>
   {% endfor %}
@@ -44,13 +58,21 @@
 </div>
 
 <div class="section-heading">Negative Open Amount (overpaid / over-credited invoices)</div>
+{% if negative_open %}
+<div class="table-tools" data-tt="negopen">
+  <input type="search" data-tt-search placeholder="Search customer, voucher no...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+</div>
+{% endif %}
 <div class="table-scroll" style="margin-bottom:20px;">
-<table>
-  <thead><tr><th>Branch</th><th>Voucher No.</th><th>Customer</th><th>Invoice Value</th><th>Open Amount</th></tr></thead>
+<table data-tt-table="negopen">
+  <thead><tr><th data-tt-filter data-tt-col="branch">Branch</th><th>Voucher No.</th><th>Customer</th><th>Invoice Value</th><th>Open Amount</th></tr></thead>
   <tbody>
   {% for d in negative_open %}
-    <tr>
-      <td>{{ d.row.branch_id }}</td>
+    <tr data-tt-row>
+      <td data-tt-col="branch">{{ d.row.branch_id }}</td>
       <td>{{ d.row.voucher_number }}</td>
       <td>{{ d.row.party_id }}</td>
       <td>{{ d.row.invoice_value|inr }}</td>
@@ -64,13 +86,21 @@
 </div>
 
 <div class="section-heading">Non-Active Debtors (180+ days silent, balance still open)</div>
+{% if non_active %}
+<div class="table-tools" data-tt="nonactive">
+  <input type="search" data-tt-search placeholder="Search party...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+</div>
+{% endif %}
 <div class="table-scroll" style="margin-bottom:20px;">
-<table>
-  <thead><tr><th>Branch</th><th>Party</th><th>Total Open</th><th>Last Transaction</th><th>Days Silent</th></tr></thead>
+<table data-tt-table="nonactive">
+  <thead><tr><th data-tt-filter data-tt-col="branch">Branch</th><th>Party</th><th>Total Open</th><th>Last Transaction</th><th>Days Silent</th></tr></thead>
   <tbody>
   {% for row in non_active %}
-    <tr>
-      <td>{{ row.branch_id }}</td>
+    <tr data-tt-row>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ row.total_open|inr }}</td>
       <td>{{ row.last_transaction_date }}</td>
@@ -84,14 +114,22 @@
 </div>
 
 <div class="section-heading">Unresolved References (Against Ref that didn't match any tracked invoice)</div>
+{% if unresolved %}
+<div class="table-tools" data-tt="unresolved">
+  <input type="search" data-tt-search placeholder="Search party, voucher no...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+</div>
+{% endif %}
 <div class="table-scroll" style="margin-bottom:20px;">
-<table>
-  <thead><tr><th>Source</th><th>Branch</th><th>Voucher No.</th><th>Party</th><th>Date</th><th>Amount</th><th>Attempted Reference</th></tr></thead>
+<table data-tt-table="unresolved">
+  <thead><tr><th data-tt-filter data-tt-col="source">Source</th><th data-tt-filter data-tt-col="branch">Branch</th><th>Voucher No.</th><th>Party</th><th>Date</th><th>Amount</th><th>Attempted Reference</th></tr></thead>
   <tbody>
   {% for row in unresolved %}
-    <tr>
-      <td>{{ row.source }}</td>
-      <td>{{ row.branch_id }}</td>
+    <tr data-tt-row>
+      <td data-tt-col="source">{{ row.source }}</td>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ row.voucher_date }}</td>
@@ -106,12 +144,20 @@
 </div>
 
 <div class="section-heading">Top 20 Overdue Customers</div>
+{% if top_overdue %}
+<div class="table-tools" data-tt="topoverdue">
+  <input type="search" data-tt-search placeholder="Search party...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+</div>
+{% endif %}
 <div class="table-scroll">
-<table>
-  <thead><tr><th>Branch</th><th>Party</th><th>Overdue Amount</th></tr></thead>
+<table data-tt-table="topoverdue">
+  <thead><tr><th data-tt-filter data-tt-col="branch">Branch</th><th>Party</th><th>Overdue Amount</th></tr></thead>
   <tbody>
   {% for row in top_overdue %}
-    <tr><td>{{ row.branch_id }}</td><td>{{ row.party_id }}</td><td>{{ row.overdue_amount|inr }}</td></tr>
+    <tr data-tt-row><td data-tt-col="branch">{{ row.branch_id }}</td><td>{{ row.party_id }}</td><td>{{ row.overdue_amount|inr }}</td></tr>
   {% else %}
     <tr><td colspan="3" class="empty">No overdue customers.</td></tr>
   {% endfor %}

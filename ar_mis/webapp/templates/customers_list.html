@@ -7,18 +7,34 @@
 {% include "_freshness.html" %}
 
 {% if rows %}
+<div class="table-tools" data-tt="customers">
+  <input type="search" data-tt-search placeholder="Search party, branch...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+</div>
 <div class="table-scroll">
-<table>
+<table data-tt-table="customers">
   <thead>
-    <tr><th>Party</th><th>Branch</th><th>Pre-MIS Outstanding</th><th>Last Reconciled On</th><th>Last Reconciled By</th>{% if session.role == "maker" %}<th>Mark Reconciled</th>{% endif %}</tr>
+    <tr>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th>Party</th>
+      <th data-tt-filter data-tt-col="branch">Branch</th>
+      <th>Pre-MIS Outstanding</th>
+      <th data-tt-filter data-tt-col="reconciled_status">Last Reconciled On</th>
+      <th>Last Reconciled By</th>
+      {% if session.role == "maker" %}<th>Mark Reconciled</th>{% endif %}
+    </tr>
   </thead>
   <tbody>
   {% for r in rows %}
-    <tr>
+    <tr data-tt-row>
+      <td><input type="checkbox" data-tt-row-select value="{{ r['party_id'] }}|{{ r['branch_id'] }}"></td>
       <td>{{ r['party_name'] }}</td>
-      <td>{{ r['branch_id'] }}</td>
-      <td>{{ r['pre_mis_outstanding']|inr }}</td>
-      <td>{% if r['last_reconciled_on'] %}{{ r['last_reconciled_on'] }}{% else %}<span class="pill fail">Never</span>{% endif %}</td>
+      <td data-tt-col="branch">{{ r['branch_id'] }}</td>
+      <td data-tt-col="pre_mis" data-value="{{ r['pre_mis_outstanding'] }}">{{ r['pre_mis_outstanding']|inr }}</td>
+      <td data-tt-col="reconciled_status">{% if r['last_reconciled_on'] %}{{ r['last_reconciled_on'] }}{% else %}<span class="pill fail">Never</span>{% endif %}</td>
       <td>{{ r['last_reconciled_by'] or '—' }}</td>
       {% if session.role == "maker" %}
       <td>
