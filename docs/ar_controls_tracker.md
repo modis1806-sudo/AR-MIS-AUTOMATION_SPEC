@@ -1,5 +1,43 @@
 # AR Internal Controls Tracker
 
+## Controlled editing / batch actions on selected rows — THE outstanding item
+
+The client's own framing, verbatim, from the night this was first raised:
+**"So control is what I desire on this tool."** Everything else in this
+file is downstream of this one. Pending since that session; carried forward
+incompletely (only the scaffolding shipped) until flagged again the next
+night — recorded here explicitly so it can't drop off again.
+
+**What shipped:** search, column filters, live SUMIFS-style totals, and
+checkbox-per-row selection with select-all-visible (Gmail-style: filter
+first, then select) — `ar_mis/webapp/static/table_tools.js`, across every
+large register/report table.
+
+**What's still missing — the actual point of building the checkboxes at
+all:** nothing happens with a selection yet. The client's own example:
+"if the manual data uploaded is wrong for a week, that week's data can
+first be filtered and selected all together" — implying a real batch
+action (bulk delete, bulk correct) on the selected rows. That action was
+explicitly deferred pending a design decision that was never finished:
+where exactly the line sits between "read-only report" and "editable
+correction," given free editing of a computed figure would destroy the
+one thing that makes this tool worth more than Excel — that every number
+is provably traceable back to Tally.
+
+**Status: Pending — design not yet resolved, not just unbuilt.** Needs an
+answer to at least:
+- What can actually be batch-acted on: raw uploaded/extracted rows
+  (register entries), or only the review/disposition layer already built
+  on top (Register Exceptions Review's per-row review, Drift Findings'
+  acknowledge)?
+- What actions apply once rows are selected: delete, re-attribute to a
+  different party, bulk-mark-reviewed, something else per screen?
+- Does this route through the existing append-only/never-discard
+  correction mechanisms (Catch Up a Party, drift-finding incorporation,
+  the review log), or does it need a new one?
+
+
+
 Working list from the "what's missing to make this a control tool, not an
 overpriced ageing system" discussion. Update this file *before* starting the
 next item, not after — that's the whole point of it existing separately from
