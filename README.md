@@ -500,6 +500,9 @@ a live webapp extraction.
 
 ## Known gaps
 
+See `docs/ar_controls_tracker.md` for the live, up-to-date status of every
+item below — update that file first when picking up the next one.
+
 **Built and working:** every register/report described above, live-tested
 against real TallyPrime (see the section below), bill-level ageing/due-date
 detail (`BILLTYPE`, due date — the original "no ageing-bucket detail" gap
