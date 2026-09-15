@@ -904,6 +904,54 @@ resolves former open item 1.
     (test data used Tally's raw sign instead of this app's own post-flip
     convention; the feature code itself was correct throughout).
 
+32. **NEW, resolved: TB Cross-Check's live total was summing the wrong
+    column, plus a full-report export and a Catch Up a Party name
+    safeguard - closing out this thread, client's own call, "for the
+    time being."** Three fixes verified together in one live session
+    against real TallyPrime, not just unit tests:
+    - The table's live "SUMIFS-style" total (item 26) was wired to
+      Difference - 0 for every reconciled row, so filtering to a subset
+      of parties and reading the total told you nothing. Every other
+      screen sums its own core balance column (Open Amount, CN Amount,
+      Total Open); TB Cross-Check now also sums Closing (TB/Tally), the
+      actual debtor balance, alongside the existing Difference total.
+    - The only export on this screen was the narrow unreconciled-
+      parties list (item 25). Added a second, separate "Export to
+      Excel" for the complete table for the current From/To range -
+      reconciled and mismatched rows alike - so a Maker can filter/pivot
+      it themselves rather than being limited to the on-screen
+      search/filter.
+    - Catch Up a Party's (item 27) Party Name field was free text with
+      only a placeholder hint - risky precisely because it's the
+      identity everything the tool builds gets keyed to, and this app
+      already has one real near-duplicate-ledger case in production
+      data (AARTH ELECTRICALS vs AARTH ELECTRICALS (GSTIN)). Now
+      suggests the live Sundry Debtors ledger list from Tally (the same
+      names the route already validated against on submit) as the
+      operator types.
+    - **Live-verified end to end**, not just against test fixtures: a
+      real party (Kolkata branch) mistakenly filed as a Sundry Creditor
+      in Tally, invisible to every normal weekly extraction, was fixed
+      in Tally and run through Catch Up a Party - real voucher history
+      pulled, TB Cross-Check reconciled clean, registers populated.
+      Confirms the item 27 design (never a hand-typed closing figure)
+      holds up against a genuine misclassification, not only the
+      fixture the tests describe.
+
+    **Explicitly not resolved by this entry** - still open, tracked
+    separately in `docs/ar_controls_tracker.md`: Catch Up a Party has no
+    `performed_by`/reason field, unlike every other correction mechanism
+    in this app; extending it to an already-tracked party (today it
+    refuses outright) is an unresolved design fork between gap-fill-only
+    and a logged correction row; the Add Party "quick form" idea
+    discussed this session (typing both an Opening and a Closing figure)
+    directly conflicts with item 27's own rejected-shape (b) above and
+    was not adopted; and the THE outstanding item (controlled batch
+    actions on selected rows) remains entirely unbuilt. TB Cross-Check
+    itself, and the Catch Up a Party correction path, are considered
+    functionally complete for now - revisit only if something surfaces
+    in further use, not on a schedule.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

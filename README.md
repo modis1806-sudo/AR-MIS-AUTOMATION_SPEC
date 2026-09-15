@@ -289,8 +289,17 @@ store of its own:
   tiles (Total Debtor as per Books, parties currently mismatched, total
   absolute difference) always use each party's latest state as of the
   selected date regardless of that range, so they never silently shrink
-  just because a narrow window is on screen. **Export list** downloads
-  exactly the mismatched parties behind the tile as an Excel file.
+  just because a narrow window is on screen. The table's own live total
+  (search/filter this table down, and the figure recomputes from what's
+  visible) sums **Closing (TB/Tally)** — the actual debtor balance — not
+  just Difference, so filtering to a subset of parties answers "what do
+  these owe in total," not only "do these tie out." Two separate
+  downloads: **Export list** for exactly the mismatched parties behind
+  the tile, and **Export to Excel** for the complete table for the
+  current From/To date range (every row in range, not just what the
+  on-screen search/column filter happens to be narrowed to), so a Maker
+  can apply their own filter/pivot in Excel instead of being limited to
+  this screen's own search/filter.
 - **AR Concentration Risk** — top 5/10/20 parties by current outstanding,
   each as a % of total AR, plus a combined "top N = X% of Total AR"
   headline — is exposure spread across many customers or concentrated in
@@ -430,8 +439,11 @@ for however long the party was excluded. Instead:
 1. Fix the ledger's group in Tally first (this tool cannot do that for you).
 2. Read that ledger's real balance off Tally as of some past anchor date you
    trust.
-3. Enter the party name (exactly as it appears in Tally), that anchor date
-   and balance, and how far to catch up through (defaults to today).
+3. Enter the party name (the form suggests the live Sundry Debtors ledger
+   list from Tally as you type — the same names the tool validates against
+   on submit — so a typo or a missed GSTIN suffix on a near-duplicate ledger
+   is visible before submitting, not only after), that anchor date and
+   balance, and how far to catch up through (defaults to today).
 4. The tool pulls the party's **real voucher history** since the anchor date
    and replays it through the exact same `process_branch_data` every normal
    weekly run uses — so whatever mix of Sales, Receipts, Credit Notes, or a

@@ -83,6 +83,22 @@ that reason, not rejected.
 
 ## Already verified — not gaps
 
+- **TB Cross-Check + the Catch Up a Party correction path — considered
+  finalized for the time being, client's own call.** Fixed the live
+  total summing the wrong column (Difference instead of Closing
+  (TB/Tally)), added a full-report Excel export alongside the existing
+  unreconciled-only one, and added a live-ledger-name suggestion to
+  Catch Up a Party's Party Name field. Verified end to end against real
+  TallyPrime, not just fixtures: a genuinely misclassified debtor
+  (Kolkata branch, Sundry Creditor instead of Sundry Debtor) was fixed
+  in Tally and caught up through the app, reconciling clean with real
+  registers populated. See design doc item 32 for the full detail.
+  **Does not close**: no `performed_by`/reason field on Catch Up a
+  Party (still the one correction mechanism in this app with no
+  accountability trail — see the AR-process/IT tables below), extending
+  it to an already-tracked party (still refuses outright — unresolved
+  gap-fill-vs-correction-row fork), or the outstanding batch-actions
+  item at the top of this file.
 - **Altered-voucher detection.** Client's own question, checked rather than
   assumed: `resolve_opening_balances` anchors each week's opening to the
   *prior week's own recorded* `closing_extracted`, so an alteration to an
