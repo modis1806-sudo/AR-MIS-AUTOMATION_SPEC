@@ -125,27 +125,81 @@ Still outstanding before the first live production run:
 
 ## Layout
 
+Extraction and core reconciliation:
 - `ar_mis/money.py` — Decimal-based money type, zero-tolerance comparison.
-- `ar_mis/models.py` — data model for parties, vouchers, ledger entries.
-- `ar_mis/xml_requests.py` — builds Tally XML export request envelopes.
-- `ar_mis/tally_client.py` — HTTP transport + current-company confirmation.
+- `ar_mis/models.py` — data model for parties, vouchers, ledger entries, and
+  every register/report row type below.
+- `ar_mis/config.py` — branch config type, financial-year helpers, and
+  `split_into_chunks` (extraction is chunked into ~7-day pieces purely for
+  Tally request-size reasons — see "Continuous extraction" below for why
+  this is NOT the same as the Monday–Sunday week-snapping that was removed).
+- `ar_mis/xml_requests.py` — builds Tally XML export request envelopes. Each
+  function's docstring is a live diagnostic trail of every request shape
+  tried against real Tally and why it did or didn't work — read before
+  changing one of these, not just before writing a new one.
+- `ar_mis/tally_client.py` — HTTP transport, current-company confirmation,
+  transparent voucher-fetch chunking for wide date ranges.
 - `ar_mis/parsers.py` — parses Tally XML responses into models.
 - `ar_mis/sign.py` — the single uniform sign-flip rule (Section 2.3).
 - `ar_mis/rollforward.py` — party-level roll-forward computation (Section 2.4).
-- `ar_mis/storage.py` — append-only SQLite store for Layers 1–3.
-- `ar_mis/reconciliation.py` — party-level gate (4.1) + YTD cross-check (4.2).
+- `ar_mis/storage.py` — append-only SQLite store for every layer, with an
+  automatic schema-version migration mechanism (`SCHEMA_VERSION`/
+  `MIGRATIONS`, backs up the database before migrating an existing one).
+- `ar_mis/reconciliation.py` — party-level gate (4.1), YTD drift cross-check
+  (4.2, backdated/altered-entry detection).
+- `ar_mis/drift_correction.py` — the correction mechanism for a Drift
+  Finding: replays its original voucher into the registers under a new,
+  Maker-chosen week, never editing the locked historical week.
 - `ar_mis/orchestration.py` — human-in-the-loop branch loop + retry queue.
 - `ar_mis/gate.py` — PASS/FAIL aggregation + output gate (4.4).
 - `ar_mis/reporting.py` — static weekly snapshot report (Section 6).
 - `ar_mis/pipeline.py` — wires extraction → roll-forward → reconciliation →
-  storage into the per-branch runner orchestration drives.
+  register-building → storage into the per-branch runner orchestration
+  drives; the one function (`process_branch_data`) that both a live
+  Tally pull and a manual XML upload both call, so neither path can drift
+  from the other.
 - `ar_mis/cli.py` — the actual script run each Monday (Section 2.2); ties
   orchestration, pipeline, the 4.2 drift check, the 4.4 gate, and reporting
-  into one weekly command.
-- `ar_mis/seed.py` — one-time Layer 1 Pre-MIS Outstanding load from a CSV.
-- `ar_mis/webapp/` — local web app: Branch Master (extraction config as
-  user-editable data) and Test Extraction (a self-serve connectivity +
-  extraction check against a real Tally instance).
+  into one weekly command. Reads its branch list from Branch Master
+  (`Store.list_branches()`) — `ar_mis/config.py` no longer carries a
+  hardcoded branch list at all.
+- `ar_mis/seed.py` — one-time Layer 1 Pre-MIS Outstanding load, shared by
+  the CLI tool (multi-branch CSV) and the webapp's own branch-scoped
+  upload (see "One-time setup" below).
+
+Registers and reporting (the actual day-to-day screens):
+- `ar_mis/registers.py` — builds the three master registers (Sales & DN,
+  Credit Note, Receipt & Journal) from vouchers; tax classification, Due
+  Date, bill-reference matching, PTP status.
+- `ar_mis/register_export.py` — Excel export for every register/report
+  screen that has one (openpyxl, Indian digit grouping preserved as real
+  numbers, not display strings).
+- `ar_mis/dashboard.py` — AR Snapshot (KPI dashboard) and Branch-wise
+  Ageing Schedule.
+- `ar_mis/ageing_matrix.py` — Ageing Matrix (branch summary + customer
+  detail, cross-checked against Tally's own ledger closing balance).
+- `ar_mis/exception_register.py` — the six Exception Register sub-reports
+  (unapplied cash/CN, negative open amount, non-active debtors, unresolved
+  references, top 20 overdue).
+- `ar_mis/weekly_movement.py` — Weekly Movement Register: a recorded,
+  locked-once history, not a live recalculation like every other report.
+- `ar_mis/reconciliation_report.py` — TB Reconciliation Cross-Check
+  (Tally's own closing balance next to this app's own workings, one row
+  per party per branch per week, mismatches never discarded) and AR
+  Concentration Risk (top N parties by outstanding, as a % of total AR).
+- `ar_mis/branch_totals.py` — Branch Sales + CN + DN Total, a plain
+  per-branch turnover figure to eyeball against Tally's own P&L.
+- `ar_mis/manual_upload.py` — the fallback extraction path (see "Manual
+  Upload" below) — parses hand-exported Tally XML through the exact same
+  `process_branch_data` a live pull uses.
+- `ar_mis/diagnostics.py` — small CLI for inspecting exactly what a live
+  Tally instance is saying, rather than guessing (see its own section
+  below).
+- `ar_mis/webapp/` — the local Flask app tying all of the above into one
+  UI, plus `ar_mis/webapp/static/table_tools.js`: one shared,
+  dependency-free script providing search, column filters, live
+  SUMIFS-style totals, and select-all-visible-rows on every register/
+  report table, applied via `data-tt-*` attributes in each template.
 
 ## Seeing the application: the local web app
 
@@ -158,12 +212,27 @@ python -m ar_mis.webapp.app
 ```
 
 Then open `http://127.0.0.1:5000` in a browser, on the same machine (or LAN)
-that can reach Tally. Two screens:
+that can reach Tally. First visit asks you to pick a role — **Maker** (full
+access: configure branches, extract/upload data, record corrections) or
+**Checker** (read-only across every screen) — a placeholder role split, not
+real authentication; see "Known gaps" below. Screens are grouped into three
+nav sections:
+
+### Extraction
 
 - **Branch Master** — add/edit/remove branches: branch name, exact Tally
   company name, host, port. This replaced a hardcoded list in
   `ar_mis/config.py` specifically so this is something you configure, not
-  something you edit source code for.
+  something you edit source code for. Each branch row also has:
+  - **Data on Record** — the date range and week count actually extracted
+    for that branch, and a **Delete latest week** action that undoes
+    exactly one mistaken extraction (only ever the branch's own most
+    recently recorded week — every earlier week's closing balance is the
+    next week's opening, so deleting out of order would strand that
+    roll-forward chain).
+  - **Catch up a party** — see its own section below.
+  - An optional **Pre-MIS Outstanding CSV** upload right on the branch
+    create/edit form — see "One-time setup" below.
 - **Discover Companies** — asks Tally what companies are actually open right
   now at a given host/port, and lets you pick one ("Use this company")
   instead of having to already know and correctly type the exact current
@@ -171,13 +240,16 @@ that can reach Tally. Two screens:
   deployment (or a standalone Tally Gateway Server service, as opposed to
   whichever interactive Tally window a person happens to have open) may
   report a different "currently open" company at different moments.
-- **Test Extraction** — pick a branch, click Run Test. It runs the real
-  Section 2.2 company-check, a voucher pull, and a Sundry Debtors pull
-  against that branch's Tally instance and shows PASS/FAIL per step with the
-  actual error if something fails (wrong company loaded, Tally unreachable,
-  etc.). Read-only — nothing is written to the database. This is the fastest
-  way to find out whether host/port/company-name config is right before any
-  real weekly run depends on it.
+- **Test & Save Extraction** — pick a branch and a date range (any range —
+  a day, a month, a full financial year for a first-time backfill; run
+  exactly as typed, never snapped to any calendar boundary — see
+  "Continuous extraction" below). **Run Test** does a read-only company
+  check + voucher pull + Sundry Debtors pull and shows PASS/FAIL per step
+  with the actual error if something fails, before anything is written.
+  **Save** re-runs the same range and actually writes it — reconciliation,
+  registers, everything — chunked into ~7-day pieces for request-size
+  reasons, one chunk at a time, so a chunk that already has recorded data
+  is safely skipped rather than re-processed.
 - **Manual Upload** — a fallback for when the live Tally connection isn't
   reachable at all (built after the client's own Tally Gateway Server proved
   unreliable during real testing). Upload the same data by hand, exported
@@ -190,6 +262,85 @@ that can reach Tally. Two screens:
   arrived over HTTP or as a file, so neither does anything downstream of it.
   Refuses outright if the branch/week already has recorded data from either
   a live run or an earlier upload — first one in wins, no silent overwrite.
+
+### Registers
+
+One row per real transaction, every branch combined, cumulative from FY
+start — the base every report below is derived from, never a separate data
+store of its own:
+
+- **Customer Master** — every party on record: Pre-MIS Outstanding, Credit
+  Limit (see its own section below), last-human-reconciled date, and
+  search/filter/select-all across the full list (real deployments have
+  been in the 900+ party range, where scrolling a plain list stopped being
+  usable).
+- **Sales & DN Register**, **Credit Note Register**, **Receipt & Journal
+  Register** — voucher-wise detail with Open Amount/Ageing/PTP status
+  recalculated live for whatever date you pick (never a stored total), an
+  Excel export button, and the same search/filter/select-all toolbar.
+
+### Reports
+
+- **TB Reconciliation Cross-Check** — Tally's own Sundry Debtors closing
+  balance next to this app's own workings (Opening + Sales + DN − CN +
+  Receipts + Journals), one row per party per branch per week, **kept
+  forever, mismatches included** — the direct answer to "how do I know
+  this data is correct?" A From/To range scopes the table; the summary
+  tiles (Total Debtor as per Books, parties currently mismatched, total
+  absolute difference) always use each party's latest state as of the
+  selected date regardless of that range, so they never silently shrink
+  just because a narrow window is on screen. **Export list** downloads
+  exactly the mismatched parties behind the tile as an Excel file.
+- **AR Concentration Risk** — top 5/10/20 parties by current outstanding,
+  each as a % of total AR, plus a combined "top N = X% of Total AR"
+  headline — is exposure spread across many customers or concentrated in
+  a few, independent of whether any of them are currently overdue. Uses
+  the same Total AR figure as TB Cross-Check, so the two screens can never
+  quietly disagree.
+- **Register Exceptions Review** — every voucher Test & Save Extraction or
+  Manual Upload couldn't confidently place into a register (no
+  PARTYLEDGERNAME, a party with no customer_master record, a voucher that
+  touches no tracked Sundry Debtor) — persisted permanently instead of
+  vanishing once that run's result page is closed. Two outcomes: **Reviewed
+  — no action needed** (a human confirmed the exclusion is genuinely
+  correct — zero effect on any figure, an audit note only) or **Resolved
+  via catch-up** (the party turned out to be a real, wrongly-excluded
+  debtor — links straight into Catch Up a Party with the name pre-filled).
+- **AR Snapshot** — the main KPI dashboard: Outstanding Position (Total AR,
+  Pre-MIS Outstanding, Related Party AR shown separately from Sundry
+  Debtor AR, Unapplied Cash/CN), Performance (Overdue AR and its ageing
+  breakdown, Bad Debt Risk 181+ days, Notional Interest Cost at a flat 10%
+  p.a., DSO, Collection Efficiency, PTP Kept Rate), Average Collection
+  Period by branch. Every figure is as-of-date selectable; nothing here is
+  a stored total.
+- **Branch-wise Ageing Schedule** — one ageing-bucket row per branch plus
+  an all-branches total.
+- **Exception Register** — six lists in one screen: Unapplied Cash,
+  Unapplied Credit Notes (both netted per party), Negative Open Amount
+  invoices, Non-Active Debtors (180+ days silent, balance still open),
+  Unresolved References (an "Against Ref" that didn't match any tracked
+  invoice), Top 20 Overdue Customers.
+- **Ageing Matrix** — a branch-level summary plus customer-level detail,
+  the customer view cross-checked against Tally's own ledger closing
+  balance with no rounding tolerance — every difference shown exactly as
+  computed, never smoothed over.
+- **Weekly Movement Register** — unlike every report above, this one does
+  **not** recalculate: a Maker explicitly records the current position as
+  that week's row, and it's locked in permanently from then on (a week
+  already recorded can't be recorded again). Each figure carries a trend
+  arrow against the previously recorded week.
+- **Branch Sales + CN + DN Total** — a simple per-branch turnover total
+  for a chosen period, plain enough to eyeball directly against Tally's
+  own P&L page (gross/GST-inclusive by necessity, since Credit Note rows
+  never carry a tax split).
+- **Backdated Entry Findings** (reached from Reports; see `ar_mis/
+  reconciliation.py`/`drift_correction.py`) — a voucher a fresh full-year
+  Tally pull found that no prior weekly extraction ever captured. Kept
+  permanently until reviewed. **Acknowledge** is an audit note only.
+  **Incorporate** is the real fix: replays the voucher into the registers
+  under a new week you choose, never editing the locked historical week,
+  and needs that party's real Tally closing balance as of that date to
+  confirm it actually reconciles clean afterward.
 
 ## Diagnosing a live Tally connection from the command line
 
@@ -213,26 +364,47 @@ reaching for this whenever a new Tally version/edition behaves unexpectedly.
 ## One-time setup: seeding Layer 1 (Pre-MIS Outstanding)
 
 Before the first weekly run for a branch, load each party's Pre-MIS
-Outstanding baseline (Section 2.5) from a CSV:
+Outstanding baseline (Section 2.5) — the balance as it stood the day before
+this pipeline went live for that branch, set once and never re-pulled or
+recalculated weekly. Two ways to load it, sharing the same underlying
+guardrails (`ar_mis/seed.py`):
+
+**From the webapp** (the normal path for a single branch) — on Branch
+Master's create/edit form, upload a CSV with columns `party_name,
+pre_mis_outstanding` (no `party_id`, no `branch_id` — every row belongs to
+the branch you're on, and `party_name` alone is the join key against Tally's
+own extraction, so it must be typed exactly as the ledger appears there).
+Download the template straight from that form. Amounts use this pipeline's
+own sign convention (positive for a debtor who owes money, negative for a
+credit balance) — never Tally's raw export, and never a "Dr"/"Cr" suffix.
+
+**From the CLI** (for seeding multiple branches from one shared file):
 
 ```
 python -m ar_mis.seed pre_mis_outstanding.csv --db-path data/ar_mis.db --dry-run
 python -m ar_mis.seed pre_mis_outstanding.csv --db-path data/ar_mis.db
 ```
 
-CSV columns: `party_id,party_name,branch_id,pre_mis_outstanding`. Amounts must
-already be in this pipeline's sign convention (Dr positive / Cr negative,
-Section 2.3), not Tally's raw export. See
-`fixtures/sample_pre_mis_outstanding.csv` for the format.
+CSV columns: `party_id,party_name,branch_id,pre_mis_outstanding`. See
+`fixtures/sample_pre_mis_outstanding.csv` for the format. Unlike the webapp
+path, this one does ask for a separate `party_id` — kept for backward
+compatibility with existing seed files, but note that the live extraction
+path always uses the Tally ledger name itself as `party_id` for any
+auto-discovered party (see `pipeline.process_branch_data`), so a `party_id`
+here that doesn't exactly match the eventual ledger name will silently
+never line up with the real party once extraction runs.
 
-This is guarded to match Section 2.5's "must not move except through
+Both paths are guarded to match Section 2.5's "must not move except through
 explicit, logged adjustment": re-running against an unchanged CSV is a safe
 no-op; a changed balance for a party that already has weekly snapshot data on
 record is refused outright, `--force` included — at that point the only path
 is `Store.record_pre_mis_adjustment()`, a deliberate logged correction, not a
 bulk re-load. A changed balance before any weekly run exists for that party
-(i.e. still fixing a bad initial load) requires `--force` and is reported
-either way — nothing is overwritten silently.
+(i.e. still fixing a bad initial load) is applied automatically from the
+webapp (there's no way to pass `--force` through a browser, and the
+has_weekly_snapshots check already protects the one case that actually
+matters) or requires `--force` from the CLI; both report what happened either
+way — nothing is overwritten silently.
 
 **New customers that arrive after the seed is loaded are handled automatically,
 not by editing the CSV again.** If extraction finds a party in Tally's Sundry
@@ -242,6 +414,63 @@ at go-live, given the seed CSV is a comprehensive one-time list of everyone
 who did. It's still surfaced as a "New party this week" line in the report's
 Exceptions section, not silently absorbed — worth a human noticing even
 though the number itself isn't in doubt.
+
+## Catch Up a Party — onboarding a debtor Tally excluded
+
+Reached from Branch Master. For a real Sundry Debtor that Tally excluded from
+extraction for some real-world reason — most commonly, mistakenly filed under
+Sundry Creditors — so neither its opening balance nor any of its vouchers
+(sales, receipts, even a Bad Debt write-off Journal) ever reached AR
+reconciliation or the real registers.
+
+Deliberately does **not** ask for a hand-typed closing figure — that only
+patches the TB total and leaves the Sales/CN/Receipt/Journal registers wrong
+for however long the party was excluded. Instead:
+
+1. Fix the ledger's group in Tally first (this tool cannot do that for you).
+2. Read that ledger's real balance off Tally as of some past anchor date you
+   trust.
+3. Enter the party name (exactly as it appears in Tally), that anchor date
+   and balance, and how far to catch up through (defaults to today).
+4. The tool pulls the party's **real voucher history** since the anchor date
+   and replays it through the exact same `process_branch_data` every normal
+   weekly run uses — so whatever mix of Sales, Receipts, Credit Notes, or a
+   write-off Journal actually happened is handled by the one general
+   mechanism that already understands all of them, not a new one invented
+   per voucher type.
+
+Refuses outright if the party already has weekly_snapshot history (this tool
+is for onboarding a never-tracked party, not correcting an already-tracked
+one) or if the party still isn't found in Tally's Sundry Debtors pull
+(classification not actually fixed yet, or a name mismatch). Only ever
+replays vouchers touching this one party — never the full company-wide pull
+for that date range — so no other party's own already-recorded register rows
+for the same historical window are touched or duplicated.
+
+## Credit Limit (reference only)
+
+Customer Master carries an editable `credit_limit` per party, defaulting to
+Rs 1,00,00,000 (one crore). This is a secondary reporting layer, not the
+system of record — the figure has no power to block a sale in Tally the way
+a real credit-control system would; it exists purely so a breach can
+eventually be surfaced as its own report (not yet built — see "Known gaps"
+below).
+
+## Continuous extraction — no calendar-grid week-snapping
+
+Extraction runs on exactly the date range typed into Test & Save Extraction
+or the CLI's own week-ending calculation — **never** snapped to a
+Monday–Sunday calendar grid. An earlier build did snap every range to the
+nearest full calendar week regardless of what was actually requested, and it
+caused a real incident against live data: extracting "1st April" (the
+client's actual go-live date) silently pulled in 30–31 March as well,
+because that Monday-starting week included them. The fix (`ar_mis/config.py`,
+`split_into_chunks`) treats "chunk into ~7-day pieces" as purely a practical
+choice about Tally request size, completely independent from any calendar
+boundary — a range is chunked starting exactly at its own first day, period.
+`WeeklySnapshotRow.period_start` stores each run's own real start date
+explicitly now, since it can no longer be derived by subtracting 6 days from
+`week_ending` once chunks aren't fixed calendar weeks.
 
 ## Voucher type matching: contains, not exact
 
@@ -265,22 +494,47 @@ transfer between godowns, unrelated to an accounting Journal voucher.
 python -m ar_mis.cli 2026-01-05    # week ending date; defaults to today
 ```
 
-Before the first real run, also edit `ar_mis/config.py`'s `BRANCHES` list
-with the client's actual branch names and exact Tally company names.
+Branches come from Branch Master (`Store.list_branches()`), not from a
+hardcoded list — add/edit them there before the first real run, same as for
+a live webapp extraction.
 
-## Known gap: no ageing-bucket detail yet
+## Known gaps
 
-Section 6 asks for an Ageing Matrix and a `>180-day` "Bad Debt Risk" KPI —
-exactly the two areas responsible for two of the six original defects (a
-bucket sub-split not summing to its own combined total, and a Bad Debt Risk
-figure disagreeing with the Ageing Matrix for the same date). Building these
-correctly requires bill-level due-date and `BILLTYPE` (New Ref vs Against
-Ref) data that the current extraction layer does not pull. Rather than derive
-an ageing bucket from closing balances alone — which would silently
-reintroduce the same class of unvalidated-figure bug this project exists to
-remove — this build ships without it. Adding it means extending
-`xml_requests.py`'s bill-allocation fetch to include `BILLTYPE` and due date,
-and a new module to bucket open bills by age as of the report date.
+**Built and working:** every register/report described above, live-tested
+against real TallyPrime (see the section below), bill-level ageing/due-date
+detail (`BILLTYPE`, due date — the original "no ageing-bucket detail" gap
+this section used to describe), Drift Findings + correction, Register
+Exceptions Review, Catch Up a Party, search/filter/select-all across every
+large table.
+
+**Deliberately not built yet** — real internal-controls gaps identified and
+discussed explicitly with the client, kept here rather than silently assumed
+to be someone else's problem:
+
+- **No real authentication.** Maker/Checker is a session toggle, not a login
+  — every `reviewed_by`/`adjusted_by`/`incorporated_by` field in this system
+  is a free-text box, not a verified identity. This is the gap everything
+  else below depends on: an approval workflow or an audit trail is only as
+  trustworthy as who's allowed to type into it.
+- **Maker/Checker is a viewing permission, not an approval gate.** A Maker's
+  action (an extraction, an adjustment, a catch-up) takes effect
+  immediately; a Checker only ever reads it after the fact. No second
+  signature is required on anything, including a write-off.
+- **No bank-statement tie-out.** A Receipt voucher is trusted at Tally's own
+  word; nothing here confirms it corresponds to a real bank credit.
+- **No period lock.** Any period stays open to a correction forever — to be
+  revisited after roughly 3 months of live operation, by the client's own
+  call.
+- **Concentration Risk is built; the rest of the AR-process control list
+  agreed with the client is not yet**: targets/benchmarks with variance
+  (DSO, Collection Efficiency, PTP Kept Rate are all reported as raw
+  actuals, nothing to hold them against), per-owner accountability rollup
+  (PTP already carries an `owner` field, nothing rolls performance up by
+  it), an ageing-bucket-transition escalation trigger, dispute/hold
+  classification distinct from plain "unpaid", and a due date on the
+  Receipt/Journal register's free-text "Next Action" field.
+- **Provisioning is explicitly out of scope for now** — ageing is shown, but
+  nothing here computes what should actually be provisioned against it.
 
 ## Running tests
 

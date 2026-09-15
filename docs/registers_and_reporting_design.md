@@ -685,6 +685,224 @@ resolves former open item 1.
     NOT the correction mechanism built in item 18: acknowledging is an
     audit note only - who saw it and when - it never touches
     weekly_snapshot or any register.
+20. **NEW, resolved: TB Cross-Check gained a From/To range and a "Total
+    Debtor as per Books" tile.** Client's explicit ask: a single running
+    total to hold up against a real Trial Balance run in Tally for a
+    chosen date. The tile always uses each party's latest recorded week
+    ON OR BEFORE the selected date across FULL history, never the
+    display range - a party untouched again inside a narrow browsing
+    window still owes their last known balance, and scoping the total to
+    that window would silently understate it. `compute_tb_cross_check_
+    summary` gained an `as_of` parameter for this
+    (`ar_mis/reconciliation_report.py`).
+21. **NEW, resolved: real Sundry Debtors closing-balance date-scoping bug,
+    found live against the client's own Tally.** A raw `<FETCH>` on a
+    Ledger Collection returns a cached object attribute that completely
+    ignores `SVFROMDATE`/`SVTODATE` - confirmed by pulling the same real
+    ledger for two genuinely different dates and getting the identical
+    figure both times. Four request shapes were tried and disproven live
+    before the fix (client-supplied, cross-checked independently via
+    ChatGPT): keep the same ledger selection (`CHILDOF`/`BELONGSTO`
+    Sundry Debtors, separately confirmed correct throughout) but replace
+    `<FETCH>` with `<NATIVEMETHOD>` per field, which genuinely invokes
+    the object's own computation against the period context rather than
+    serializing a cached value. See `xml_requests.ytd_sundry_debtors_
+    request`'s own docstring for the full v1-v5 trail - required reading
+    before touching this function again, since the wrong-looking v1 shape
+    is the one that looks simplest. One knock-on fix: a NATIVEMETHOD
+    field renders in the exact case given in the request (`ClosingBalance`)
+    rather than FETCH's always-uppercase (`CLOSINGBALANCE`) -
+    `parsers.parse_ledger_closing_balances` was hardened with a
+    case-insensitive lookup to handle both shapes, since Manual Upload's
+    real fixtures still use the all-caps form.
+22. **NEW, resolved: Monday-Sunday week-snapping removed entirely -
+    client's explicit reversal, prompted by a real incident.** Extracting
+    "1st April" (the actual go-live date) silently pulled in 30-31 March
+    too, because the old code snapped every requested range to its
+    containing calendar week regardless of what was typed. Client's own
+    reasoning: this tool's data must be continuous from whatever date is
+    fed into the register - the only genuine "weekly" requirements are
+    extraction cadence (an operational choice, not a data-model
+    constraint) and the Weekly Movement Register (already its own
+    separately-recorded, independently-computed history per item 4).
+    Neither requires the underlying extraction to snap to a calendar
+    grid. Fix: `ar_mis.config.split_into_chunks` treats "~7-day chunks"
+    as purely a practical choice about Tally request size, starting
+    exactly at the requested range's own first day - never a calendar
+    boundary. `WeeklySnapshotRow` gained `period_start` to store each
+    run's own real start date explicitly, since it can no longer be
+    derived from `week_ending` once chunks aren't fixed weeks; existing
+    rows were safely backfilled by the old formula (`week_ending - 6
+    days`), since every row up to that point genuinely was saved under
+    the old fixed-week assumption. Live re-tested against the client's
+    real Tally after the fix: "2026-04-01 to 2026-04-02" no longer pulls
+    in March.
+23. **NEW, resolved: ledger-name-stripping inconsistency (RAASHI
+    ENTERPRISES).** A real ledger's NAME attribute carried embedded CRLF
+    characters inside Tally itself. Voucher-side parsing already stripped
+    names via `_text()`; the ledger-list-side `parse_ledger_closing_
+    balances` didn't. Client's first instinct was "stop stripping
+    everywhere" (in case stripping loses real data); corrected to
+    "strip consistently everywhere instead" - the CRLF garbage carries no
+    accounting data, only a matching-key string, and removing stripping
+    broadly would reopen a previously-fixed crash (a whitespace-only
+    `<AMOUNT>` tag).
+24. **NEW, resolved: Pre-MIS Outstanding webapp upload, and a `party_id`
+    design mistake caught and fixed same-session.** Client's ask: the
+    one-time Pre-MIS Outstanding load should be offered right on Branch
+    Master's create/edit form as a CSV upload, not only via the CLI tool.
+    First version mirrored the CLI's own CSV shape
+    (`party_id,party_name,pre_mis_outstanding`) - client immediately
+    caught that this was wrong: `pipeline.process_branch_data` always
+    uses the raw Tally ledger name as BOTH `party_id` and `party_name`
+    for any auto-discovered party, so a separately-typed `party_id` here
+    could mismatch the real ledger name and silently orphan the seeded
+    balance forever (the exact failure mode this feature exists to
+    prevent). Fixed: the webapp-scoped upload
+    (`seed.parse_seed_rows_for_branch`) has no `party_id` column at all -
+    `party_name` alone is the join key, and must be typed exactly as the
+    ledger appears in Tally. The CLI's own multi-branch CSV format is
+    unchanged (kept for backward compatibility with existing seed files).
+    A second real gap surfaced during live testing right after: the
+    webapp upload always called `seed()` with `force=False`, so a party
+    auto-created at a placeholder 0.00 by an earlier extraction (exactly
+    the client's real Charze scenario) could never be corrected through
+    the browser at all - `has_weekly_snapshots()` already protects the
+    one case that actually matters (a party with real extraction history)
+    regardless of `force`, so the webapp upload now always passes
+    `force=True`, closing the gap without weakening that protection.
+25. **NEW, resolved: Export Unreconciled Parties.** Client's ask,
+    following up on item 20's summary tile: an "Export unreconciled
+    parties" action next to the "Parties currently showing a difference"
+    tile, rather than scrolling the full TB Cross-Check table by eye.
+    `reconciliation_report.compute_unreconciled_parties` shares the same
+    latest-per-party-as-of reduction as the summary tile (so the export
+    can never disagree with the count shown), sorted by absolute
+    difference descending.
+26. **NEW, resolved: search, filter, live totals, and row selection
+    across every large register/report table.** Client's explicit ask,
+    driven by a real usability wall: 964 real ledgers made a plain list
+    (Customer Master) unusable. One shared, dependency-free
+    `ar_mis/webapp/static/table_tools.js`, applied via `data-tt-*`
+    attributes: live search across the whole row; column filter
+    dropdowns auto-populated from values actually present; a "SUMIFS-
+    style" live total that recomputes from currently visible rows only
+    (kept as a clearly separate line near the table, never repurposing
+    TB Cross-Check's own top KPI tiles, which are deliberately as-of-a-
+    date across full history per item 20 and must never be conflated
+    with what's scrolled into view); checkbox-per-row selection with
+    select-all-visible (Gmail-style: filter first, then select - the
+    client's own reference point), laying groundwork for batch actions
+    not yet wired to anything (see Open Items below). Verified beyond
+    markup-presence tests: the JS Indian-number-grouping reimplementation
+    checked byte-for-byte against Python's own `format_inr`, and the full
+    search/filter/live-sum/select-all interaction path exercised against
+    a real DOM via jsdom.
+27. **NEW, resolved: Catch Up a Party - the general mechanism for a
+    misclassified or never-tracked debtor.** Client's real example: a
+    Sundry Debtor mistakenly filed as a Sundry Creditor in Tally never
+    gets its opening balance or its vouchers (sales, receipts, a Bad Debt
+    write-off Journal) pulled by the normal weekly extraction at all.
+    Design arrived at only after two rejected shapes: (a) a quick form
+    typing in a corrected closing balance - rejected by the client, since
+    it only patches the TB total and leaves the real registers (Sales,
+    Receipt) wrong for however long the party was excluded; (b) a
+    per-voucher-type "quick form" (opening + closing balance) -
+    recognized as still too narrow once the client posed a second example
+    (a Bad Debt write-off Journal, not a Sales/Receipt voucher) that the
+    same shape couldn't handle without new code per voucher type. The
+    actual fix: don't invent new math per exception - pull the party's
+    real voucher history since an operator-supplied anchor balance/date
+    and replay it through the exact same `process_branch_data` every
+    normal week already uses, so any mix of voucher types is handled by
+    the one general mechanism that already understands all five, not a
+    new one invented per case. Refuses if the party already has
+    weekly_snapshot history (onboarding only, not a correction path for
+    an already-tracked party) or if Tally's Sundry Debtors pull still
+    doesn't show the party (classification not actually fixed yet, or a
+    name mismatch). Replays ONLY vouchers touching the target party, not
+    the full company-wide pull for that date range - verified by a test
+    that plants another party's own already-recorded register row in the
+    same historical window and confirms it survives untouched (the real
+    risk: replaying the unfiltered pull would duplicate every other
+    party's rows for that window).
+28. **NEW, resolved: Register Exceptions Review - the same
+    persistence gap as item 19, for a different exception type.**
+    `registers.RegisterBuildExceptions.unattributable_party` ("vouchers
+    not added to a register") was shown once on the result page of the
+    run that found it, then gone - exactly what item 19 fixed for drift
+    findings. Widened the exception tuple from `(voucher_number, reason)`
+    to `(voucher_number, party_ledger_name, reason)` throughout
+    `registers.py`, `pipeline.py`, `orchestration.py`, and both result-
+    page templates, using the voucher's own PARTYLEDGERNAME hint where
+    one exists - needed so a reviewer knows WHICH party an exception is
+    about, not just which voucher number. New `register_build_exception`
+    table, populated by every SAVE run (live extraction and Manual
+    Upload both share `process_branch_data`, so both get this for free).
+    Two dispositions, mirroring item 19's acknowledge/incorporate split:
+    "Reviewed - no action needed" (a human confirmed Tally's exclusion is
+    genuinely correct - audit note only) or "Resolved via catch-up"
+    (links straight into item 27's tool with the party name pre-filled;
+    only records that the call was made, the actual fix is that separate
+    run).
+29. **NEW, resolved: Credit Limit.** Client's explicit ask: an editable
+    `credit_limit` column on Customer Master, defaulting to Rs
+    1,00,00,000 (one crore). Purely a reference figure in this secondary
+    reporting layer - it has no power to block a sale in Tally, the
+    actual system of record, and does not yet feed any breach report
+    (see AR internal controls discussion below).
+30. **NEW: AR internal controls discussion - what makes this a control
+    tool rather than "an overpriced ageing system," client's own framing.**
+    Client asked directly what's missing to call this a genuine AR
+    internal-controls tool. First pass (identity/authentication, a real
+    Maker-proposes/Checker-approves gate instead of a viewing-permission
+    split, monetary approval thresholds especially on write-offs, bank-
+    statement tie-out for receipts, period locking, encryption/DR for the
+    SQLite file) was correctly pushed back on by the client as "usual
+    data control measures, not AR controls" - important reframing given
+    this is explicitly a SECONDARY reporting layer sitting on Tally, not
+    the system of record, so IT general controls matter less here than
+    whether the AR function itself is measurably performing and
+    accountable. Client's own follow-up question ("our YTD pull will do
+    just that", re: whether an ALTERED-not-just-new voucher would be
+    caught) was verified, not just accepted: `resolve_opening_balances`
+    anchors each week's opening to the PRIOR week's own recorded
+    `closing_extracted` (Tally's real stated figure at that point in
+    time), so any later alteration to an already-reconciled voucher
+    necessarily produces a fresh mismatch on the next cycle's TB
+    Cross-Check - confirmed as a genuine, already-working detective
+    control, not a gap. Second pass, the AR-process/performance category
+    the client asked for specifically, agreed and sequenced one at a
+    time rather than built all at once: **Concentration Risk (item 31,
+    built)**, then pending in order: accountability by owner (PTP's
+    existing `owner` field rolled up into a performance view), targets/
+    benchmarks with variance against DSO/Collection Efficiency/PTP Kept
+    Rate, an ageing-bucket-transition escalation trigger, dispute/hold
+    classification distinct from plain "unpaid", a due date on the
+    Receipt/Journal register's free-text "Next Action" field (check
+    against the existing `expected_collection_date` first - may already
+    do part of this job). Provisioning (tying ageing buckets to an actual
+    accounting provision policy) was raised and explicitly deferred by
+    the client, not rejected - see Deferred section below. Period locking
+    (item 6 of the first-pass list) was explicitly deferred by the client
+    to be revisited after roughly 3 months of live operation, not
+    rejected either.
+31. **NEW, resolved: AR Concentration Risk.** First of the sequenced
+    AR-process controls from item 30. Is receivables exposure spread
+    across many customers or concentrated in a handful of them - a risk
+    in its own right, independent of whether any of them are currently
+    overdue. Top 5/10/20 parties by current outstanding, each as a % of
+    total AR, plus a combined "top N = X% of Total AR" headline
+    (`reconciliation_report.compute_concentration_risk`). Deliberately
+    reuses the exact same latest-per-party-as-of reduction and the same
+    `closing_extracted` figure as item 20's "Total Debtor as per Books"
+    tile, so the two screens' Total AR can never quietly disagree.
+    Ranked by each party's own signed outstanding (Dr positive/Cr
+    negative) descending, so a credit-balance party sorts to the bottom
+    rather than inflating anyone's concentration figure - caught and
+    fixed a real test-data sign-convention mistake while verifying this
+    (test data used Tally's raw sign instead of this app's own post-flip
+    convention; the feature code itself was correct throughout).
 
 ## Deferred to a later version (not rejected, not in scope now)
 
@@ -714,6 +932,25 @@ resolves former open item 1.
   ownership tracking in v1.
 - **"Business" column** on the customer-level Ageing Matrix / Customer
   Master — dropped for now.
+- **Period locking** (item 30) — client's explicit call: revisit after
+  roughly 3 months of live operation, not rejected. Until then every
+  period stays open to a correction indefinitely.
+- **Provisioning tied to ageing** (item 30) — computing what should
+  actually be provisioned against each ageing bucket per an adopted
+  policy, rather than just showing the ageing itself. Explicitly deferred
+  by the client alongside the other AR-process controls (item 30), not
+  rejected.
+- **The rest of the AR-process control sequence from item 30, pending in
+  order**: accountability-by-owner rollup, DSO/Collection Efficiency/PTP
+  Kept Rate targets with variance, an ageing-bucket-transition escalation
+  trigger, dispute/hold classification, a due date on the Receipt/Journal
+  register's "Next Action" field.
+- **Real authentication, an approval gate (Maker proposes/Checker
+  approves) instead of a viewing-permission split, and monetary approval
+  thresholds** (item 30's first-pass list) — real gaps, correctly
+  reframed by the client as IT/data governance rather than AR-specific
+  controls, and lower priority than the AR-process sequence above for
+  that reason; not rejected, just not next.
 
 ## Explicit non-scope / rejected ideas
 
