@@ -541,6 +541,171 @@ class FakeTallyClientMismatch(FakeTallyClientForCommit):
         return {"Acme": Decimal("-999.00")}
 
 
+# ---- Catch Up a Party (misclassified/never-tracked party) ----------------
+
+
+class FakeTallyClientCatchUp:
+    """Serves one Sales voucher for the target party plus one for an
+    unrelated, already-tracked party in the same date range - proves the
+    route filters to only the target party's own vouchers before
+    replaying them, rather than reprocessing everyone's history for
+    that window (which would duplicate the other party's register rows).
+    """
+
+    ytd_balance = Decimal("-3300.00")  # Tally sign: Dr negative
+
+    def __init__(self, branch, timeout_seconds=15.0):
+        self.branch = branch
+
+    def confirm_current_company(self):
+        return None
+
+    def fetch_vouchers(self, from_date, to_date):
+        target = Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 5, 2), voucher_number="SB/9",
+            branch_id=self.branch.branch_id, party_ledger_name="Narendra Trading Company",
+            entries=[
+                LedgerEntry(party_ledger_name="Narendra Trading Company", amount_as_extracted=Decimal("-3300.00"), bill_name="SB/9", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales", amount_as_extracted=Decimal("3300.00")),
+            ],
+        )
+        other = Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 5, 3), voucher_number="SB/10",
+            branch_id=self.branch.branch_id, party_ledger_name="Other Existing Party",
+            entries=[
+                LedgerEntry(party_ledger_name="Other Existing Party", amount_as_extracted=Decimal("-500.00"), bill_name="SB/10", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales", amount_as_extracted=Decimal("500.00")),
+            ],
+        )
+        return [target, other]
+
+    def fetch_ytd_sundry_debtors(self, fy_start, as_of):
+        return {"Narendra Trading Company": self.ytd_balance, "Other Existing Party": Decimal("-500.00")}
+
+
+class FakeTallyClientCatchUpPartyMissing(FakeTallyClientCatchUp):
+    """The party still isn't in Tally's Sundry Debtors pull - simulates
+    forgetting to actually reclassify the ledger's group in Tally first.
+    """
+
+    def fetch_ytd_sundry_debtors(self, fy_start, as_of):
+        return {"Other Existing Party": Decimal("-500.00")}
+
+
+def _post_catch_up(client, **overrides):
+    data = {
+        "party_name": "Narendra Trading Company",
+        "anchor_date": "2026-05-01",
+        "anchor_balance": "0.00",
+        "as_of": "2026-05-05",
+    }
+    data.update(overrides)
+    return client.post("/branches/KOL/catch-up-party", data=data, follow_redirects=True)
+
+
+def test_catch_up_party_form_renders(client):
+    _add_branch(client)
+    resp = client.get("/branches/KOL/catch-up-party")
+    assert resp.status_code == 200
+    assert b"Catch Up a Party" in resp.data
+    assert b'name="party_name"' in resp.data
+    assert b'name="anchor_date"' in resp.data
+    assert b'name="anchor_balance"' in resp.data
+
+
+def test_catch_up_party_reconciles_clean_and_builds_the_register_row(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientCatchUp)
+    _add_branch(client)
+    resp = _post_catch_up(client)
+    assert resp.status_code == 200
+    assert b"reconciled clean" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.customer_master_exists("Narendra Trading Company", "KOL")
+    assert store.has_weekly_snapshots("Narendra Trading Company", "KOL")
+    sales_rows = [r for r in store.all_sales_dn_rows("KOL") if r.party_id == "Narendra Trading Company"]
+    assert len(sales_rows) == 1
+    assert sales_rows[0].voucher_number == "SB/9"
+    store.close()
+
+
+def test_catch_up_party_only_replays_the_target_partys_own_vouchers(client, monkeypatch):
+    # "Other Existing Party" already has its own register history for
+    # this same window (from a prior normal run) - the catch-up must
+    # not touch it or create a duplicate row.
+    from ar_mis.models import CustomerMasterRecord, SalesDNRegisterRow, NoteType
+    from ar_mis.storage import Store
+
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientCatchUp)
+    _add_branch(client)
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("Other Existing Party", "Other Existing Party", "KOL", Decimal("0.00")))
+    store.append_sales_dn_row(
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 5, 3), note_type=NoteType.INVOICE,
+            voucher_number="SB/10", bill_allocation_reference="SB/10", party_id="Other Existing Party",
+            taxable_value=Decimal("500.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"),
+            round_off=Decimal("0.00"), invoice_value=Decimal("500.00"), due_date=date(2026, 6, 2),
+        )
+    )
+    store.close()
+
+    _post_catch_up(client)
+
+    store = Store(client.application.config["DB_PATH"])
+    other_rows = [r for r in store.all_sales_dn_rows("KOL") if r.party_id == "Other Existing Party"]
+    assert len(other_rows) == 1  # unchanged - not duplicated
+    assert store.has_weekly_snapshots("Other Existing Party", "KOL") is False  # never touched
+    store.close()
+
+
+def test_catch_up_party_refuses_when_party_already_has_weekly_history(client, monkeypatch):
+    from ar_mis.models import CustomerMasterRecord, WeeklySnapshotRow
+    from ar_mis.storage import Store
+
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientCatchUp)
+    _add_branch(client)
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("Narendra Trading Company", "Narendra Trading Company", "KOL", Decimal("0.00")))
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="Narendra Trading Company", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("0.00"), sales=Decimal("0.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("0.00"), closing_extracted=Decimal("0.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    store.close()
+
+    resp = _post_catch_up(client)
+    assert resp.status_code == 200
+    assert b"already has weekly extraction history" in resp.data
+
+
+def test_catch_up_party_refuses_when_not_found_in_tally_sundry_debtors(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientCatchUpPartyMissing)
+    _add_branch(client)
+    resp = _post_catch_up(client)
+    assert resp.status_code == 200
+    assert b"was not found in Tally" in resp.data
+
+    # Nothing should have been left half-done in a way that blocks a retry -
+    # the customer_master seed is harmless and idempotent either way.
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.has_weekly_snapshots("Narendra Trading Company", "KOL") is False
+    store.close()
+
+
+def test_catch_up_party_rejects_anchor_date_on_or_after_as_of(client):
+    _add_branch(client)
+    resp = _post_catch_up(client, anchor_date="2026-05-05", as_of="2026-05-05")
+    assert resp.status_code == 200
+    assert b"anchor date must be before" in resp.data
+
+
 def _run_test_extraction(client, from_date, to_date):
     return client.post(
         "/test-extraction",

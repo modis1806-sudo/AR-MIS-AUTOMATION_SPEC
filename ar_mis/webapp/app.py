@@ -41,7 +41,8 @@ from ar_mis.exception_register import (
     compute_unresolved_references,
 )
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
-from ar_mis.models import RegisterClassification
+from ar_mis.models import CustomerMasterRecord, RegisterClassification
+from ar_mis.money import to_money
 from ar_mis.drift_correction import (
     DriftFindingAlreadyIncorporated,
     DriftFindingCorrectionWeekConflict,
@@ -338,6 +339,130 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             flash(str(exc), "error")
         store.close()
         return redirect(url_for("branches_list"))
+
+    @app.route("/branches/<branch_id>/catch-up-party", methods=["GET", "POST"])
+    @requires_role("maker")
+    def catch_up_party(branch_id):
+        """The catch-up tool agreed for a party that was wrongly excluded
+        from Sundry Debtors in Tally (misclassified group, or genuinely
+        never onboarded) - client's own real example: a debtor mistakenly
+        filed as a Sundry Creditor, so neither its opening balance nor
+        its sales/write-off vouchers were ever pulled or reconciled.
+
+        Deliberately does NOT ask for a hand-typed closing figure. A
+        typed-in number only fixes the TB total; it can't know whether
+        the missed activity was a sale, a receipt, or a write-off, so it
+        silently leaves the real registers wrong. Instead: the operator
+        supplies the party's real balance as of some past anchor date
+        (read directly off Tally, exactly like the original Pre-MIS
+        Outstanding load), and this route pulls that party's ACTUAL
+        voucher history since then and replays it through the exact
+        same process_branch_data() every normal weekly run uses - so
+        Sales, Credit Notes, Receipts, Journals (a Bad Debt write-off
+        included) are each handled by the one general mechanism that
+        already understands them, not a new one invented for a single
+        voucher type.
+
+        Refuses outright if this party already has weekly_snapshot
+        history - this tool is only for a party never tracked before;
+        an already-tracked party's gap needs a different path (re-run
+        Test & Save Extraction for the missed range, or a logged
+        adjustment), never a bulk replay that could double-count
+        history a normal run already recorded.
+
+        Only vouchers touching THIS party are replayed, never the full
+        company-wide pull for the date range: other parties in that same
+        historical window already have their own register rows from
+        their own normal weekly runs, and re-running the unfiltered
+        voucher list through process_branch_data would duplicate those
+        rows. Filtering to this one party's own vouchers keeps every
+        other party's history untouched.
+        """
+        store = get_store()
+        branch = store.get_branch(branch_id)
+        if branch is None:
+            store.close()
+            flash(f"No such branch '{branch_id}'.", "error")
+            return redirect(url_for("branches_list"))
+
+        if request.method == "GET":
+            store.close()
+            return render_template("catch_up_party.html", branch=branch, today=date.today().isoformat())
+
+        party_name = request.form.get("party_name", "").strip()
+        raw_anchor_date = request.form.get("anchor_date", "")
+        raw_anchor_balance = request.form.get("anchor_balance", "")
+        raw_as_of = request.form.get("as_of", "")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            store.close()
+            return render_template("catch_up_party.html", branch=branch, today=date.today().isoformat())
+
+        if not party_name:
+            return _redisplay("Party name is required - exactly as it appears in Tally.")
+        try:
+            anchor_date = date.fromisoformat(raw_anchor_date)
+        except ValueError:
+            return _redisplay("Enter a valid anchor date.")
+        try:
+            anchor_balance = to_money(Decimal(raw_anchor_balance))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_anchor_balance}' is not a valid decimal amount.")
+        as_of = date.today()
+        if raw_as_of:
+            try:
+                as_of = date.fromisoformat(raw_as_of)
+            except ValueError:
+                return _redisplay("Enter a valid 'as of' date.")
+
+        from_date = anchor_date + timedelta(days=1)
+        if from_date > as_of:
+            return _redisplay("The anchor date must be before the 'as of' date - there needs to be at least one day of activity to pull.")
+
+        if store.has_weekly_snapshots(party_name, branch_id):
+            return _redisplay(
+                f"'{party_name}' already has weekly extraction history on record - this tool is only for a "
+                "party never tracked before. Use a logged adjustment for an already-tracked party instead."
+            )
+
+        seed_summary = seed_pre_mis(
+            store, [CustomerMasterRecord(party_name, party_name, branch_id, anchor_balance)],
+            force=True, announce=lambda *_: None,
+        )
+        if seed_summary.skipped:
+            return _redisplay(seed_summary.skipped[0])
+
+        client = TallyClient(branch=branch)
+        try:
+            client.confirm_current_company()
+            all_vouchers = client.fetch_vouchers(from_date, as_of)
+            fy_start = financial_year_start(as_of)
+            closing_extracted = {
+                name: flip_sign(balance) for name, balance in client.fetch_ytd_sundry_debtors(fy_start, as_of).items()
+            }
+        except (CompanyMismatchError, TallyConnectionError) as exc:
+            return _redisplay(f"Could not reach Tally: {exc}")
+
+        if party_name not in closing_extracted:
+            return _redisplay(
+                f"'{party_name}' was not found in Tally's Sundry Debtors group as of {as_of.isoformat()}. "
+                "Confirm the ledger's group has actually been changed in Tally, and that the name here is "
+                "spelled exactly as it appears there (case and spacing must match)."
+            )
+
+        party_vouchers = [
+            v for v in all_vouchers if any(e.party_ledger_name == party_name for e in v.entries)
+        ]
+
+        outcome = process_branch_data(
+            store, branch_id, branch.branch_name, week_ending=as_of,
+            all_vouchers=party_vouchers, closing_extracted={party_name: closing_extracted[party_name]},
+            period_start=from_date,
+        )
+        store.close()
+        flash(f"Caught up '{party_name}': {outcome.detail}", "error" if outcome.failed_parties else "success")
+        return redirect(url_for("tb_cross_check_report", to_date=as_of.isoformat()))
 
     def _default_test_range() -> tuple[date, date]:
         """A plain, generic starting suggestion - the last 7 days ending

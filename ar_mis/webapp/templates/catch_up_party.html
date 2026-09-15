@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Catch Up a Party{% endblock %}
+{% block content %}
+<h1>Catch Up a Party — {{ branch.branch_name }}</h1>
+<p class="subtitle">For a party wrongly excluded from Sundry Debtors in Tally (misclassified group, or never onboarded) - a real balance you supply once, plus that party's real voucher history since then, pulled straight from Tally and run through the same reconciliation every other party gets. Not a typed-in closing figure: sales, receipts, credit notes and write-offs are each picked up correctly, because this uses the same process as a normal weekly run.</p>
+
+<div class="card">
+  <h2 style="margin-top:0;">Before you use this</h2>
+  <ol style="padding-left:20px; color:#374151; font-size:14px;">
+    <li>Fix the ledger's group in Tally first (e.g. Sundry Creditor → Sundry Debtor). This tool cannot do that for you, and it will refuse below if it still can't find the party under Sundry Debtors.</li>
+    <li>Open that ledger in Tally and read off its balance as of some past date you're confident in - the day before the earliest activity you want this tool to pick up.</li>
+    <li>This is only for a party with NO extraction history yet. If it already has weekly data on record, use a logged adjustment instead.</li>
+  </ol>
+</div>
+
+<div class="card">
+<form method="post">
+  <label>Party Name (exactly as it appears in Tally)</label>
+  <input name="party_name" required placeholder="e.g. Narendra Trading Company">
+
+  <label>Balance as of (the anchor date)</label>
+  <input type="date" name="anchor_date" required>
+  <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">The party's real balance on this date, as read from Tally - not the day activity resumes.</p>
+
+  <label>Balance on that date</label>
+  <input name="anchor_balance" required placeholder="e.g. 3300.00">
+  <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">This pipeline's own convention: positive if the party owed money, negative for a credit balance.</p>
+
+  <label>Catch up through (defaults to today)</label>
+  <input type="date" name="as_of" value="{{ today }}">
+
+  <p style="margin-top:20px;">
+    <button class="btn" type="submit">Pull history and reconcile</button>
+    <a class="btn secondary" href="{{ url_for('branches_list') }}">Cancel</a>
+  </p>
+</form>
+</div>
+{% endblock %}
