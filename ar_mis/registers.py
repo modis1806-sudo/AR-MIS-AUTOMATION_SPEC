@@ -30,13 +30,17 @@ from ar_mis.models import (
 )
 
 # Confirmed against real client data (fixtures/real_samples/SalesReg.xml):
-# actual tax ledgers are bare, EXACT-match "CGST"/"SGST"/"IGST" - many
-# revenue ledgers are also "_GST"-suffixed (e.g. "Road Transport
-# Services_GST_18%", "Handling Services_GST_INTER") and would be wrongly
-# caught by a substring match, unlike the "contains" matching this codebase
-# uses elsewhere (categorize_voucher_type) for voucher TYPE names. Tax
-# ledger identification is intentionally NOT substring-based.
-_TAX_LEDGER_NAMES = {"cgst": "CGST", "sgst": "SGST", "igst": "IGST"}
+# one real client's revenue ledgers are "_GST"-suffixed (e.g. "Road
+# Transport Services_GST_18%", "Handling Services_GST_INTER") - these
+# contain "gst" but never "cgst"/"sgst"/"igst" specifically, so matching
+# on the generic "gst" would wrongly catch them, but matching on the
+# three specific tokens does not. A DIFFERENT real client's actual tax
+# ledgers (confirmed live, CHARZE INDUSTRIES) are "OUTPUT CGST 9%" /
+# "OUTPUT SGST 9%" - not a bare "CGST"/"SGST" at all, so the exact-match
+# this function used before wrongly missed every one of them, dumping
+# real tax amounts into taxable_value instead. Matching on containment
+# of the specific token satisfies both real cases at once.
+_TAX_LEDGER_TOKENS = (("cgst", "CGST"), ("sgst", "SGST"), ("igst", "IGST"))
 
 # Confirmed present on real invoices. Client's explicit, permanent
 # decision this session (Open Item 8 resolved): Round Off folds into
@@ -56,11 +60,16 @@ _UNAPPLIED_BILL_TYPE = "new ref"
 
 
 def classify_tax_ledger(ledger_name: str) -> str | None:
-    """Returns "CGST"/"SGST"/"IGST" for an exact (case/whitespace
-    insensitive) match, else None. Deliberately not substring matching -
-    see module docstring.
+    """Returns "CGST"/"SGST"/"IGST" when the ledger name contains that
+    specific token (case/whitespace insensitive), else None. See
+    _TAX_LEDGER_TOKENS for why this is containment on the specific
+    token rather than the generic "gst".
     """
-    return _TAX_LEDGER_NAMES.get(ledger_name.strip().lower())
+    name = ledger_name.strip().lower()
+    for token, label in _TAX_LEDGER_TOKENS:
+        if token in name:
+            return label
+    return None
 
 
 def is_round_off_ledger(ledger_name: str) -> bool:

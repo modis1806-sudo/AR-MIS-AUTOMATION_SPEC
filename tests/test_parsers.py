@@ -187,6 +187,7 @@ def test_parse_voucher_collection_falls_back_to_inventory_allocations_when_no_of
   <DATE>20260401</DATE>
   <VOUCHERNUMBER>26/HSLPL/26-27</VOUCHERNUMBER>
   <VOUCHERTYPENAME>Transport Invoice</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>Acme Corp</PARTYLEDGERNAME>
   <LEDGERENTRIES.LIST>
    <LEDGERNAME>Acme Corp</LEDGERNAME>
    <AMOUNT>-100000.00</AMOUNT>
@@ -214,19 +215,28 @@ def test_parse_voucher_collection_falls_back_to_inventory_allocations_when_no_of
 
 
 def test_parse_voucher_collection_does_not_double_count_when_top_level_entries_are_complete():
-    # A voucher that already has a full ledger-level picture (party + tax)
-    # commonly ALSO carries inventory detail for line-item breakdown -
-    # confirmed against real data that 154 of 171 real vouchers in one
-    # week's export have both. The inventory allocations must be ignored
-    # in that case, not added on top of an already-complete total.
+    # A voucher that already has a full ledger-level picture (party + a
+    # real revenue leg + tax) commonly ALSO carries inventory detail for
+    # line-item breakdown - confirmed against real data that 154 of 171
+    # real vouchers in one week's export have both. The inventory
+    # allocations must be ignored in that case, not added on top of an
+    # already-complete total. Genuinely complete means a real revenue
+    # ledger is present at top level, not just party + tax (see the
+    # dedicated regression test below for why party + CGST + SGST alone
+    # is NOT "complete").
     raw = """<ENVELOPE>
  <VOUCHER>
   <DATE>20260401</DATE>
   <VOUCHERNUMBER>1/HSLPL/26-27</VOUCHERNUMBER>
   <VOUCHERTYPENAME>Transport Invoice</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>Acme Corp</PARTYLEDGERNAME>
   <LEDGERENTRIES.LIST>
    <LEDGERNAME>Acme Corp</LEDGERNAME>
    <AMOUNT>-21830.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>Road Transport Services_GST_18%</LEDGERNAME>
+   <AMOUNT>18500.00</AMOUNT>
   </LEDGERENTRIES.LIST>
   <LEDGERENTRIES.LIST>
    <LEDGERNAME>CGST</LEDGERNAME>
@@ -246,7 +256,52 @@ def test_parse_voucher_collection_does_not_double_count_when_top_level_entries_a
 </ENVELOPE>"""
     vouchers = parse_voucher_collection(raw, branch_id="KOL")
     assert len(vouchers) == 1
-    assert len(vouchers[0].entries) == 3
+    assert len(vouchers[0].entries) == 4
+
+
+def test_parse_voucher_collection_falls_back_when_top_level_is_only_party_and_tax():
+    # Live-confirmed real incident (CHARZE INDUSTRIES): an item invoice's
+    # top-level entries can be EXACTLY party + "OUTPUT CGST 9%" + "OUTPUT
+    # SGST 9%" - no revenue ledger at top level at all, with the real
+    # Sales amount living only inside each stock item's own
+    # ACCOUNTINGALLOCATIONS.LIST. The old "fewer than 2 top-level
+    # entries" gate never fired for this shape (there are 3), silently
+    # producing a Taxable Value of 0 with the real revenue amount missing
+    # entirely. Must fall back here, unlike the genuinely-complete case
+    # above.
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260401</DATE>
+  <VOUCHERNUMBER>CIPL/1/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>OMKAR ELECTRIC</PARTYLEDGERNAME>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>OMKAR ELECTRIC</LEDGERNAME>
+   <AMOUNT>-36200.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>OUTPUT CGST 9%</LEDGERNAME>
+   <AMOUNT>2761.03</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>OUTPUT SGST 9%</LEDGERNAME>
+   <AMOUNT>2761.03</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <ALLINVENTORYENTRIES.LIST>
+   <ACCOUNTINGALLOCATIONS.LIST>
+    <LEDGERNAME>SALES</LEDGERNAME>
+    <AMOUNT>30678.10</AMOUNT>
+   </ACCOUNTINGALLOCATIONS.LIST>
+  </ALLINVENTORYENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="KOL")
+    assert len(vouchers) == 1
+    entries = vouchers[0].entries
+    assert len(entries) == 4
+    revenue = [e for e in entries if e.party_ledger_name == "SALES"]
+    assert len(revenue) == 1
+    assert revenue[0].amount_as_extracted == Decimal("30678.10")
 
 
 def test_parse_ledger_closing_balances():

@@ -62,16 +62,29 @@ def sales_voucher(entries, voucher_number="INV001", voucher_date=date(2026, 4, 1
 # ---- Tax ledger / Round Off classification -----------------------------
 
 
-def test_classify_tax_ledger_exact_match_only():
+def test_classify_tax_ledger_bare_names():
     assert classify_tax_ledger("CGST") == "CGST"
     assert classify_tax_ledger(" sgst ") == "SGST"
     assert classify_tax_ledger("IGST") == "IGST"
     assert classify_tax_ledger("Freight") is None
 
 
+def test_classify_tax_ledger_matches_real_naming_variants():
+    # Confirmed live (CHARZE INDUSTRIES real data): actual tax ledgers are
+    # named "OUTPUT CGST 9%"/"OUTPUT SGST 9%", not a bare "CGST"/"SGST" -
+    # an exact match silently dumped these into taxable_value instead of
+    # cgst/sgst, with the real Sales amount separately missing entirely
+    # (see the ALLINVENTORYENTRIES.LIST fallback fix in parsers.py).
+    assert classify_tax_ledger("OUTPUT CGST 9%") == "CGST"
+    assert classify_tax_ledger("OUTPUT SGST 9%") == "SGST"
+    assert classify_tax_ledger("OUTPUT IGST 18%") == "IGST"
+
+
 def test_classify_tax_ledger_rejects_gst_suffixed_revenue_ledgers():
-    # Confirmed against real data: many revenue ledgers are "_GST"-suffixed
-    # and must NOT be caught by a substring match.
+    # Confirmed against real data (a different real client): many revenue
+    # ledgers are "_GST"-suffixed and must NOT be caught - matching on the
+    # specific "cgst"/"sgst"/"igst" token, never the generic "gst", is what
+    # keeps these two real, opposite requirements both satisfied.
     assert classify_tax_ledger("Road Transport Services_GST_18%") is None
     assert classify_tax_ledger("Handling Services_GST_INTER") is None
 

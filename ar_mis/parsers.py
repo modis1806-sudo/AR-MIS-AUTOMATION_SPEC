@@ -35,6 +35,7 @@ from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree as ET
 
 from ar_mis.models import LedgerEntry, Voucher, VoucherType
+from ar_mis.registers import classify_tax_ledger, is_round_off_ledger
 
 _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
 
@@ -246,6 +247,7 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
         if voucher_type is None:
             continue
 
+        party_ledger_name = _text(v_el.find("PARTYLEDGERNAME"))
         entries: list[LedgerEntry] = []
         ledger_entry_elements = v_el.findall("ALLLEDGERENTRIES.LIST") + v_el.findall("LEDGERENTRIES.LIST")
         for le_el in ledger_entry_elements:
@@ -282,14 +284,31 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
         # ACCOUNTINGALLOCATIONS.LIST inside ALLINVENTORYENTRIES.LIST (8
         # real vouchers in one week, one summing 5 x Rs 20000 stock-item
         # allocations to the exact Rs 100000 the party was debited).
-        # Only used as a fallback when top-level entries are just the
-        # party's own side (fewer than 2) - most real invoices in the
-        # same export already carry a complete top-level picture (party +
-        # CGST + SGST) AND their own inventory detail for line-item
-        # breakdown, so unconditionally adding inventory allocations on
-        # top would double-count revenue for those (confirmed: 154 real
-        # vouchers in the same file have both).
-        if len(entries) < 2:
+        #
+        # Originally gated on "fewer than 2 top-level entries", on the
+        # assumption that party + CGST + SGST at top level meant a
+        # complete picture. CONFIRMED WRONG against a different real
+        # client (CHARZE INDUSTRIES): an item invoice can carry exactly
+        # that 3-entry top-level shape - party, "OUTPUT CGST 9%", "OUTPUT
+        # SGST 9%" - with the actual Sales amount living ONLY inside
+        # inventory allocations, never at top level at all. That count-
+        # based gate never fired for these, silently producing a Taxable
+        # Value of just the tax amounts with the real revenue missing
+        # entirely. The real signal is not how many top-level entries
+        # exist, but whether any of them (besides the party's own leg) is
+        # an actual revenue entry rather than a tax or round-off ledger -
+        # falling back only when none is keeps the original protection
+        # (most real invoices already carry a complete top-level picture
+        # AND their own inventory detail - 154 real vouchers in the same
+        # file have both - so unconditionally adding inventory allocations
+        # on top of those would double-count revenue).
+        has_top_level_revenue = any(
+            entry.party_ledger_name != party_ledger_name
+            and classify_tax_ledger(entry.party_ledger_name) is None
+            and not is_round_off_ledger(entry.party_ledger_name)
+            for entry in entries
+        )
+        if not has_top_level_revenue:
             for inv_el in v_el.findall("ALLINVENTORYENTRIES.LIST"):
                 for alloc_el in inv_el.findall("ACCOUNTINGALLOCATIONS.LIST"):
                     ledger_name = _text(alloc_el.find("LEDGERNAME"))
@@ -310,7 +329,7 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
                 voucher_date=_parse_tally_date(_text(v_el.find("DATE"))),
                 voucher_number=_text(v_el.find("VOUCHERNUMBER")),
                 branch_id=branch_id,
-                party_ledger_name=_text(v_el.find("PARTYLEDGERNAME")),
+                party_ledger_name=party_ledger_name,
                 entries=entries,
                 raw_voucher_type_name=raw_voucher_type_name,
             )
