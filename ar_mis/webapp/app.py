@@ -1164,6 +1164,78 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(f"Follow-up saved for {voucher_number}.", "success")
         return redirect(url_for("sales_dn_register", as_of=as_of_raw))
 
+    @app.route("/registers/sales-dn/follow-up/batch", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_follow_up_batch_save():
+        """Batch counterpart to sales_dn_follow_up_save - the client's
+        explicit ask: apply a PTP update to a filtered/selected range of
+        invoices at once, not one at a time. A field left blank here
+        means "leave this row's own existing value alone", never "clear
+        it" - the selected rows can each already carry a different PTP/
+        next-action, and a blank batch field must never silently wipe
+        them out. To actually clear a field, edit that one row directly
+        via sales_dn_follow_up_save.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+        updated_by = request.form.get("updated_by", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to apply a batch update.")
+        if not updated_by:
+            return _redisplay("Enter your name to save a batch follow-up update.")
+
+        raw_ptp_date = request.form.get("ptp_date", "").strip()
+        raw_ptp_amount = request.form.get("ptp_amount", "").strip()
+        raw_expected = request.form.get("expected_collection_date", "").strip()
+        raw_next_action = request.form.get("next_action", "").strip()
+        if not (raw_ptp_date or raw_ptp_amount or raw_expected or raw_next_action):
+            return _redisplay("Fill in at least one field to apply to the selected rows.")
+
+        try:
+            new_ptp_date = date.fromisoformat(raw_ptp_date) if raw_ptp_date else None
+        except ValueError:
+            return _redisplay("Enter a valid PTP date.")
+        try:
+            new_ptp_amount = to_money(Decimal(raw_ptp_amount)) if raw_ptp_amount else None
+        except InvalidOperation:
+            return _redisplay(f"'{raw_ptp_amount}' is not a valid PTP amount.")
+        try:
+            new_expected = date.fromisoformat(raw_expected) if raw_expected else None
+        except ValueError:
+            return _redisplay("Enter a valid expected collection date.")
+
+        store = get_store()
+        today = date.today()
+        updated_count = 0
+        for identity in selected:
+            parts = identity.split("|", 2)
+            if len(parts) != 3:
+                continue
+            branch_id, voucher_number, party_id = parts
+            existing = store.get_invoice_follow_up(branch_id, voucher_number, party_id)
+            store.upsert_invoice_follow_up(
+                InvoiceFollowUp(
+                    branch_id=branch_id, voucher_number=voucher_number, party_id=party_id,
+                    ptp_date=new_ptp_date if raw_ptp_date else (existing.ptp_date if existing else None),
+                    ptp_amount=new_ptp_amount if raw_ptp_amount else (existing.ptp_amount if existing else None),
+                    next_action=raw_next_action if raw_next_action else (existing.next_action if existing else ""),
+                    expected_collection_date=(
+                        new_expected if raw_expected else (existing.expected_collection_date if existing else None)
+                    ),
+                    updated_by=updated_by,
+                ),
+                today=today,
+            )
+            updated_count += 1
+        store.close()
+        flash(f"Follow-up applied to {updated_count} invoice(s).", "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
     @app.route("/registers/sales-dn/export.xlsx")
     def sales_dn_register_export():
         as_of = _parse_as_of()
@@ -1262,6 +1334,70 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(f"{voucher_number} resolved as {new_classification.value}.", "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
+    @app.route("/registers/credit-notes/reclassify/batch", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_reclassify_batch():
+        """Batch counterpart to credit_note_reclassify - the client's
+        explicit ask: resolve every selected Pending Review CN in a
+        filtered range at once (e.g. "all 24-25 CNs"), not one at a
+        time. Silently skips any selected row that isn't currently
+        Pending Review, since this control only ever means "resolve",
+        never "force a reclassify regardless of current state".
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+        target = request.form.get("target_classification", "")
+        reason = request.form.get("reason", "").strip()
+        reviewed_by = request.form.get("reviewed_by", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to resolve.")
+        if target not in ("pre_mis", "current"):
+            return _redisplay("Choose a valid resolution.")
+        if not reason:
+            return _redisplay("Enter a reason for this resolution.")
+        if not reviewed_by:
+            return _redisplay("Enter your name to resolve a classification.")
+
+        new_classification = (
+            RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
+        )
+        store = get_store()
+        rows_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in store.all_credit_note_rows()}
+
+        identities = set()
+        for identity in selected:
+            parts = identity.split("|", 2)
+            if len(parts) == 3:
+                identities.add(tuple(parts))
+
+        resolved_count = 0
+        skipped_count = 0
+        for branch_id, voucher_number, party_id in identities:
+            row = rows_by_identity.get((branch_id, voucher_number, party_id))
+            if row is None or row.classification != RegisterClassification.PENDING_REVIEW:
+                skipped_count += 1
+                continue
+            store.resolve_credit_note_classification(branch_id, voucher_number, party_id, new_classification, reason)
+            if target == "pre_mis":
+                store.record_pre_mis_adjustment(
+                    PreMisAdjustment(
+                        party_id=party_id, branch_id=branch_id, amount=-row.cn_amount,
+                        reason=f"CN {voucher_number}: {reason}", adjusted_by=reviewed_by, adjusted_at=date.today(),
+                    )
+                )
+            resolved_count += 1
+        store.close()
+        message = f"Resolved {resolved_count} of {len(identities)} selected as {new_classification.value}."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not Pending Review)."
+        flash(message, "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
     @app.route("/registers/receipts-journals/reclassify", methods=["POST"])
     @requires_role("maker")
     def receipt_journal_reclassify():
@@ -1318,6 +1454,72 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             )
         store.close()
         flash(f"{voucher_number} resolved as {new_classification.value}.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/reclassify/batch", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_reclassify_batch():
+        """Batch counterpart to receipt_journal_reclassify - same
+        rationale as credit_note_reclassify_batch. Silently skips any
+        selected row that isn't currently Pending Review.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+        target = request.form.get("target_classification", "")
+        reason = request.form.get("reason", "").strip()
+        reviewed_by = request.form.get("reviewed_by", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to resolve.")
+        if target not in ("pre_mis", "current"):
+            return _redisplay("Choose a valid resolution.")
+        if not reason:
+            return _redisplay("Enter a reason for this resolution.")
+        if not reviewed_by:
+            return _redisplay("Enter your name to resolve a classification.")
+
+        new_classification = (
+            RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
+        )
+        store = get_store()
+        rows_by_identity: dict[tuple[str, str, str], list] = {}
+        for r in store.all_receipt_journal_rows():
+            rows_by_identity.setdefault((r.branch_id, r.voucher_number, r.party_id), []).append(r)
+
+        identities = set()
+        for identity in selected:
+            parts = identity.split("|", 2)
+            if len(parts) == 3:
+                identities.add(tuple(parts))
+
+        resolved_count = 0
+        skipped_count = 0
+        for key in identities:
+            rows = rows_by_identity.get(key, [])
+            if not rows or rows[0].classification != RegisterClassification.PENDING_REVIEW:
+                skipped_count += 1
+                continue
+            branch_id, voucher_number, party_id = key
+            store.resolve_receipt_journal_classification(branch_id, voucher_number, party_id, new_classification)
+            if target == "pre_mis":
+                total_amount = sum((r.amount for r in rows), Decimal("0.00"))
+                store.record_pre_mis_adjustment(
+                    PreMisAdjustment(
+                        party_id=party_id, branch_id=branch_id, amount=-total_amount,
+                        reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=reviewed_by,
+                        adjusted_at=date.today(),
+                    )
+                )
+            resolved_count += 1
+        store.close()
+        message = f"Resolved {resolved_count} of {len(identities)} selected as {new_classification.value}."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not Pending Review)."
+        flash(message, "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals")

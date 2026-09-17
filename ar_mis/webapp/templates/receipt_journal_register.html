@@ -49,6 +49,23 @@
   <span class="tt-count" data-tt-count></span>
   <span class="tt-selected" data-tt-selected-count>0 selected</span>
 </div>
+<details class="card" style="margin-bottom:16px;">
+  <summary style="cursor:pointer; font-weight:600;">Batch: resolve selected Pending Review rows</summary>
+  <p style="font-size:12px; color:#6b7280; margin:8px 0;">Applies only to selected rows that are currently Pending Review — anything else you've ticked is left untouched. Tick the rows below, then Apply.</p>
+  <form id="receiptjournal-batch-form" method="post" action="{{ url_for('receipt_journal_reclassify_batch') }}" style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
+    <input type="hidden" name="as_of" value="{{ as_of }}">
+    <div>
+      <label style="display:block; font-size:12px; font-weight:600;">Resolve as</label>
+      <select name="target_classification" required>
+        <option value="pre_mis">Pre-MIS Adjustment (reduces Pre-MIS Outstanding)</option>
+        <option value="current">Current (data-entry correction)</option>
+      </select>
+    </div>
+    <div><label style="display:block; font-size:12px; font-weight:600;">Reason</label><input type="text" name="reason" required style="width:220px;"></div>
+    <div><label style="display:block; font-size:12px; font-weight:600;">Your name</label><input type="text" name="reviewed_by" required style="width:110px;"></div>
+    <button class="btn" type="submit">Apply to selected</button>
+  </form>
+</details>
 <div class="table-scroll">
 <table data-tt-table="receiptjournal">
   <thead>
@@ -72,7 +89,7 @@
     {% set row = d.row %}
     {% set f = d.fields %}
     <tr data-tt-row>
-      <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.voucher_number }}"></td>
+      <td><input type="checkbox" data-tt-row-select form="receiptjournal-batch-form" name="selected" value="{{ row.branch_id }}|{{ row.voucher_number }}|{{ row.party_id }}"></td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.txn_date }}</td>
       <td data-tt-col="voucher_type">{{ row.voucher_type }}</td>

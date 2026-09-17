@@ -1874,6 +1874,204 @@ def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(cli
     assert all(r.classification == RegisterClassification.PRE_MIS_ADJUSTMENT for r in rows)
 
 
+# ---- Batch actions on a filtered/selected range ------------------------
+
+
+def test_sales_dn_follow_up_batch_save_applies_to_every_selected_row(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    vouchers = [
+        Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number=voucher_number,
+            branch_id="KOL", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-1000.00"),
+                            bill_name=voucher_number, bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("1000.00")),
+            ],
+        )
+        for voucher_number in ("INV/1", "INV/2")
+    ]
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), vouchers, {"ACME": Decimal("-2000.00")})
+    store.close()
+
+    resp = client.post(
+        "/registers/sales-dn/follow-up/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|INV/1|ACME", "KOL|INV/2|ACME"],
+            "next_action": "Send reminder email",
+            "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Follow-up applied to 2 invoice(s)" in resp.data
+    assert resp.data.count(b"Send reminder email") == 2
+
+
+def test_sales_dn_follow_up_batch_save_blank_field_preserves_each_rows_own_value(client):
+    from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    vouchers = [
+        Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number=voucher_number,
+            branch_id="KOL", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=-amount,
+                            bill_name=voucher_number, bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=amount),
+            ],
+        )
+        for voucher_number, amount in (("INV/1", Decimal("1111.00")), ("INV/2", Decimal("2222.00")))
+    ]
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), vouchers, {"ACME": Decimal("-3333.00")})
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="KOL", voucher_number="INV/1", party_id="ACME",
+                         ptp_amount=Decimal("1111.00"), updated_by="Earlier"),
+        today=date(2026, 5, 1),
+    )
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="KOL", voucher_number="INV/2", party_id="ACME",
+                         ptp_amount=Decimal("2222.00"), updated_by="Earlier"),
+        today=date(2026, 5, 1),
+    )
+    store.close()
+
+    # Batch-apply only Next Action, leaving PTP Amount blank - each row's
+    # own distinct PTP Amount must survive untouched.
+    resp = client.post(
+        "/registers/sales-dn/follow-up/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|INV/1|ACME", "KOL|INV/2|ACME"],
+            "next_action": "Call customer",
+            "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    store2 = Store(client.application.config["DB_PATH"])
+    fu1 = store2.get_invoice_follow_up("KOL", "INV/1", "ACME")
+    fu2 = store2.get_invoice_follow_up("KOL", "INV/2", "ACME")
+    store2.close()
+    assert fu1.ptp_amount == Decimal("1111.00")
+    assert fu2.ptp_amount == Decimal("2222.00")
+    assert fu1.next_action == "Call customer"
+    assert fu2.next_action == "Call customer"
+
+
+def test_sales_dn_follow_up_batch_save_requires_a_selection(client):
+    resp = client.post(
+        "/registers/sales-dn/follow-up/batch",
+        data={"as_of": "2026-06-01", "next_action": "Call customer", "updated_by": "Test User"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Select at least one row" in resp.data
+
+
+def test_credit_note_reclassify_batch_resolves_all_selected_pending_review_rows(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2025, 5, 1), voucher_number="CN/OLD/1", party_id="ACME",
+            cn_amount=Decimal("100.00"), bill_allocation_reference="OLD/REF/1",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2025, 5, 1), voucher_number="CN/OLD/2", party_id="ACME",
+            cn_amount=Decimal("50.00"), bill_allocation_reference="OLD/REF/2",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    # A row that is already resolved, selected alongside the pending ones -
+    # must be skipped, not reclassified again or double-counted.
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/CURRENT", party_id="ACME",
+            cn_amount=Decimal("30.00"),
+        )
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/credit-notes/reclassify/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|CN/OLD/1|ACME", "KOL|CN/OLD/2|ACME", "KOL|CN/CURRENT|ACME"],
+            "target_classification": "pre_mis",
+            "reason": "All relate to 24-25 invoices",
+            "reviewed_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Resolved 2 of 3 selected as Pre-MIS Adjustment" in resp.data
+    assert b"1 skipped (not Pending Review)" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    rows = {r.voucher_number: r for r in store2.all_credit_note_rows("KOL")}
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("850.00")  # 1000 - 100 - 50
+    assert rows["CN/OLD/1"].classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+    assert rows["CN/OLD/2"].classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+    assert rows["CN/CURRENT"].classification == RegisterClassification.CURRENT
+
+
+def test_receipt_journal_reclassify_batch_resolves_all_selected_pending_review_vouchers(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2025, 4, 4), voucher_type="Receipt", voucher_number="RCPT/OLD",
+                party_id="ACME", amount=Decimal("400.00"), target_doc_no="OLD/REF",
+                classification=RegisterClassification.PENDING_REVIEW,
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/receipts-journals/reclassify/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|RCPT/OLD|ACME"],
+            "target_classification": "pre_mis",
+            "reason": "Relates to a 24-25 invoice",
+            "reviewed_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Resolved 1 of 1 selected as Pre-MIS Adjustment" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("600.00")  # 1000 - 400
+
+
 # ---- Excel export -----------------------------------------------------
 
 _XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

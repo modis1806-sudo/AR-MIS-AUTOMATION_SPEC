@@ -42,6 +42,19 @@
   <span class="tt-count" data-tt-count></span>
   <span class="tt-selected" data-tt-selected-count>0 selected</span>
 </div>
+<details class="card" style="margin-bottom:16px;">
+  <summary style="cursor:pointer; font-weight:600;">Batch: apply Follow-up to selected rows</summary>
+  <p style="font-size:12px; color:#6b7280; margin:8px 0;">Fill in only the fields you want to change — any field left blank keeps each selected row's own existing value untouched (it never clears a field in bulk). Tick the rows below, then Apply.</p>
+  <form id="salesdn-batch-form" method="post" action="{{ url_for('sales_dn_follow_up_batch_save') }}" style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
+    <input type="hidden" name="as_of" value="{{ as_of }}">
+    <div><label style="display:block; font-size:12px; font-weight:600;">PTP Date</label><input type="date" name="ptp_date"></div>
+    <div><label style="display:block; font-size:12px; font-weight:600;">PTP Amount</label><input type="number" step="0.01" name="ptp_amount" style="width:110px;"></div>
+    <div><label style="display:block; font-size:12px; font-weight:600;">Next Action</label><input type="text" name="next_action" style="width:150px;"></div>
+    <div><label style="display:block; font-size:12px; font-weight:600;">Expected Collection</label><input type="date" name="expected_collection_date"></div>
+    <div><label style="display:block; font-size:12px; font-weight:600;">Your name</label><input type="text" name="updated_by" required style="width:110px;"></div>
+    <button class="btn" type="submit">Apply to selected</button>
+  </form>
+</details>
 <div class="table-scroll">
 <table data-tt-table="salesdn">
   <thead>
@@ -70,7 +83,7 @@
     {% set pos = d.position %}
     {% set fu = d.follow_up %}
     <tr data-tt-row>
-      <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.voucher_number }}|{{ row.bill_allocation_reference }}"></td>
+      <td><input type="checkbox" data-tt-row-select form="salesdn-batch-form" name="selected" value="{{ row.branch_id }}|{{ row.voucher_number }}|{{ row.party_id }}"></td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.invoice_date }}</td>
       <td data-tt-col="type">{{ row.note_type.value }}</td>
