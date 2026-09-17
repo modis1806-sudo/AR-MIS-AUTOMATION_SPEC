@@ -41,7 +41,7 @@ from ar_mis.exception_register import (
     compute_unresolved_references,
 )
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
-from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp, RegisterClassification
+from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp, PreMisAdjustment, RegisterClassification
 from ar_mis.money import to_money
 from ar_mis.drift_correction import (
     DriftFindingAlreadyIncorporated,
@@ -1199,6 +1199,126 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             buf, as_attachment=True, download_name=f"Credit_Note_Register_{as_of.isoformat()}.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+    @app.route("/registers/credit-notes/reclassify", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_reclassify():
+        """Item 10's human resolution step for a Pending Review CN,
+        finally reachable. The reference didn't match any tracked
+        invoice, and only a person can say why: either it belongs to a
+        Pre-MIS-era invoice - in which case it must also reduce that
+        party's Pre-MIS Outstanding baseline, and record_pre_mis_adjustment
+        is the only sanctioned path to move that figure - or it's a
+        genuine data-entry mistake, in which case it's simply marked
+        Current with a note and no balance changes at all. Restricted to
+        rows that are currently Pending Review so this can't be used to
+        flip an already-resolved or ordinary Current row, and so a
+        double-submit can't double-count the balance adjustment (once
+        resolved, the row is no longer Pending Review).
+        """
+        as_of_raw = request.form.get("as_of", "")
+        branch_id = request.form.get("branch_id", "")
+        voucher_number = request.form.get("voucher_number", "")
+        party_id = request.form.get("party_id", "")
+        target = request.form.get("target_classification", "")
+        reason = request.form.get("reason", "").strip()
+        reviewed_by = request.form.get("reviewed_by", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        if target not in ("pre_mis", "current"):
+            return _redisplay("Choose a valid resolution.")
+        if not reason:
+            return _redisplay("Enter a reason for this resolution.")
+        if not reviewed_by:
+            return _redisplay("Enter your name to resolve a classification.")
+
+        store = get_store()
+        rows = [
+            r for r in store.all_credit_note_rows(branch_id)
+            if r.voucher_number == voucher_number and r.party_id == party_id
+        ]
+        if not rows:
+            store.close()
+            return _redisplay(f"No credit note found for {voucher_number}.")
+        if rows[0].classification != RegisterClassification.PENDING_REVIEW:
+            store.close()
+            return _redisplay(f"{voucher_number} is not Pending Review - nothing to resolve.")
+
+        new_classification = (
+            RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
+        )
+        store.resolve_credit_note_classification(branch_id, voucher_number, party_id, new_classification, reason)
+        if target == "pre_mis":
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=party_id, branch_id=branch_id, amount=-rows[0].cn_amount,
+                    reason=f"CN {voucher_number}: {reason}", adjusted_by=reviewed_by, adjusted_at=date.today(),
+                )
+            )
+        store.close()
+        flash(f"{voucher_number} resolved as {new_classification.value}.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/reclassify", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_reclassify():
+        """Same human resolution step as credit_note_reclassify, for a
+        Pending Review Receipt/Journal. All bill-allocation lines of a
+        voucher share one classification (registers.py's voucher-level
+        invariant), so every row matching this identity is already
+        Pending Review together - the full voucher amount across all its
+        lines is what moves into Pre-MIS Outstanding when confirmed.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        branch_id = request.form.get("branch_id", "")
+        voucher_number = request.form.get("voucher_number", "")
+        party_id = request.form.get("party_id", "")
+        target = request.form.get("target_classification", "")
+        reason = request.form.get("reason", "").strip()
+        reviewed_by = request.form.get("reviewed_by", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        if target not in ("pre_mis", "current"):
+            return _redisplay("Choose a valid resolution.")
+        if not reason:
+            return _redisplay("Enter a reason for this resolution.")
+        if not reviewed_by:
+            return _redisplay("Enter your name to resolve a classification.")
+
+        store = get_store()
+        rows = [
+            r for r in store.all_receipt_journal_rows(branch_id)
+            if r.voucher_number == voucher_number and r.party_id == party_id
+        ]
+        if not rows:
+            store.close()
+            return _redisplay(f"No receipt or journal found for {voucher_number}.")
+        if rows[0].classification != RegisterClassification.PENDING_REVIEW:
+            store.close()
+            return _redisplay(f"{voucher_number} is not Pending Review - nothing to resolve.")
+
+        new_classification = (
+            RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
+        )
+        store.resolve_receipt_journal_classification(branch_id, voucher_number, party_id, new_classification)
+        if target == "pre_mis":
+            total_amount = sum((r.amount for r in rows), Decimal("0.00"))
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=party_id, branch_id=branch_id, amount=-total_amount,
+                    reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=reviewed_by,
+                    adjusted_at=date.today(),
+                )
+            )
+        store.close()
+        flash(f"{voucher_number} resolved as {new_classification.value}.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals")
     def receipt_journal_register():

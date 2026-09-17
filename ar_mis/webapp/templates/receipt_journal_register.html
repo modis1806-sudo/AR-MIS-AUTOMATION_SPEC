@@ -34,6 +34,13 @@
   </div>
 </div>
 
+<div class="card" style="font-size:13px; color:#4b5563; margin-bottom:16px;">
+  <strong>What Classification means:</strong><br>
+  <span class="pill class-current">Current</span> — normal in-period item, nothing to review.
+  <span class="pill class-pending">Pending Review</span> — this voucher's Target Doc No. didn't match any invoice this system tracks; someone needs to confirm whether it belongs to a Pre-MIS-period invoice or is a data-entry mistake. Use the <strong>Resolve</strong> control on the row to do that.
+  <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total.
+</div>
+
 {% if display_rows %}
 <div class="table-tools" data-tt="receiptjournal">
   <input type="search" data-tt-search placeholder="Search customer, voucher no...">
@@ -77,7 +84,24 @@
       <td data-tt-col="unapplied_balance"{% if not row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
       <td data-tt-col="classification">
         {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
-        {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>
+        {% elif row.classification.value == 'Pending Review' %}
+          <span class="pill class-pending">Pending Review</span>
+          <details>
+            <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Resolve</summary>
+            <form method="post" action="{{ url_for('receipt_journal_reclassify') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:230px;">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
+              <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
+              <input type="hidden" name="party_id" value="{{ row.party_id }}">
+              <select name="target_classification" required>
+                <option value="pre_mis">Pre-MIS Adjustment (reduces Pre-MIS Outstanding)</option>
+                <option value="current">Current (data-entry correction)</option>
+              </select>
+              <input type="text" name="reason" placeholder="Reason" required>
+              <input type="text" name="reviewed_by" placeholder="Your name" required>
+              <button class="btn" type="submit" style="padding:4px 10px;">Save</button>
+            </form>
+          </details>
         {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}
       </td>
       <td>{{ f.dpd_at_application if f.dpd_at_application is not none else '—' }}</td>

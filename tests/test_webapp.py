@@ -1674,6 +1674,206 @@ def test_receipt_journal_register_has_search_filter_and_selection_scaffolding(cl
     assert b"data-tt-row-select" in resp.data
 
 
+# ---- Classification: explanation + Pending Review resolution ----------
+
+
+def test_credit_note_register_shows_resolve_action_only_for_pending_review_rows(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/CURRENT", party_id="ACME",
+            cn_amount=Decimal("100.00"), bill_allocation_reference=None,
+        )
+    )
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/PENDING", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="STALE/REF",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes")
+    assert resp.status_code == 200
+    assert b"What Classification means" in resp.data
+    assert b"Resolve" in resp.data
+    assert b'action="/registers/credit-notes/reclassify"' in resp.data
+    # Only one row is Pending Review, so exactly one Resolve form.
+    assert resp.data.count(b'action="/registers/credit-notes/reclassify"') == 1
+
+
+def test_credit_note_reclassify_as_pre_mis_reduces_pre_mis_outstanding(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/PENDING", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="STALE/REF",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/credit-notes/reclassify",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/PENDING", "party_id": "ACME",
+            "target_classification": "pre_mis", "reason": "Matches Pre-MIS invoice INV/24-25/07",
+            "reviewed_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"resolved as Pre-MIS Adjustment" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    row = [r for r in store2.all_credit_note_rows("KOL") if r.voucher_number == "CN/PENDING"][0]
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("800.00")  # 1000 - 200
+    assert row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+
+
+def test_credit_note_reclassify_as_current_does_not_touch_pre_mis_outstanding(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/PENDING", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="TYPO/REF",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/credit-notes/reclassify",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/PENDING", "party_id": "ACME",
+            "target_classification": "current", "reason": "Data-entry typo, not Pre-MIS",
+            "reviewed_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"resolved as Current" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    row = [r for r in store2.all_credit_note_rows("KOL") if r.voucher_number == "CN/PENDING"][0]
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("1000.00")  # untouched
+    assert row.classification == RegisterClassification.CURRENT
+
+
+def test_credit_note_reclassify_rejects_a_row_that_is_not_pending_review(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/CURRENT", party_id="ACME",
+            cn_amount=Decimal("200.00"),
+        )
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/credit-notes/reclassify",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/CURRENT", "party_id": "ACME",
+            "target_classification": "pre_mis", "reason": "Trying to resolve an already-fine row",
+            "reviewed_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"not Pending Review" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("1000.00")  # untouched
+
+
+def test_receipt_journal_register_shows_resolve_action_for_pending_review_rows(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt", voucher_number="RCPT/PENDING",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no="STALE/REF",
+                classification=RegisterClassification.PENDING_REVIEW,
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals")
+    assert resp.status_code == 200
+    assert b"What Classification means" in resp.data
+    assert b'action="/registers/receipts-journals/reclassify"' in resp.data
+
+
+def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt", voucher_number="RCPT/PENDING",
+                party_id="ACME", amount=Decimal("300.00"), target_doc_no="STALE/REF/1",
+                classification=RegisterClassification.PENDING_REVIEW,
+            ),
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt", voucher_number="RCPT/PENDING",
+                party_id="ACME", amount=Decimal("150.00"), target_doc_no="STALE/REF/2",
+                classification=RegisterClassification.PENDING_REVIEW,
+            ),
+        ]
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/receipts-journals/reclassify",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/PENDING", "party_id": "ACME",
+            "target_classification": "pre_mis", "reason": "Both lines relate to Pre-MIS invoices",
+            "reviewed_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"resolved as Pre-MIS Adjustment" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    rows = [r for r in store2.all_receipt_journal_rows("KOL") if r.voucher_number == "RCPT/PENDING"]
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("550.00")  # 1000 - 300 - 150
+    assert all(r.classification == RegisterClassification.PRE_MIS_ADJUSTMENT for r in rows)
+
+
 # ---- Excel export -----------------------------------------------------
 
 _XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
