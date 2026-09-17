@@ -585,6 +585,11 @@ def test_compute_invoice_position_fully_paid_is_not_overdue():
     assert position.open_amount == Decimal("0.00")
     assert position.is_overdue is False
     assert position.ageing_bucket == "Current"
+    # Live-confirmed real bug: this exact scenario (paid off, well past its
+    # own due date) used to still show the raw day count here (139 in the
+    # real case) instead of 0 - this test never checked the field that was
+    # actually wrong, which is exactly how it went unnoticed.
+    assert position.days_past_due == 0
 
 
 def test_compute_invoice_position_before_invoice_date_contributes_nothing():

@@ -536,13 +536,21 @@ def compute_invoice_position(
     open_amount = net_receivable - receipts_applied
     days_past_due = (as_of - row.due_date).days
     is_overdue = open_amount > 0 and days_past_due > 0
+    # Live-confirmed real bug: an invoice fully paid off (open_amount == 0)
+    # past its own due date correctly showed Overdue=No and Ageing
+    # Bucket=Current (both already gated on is_overdue), but this field
+    # was clamped only against going negative, never zeroed when
+    # is_overdue is False for any OTHER reason - so the raw day count
+    # (e.g. 139) kept showing here even though nothing is actually
+    # outstanding to be days-past-due on anymore.
+    days_past_due_display = max(days_past_due, 0) if is_overdue else 0
     return InvoicePosition(
         row=row,
         linked_cn_amount=linked_cn_amount,
         receipts_applied=receipts_applied,
         open_amount=open_amount,
         is_overdue=is_overdue,
-        days_past_due=max(days_past_due, 0),
+        days_past_due=days_past_due_display,
         ageing_bucket=compute_ageing_bucket(days_past_due if is_overdue else 0),
     )
 
