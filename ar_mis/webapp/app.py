@@ -41,7 +41,7 @@ from ar_mis.exception_register import (
     compute_unresolved_references,
 )
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
-from ar_mis.models import CustomerMasterRecord, RegisterClassification
+from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp, RegisterClassification
 from ar_mis.money import to_money
 from ar_mis.drift_correction import (
     DriftFindingAlreadyIncorporated,
@@ -1107,6 +1107,62 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "sales_dn_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
             freshness=freshness, summary=summary,
         )
+
+    @app.route("/registers/sales-dn/follow-up", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_follow_up_save():
+        """The one genuinely mutable record in the registers design
+        (InvoiceFollowUp's own docstring) had storage fully built
+        (Store.upsert_invoice_follow_up) but no route a human could
+        actually reach - PTP Date/Amount, Next Action, and Expected
+        Collection Date were displayed read-only with nothing behind
+        them to edit. This is that missing route: one invoice at a time,
+        identified by (branch_id, voucher_number, party_id), redirecting
+        back to the same as-of view it was edited from.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        branch_id = request.form.get("branch_id", "")
+        voucher_number = request.form.get("voucher_number", "")
+        party_id = request.form.get("party_id", "")
+        updated_by = request.form.get("updated_by", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        if not updated_by:
+            return _redisplay("Enter your name to save a follow-up update.")
+
+        raw_ptp_date = request.form.get("ptp_date", "").strip()
+        raw_ptp_amount = request.form.get("ptp_amount", "").strip()
+        raw_expected = request.form.get("expected_collection_date", "").strip()
+        next_action = request.form.get("next_action", "").strip()
+
+        try:
+            ptp_date = date.fromisoformat(raw_ptp_date) if raw_ptp_date else None
+        except ValueError:
+            return _redisplay("Enter a valid PTP date.")
+        try:
+            ptp_amount = to_money(Decimal(raw_ptp_amount)) if raw_ptp_amount else None
+        except InvalidOperation:
+            return _redisplay(f"'{raw_ptp_amount}' is not a valid PTP amount.")
+        try:
+            expected_collection_date = date.fromisoformat(raw_expected) if raw_expected else None
+        except ValueError:
+            return _redisplay("Enter a valid expected collection date.")
+
+        store = get_store()
+        store.upsert_invoice_follow_up(
+            InvoiceFollowUp(
+                branch_id=branch_id, voucher_number=voucher_number, party_id=party_id,
+                ptp_date=ptp_date, ptp_amount=ptp_amount, next_action=next_action,
+                expected_collection_date=expected_collection_date, updated_by=updated_by,
+            ),
+            today=date.today(),
+        )
+        store.close()
+        flash(f"Follow-up saved for {voucher_number}.", "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
 
     @app.route("/registers/sales-dn/export.xlsx")
     def sales_dn_register_export():

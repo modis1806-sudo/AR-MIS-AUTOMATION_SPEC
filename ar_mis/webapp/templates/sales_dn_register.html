@@ -52,7 +52,7 @@
       <th>Round Off</th><th>Invoice Value</th><th>Due Date</th><th>Linked CN No.</th><th>Linked CN Amt</th>
       <th>Net Receivable</th><th>Receipts Applied</th><th>Open Amount</th><th data-tt-filter data-tt-col="overdue">Overdue</th><th>DPD</th>
       <th data-tt-filter data-tt-col="bucket">Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th data-tt-filter data-tt-col="ptp_status">PTP Status</th><th>Next Action</th>
-      <th>Expected Collection</th>
+      <th>Expected Collection</th><th>Follow-up</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
@@ -61,7 +61,7 @@
       <th data-tt-sum="salesdn:round_off">0.00</th><th data-tt-sum="salesdn:invoice_value">0.00</th><th></th><th></th><th data-tt-sum="salesdn:linked_cn_amount">0.00</th>
       <th data-tt-sum="salesdn:net_receivable">0.00</th><th data-tt-sum="salesdn:receipts_applied">0.00</th><th data-tt-sum="salesdn:open_amount">0.00</th><th></th><th></th>
       <th></th><th></th><th data-tt-sum="salesdn:ptp_amount">0.00</th><th></th><th></th>
-      <th></th>
+      <th></th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -94,16 +94,26 @@
       <td data-tt-col="overdue">{% if pos.is_overdue %}<span class="pill fail">Yes</span>{% else %}<span class="pill ok">No</span>{% endif %}</td>
       <td>{{ pos.days_past_due }}</td>
       <td data-tt-col="bucket">{{ pos.ageing_bucket }}</td>
-      <td>{{ fu.ptp_date if fu else '' or '—' }}</td>
-      <td data-tt-col="ptp_amount"{% if fu and fu.ptp_amount is not none %} data-value="{{ fu.ptp_amount }}"{% endif %}>{{ (fu.ptp_amount|inr) if (fu and fu.ptp_amount is not none) else '—' }}</td>
+      <td><input type="date" form="fu-{{ loop.index }}" name="ptp_date" value="{{ fu.ptp_date if fu and fu.ptp_date else '' }}"></td>
+      <td data-tt-col="ptp_amount"{% if fu and fu.ptp_amount is not none %} data-value="{{ fu.ptp_amount }}"{% endif %}><input type="number" step="0.01" form="fu-{{ loop.index }}" name="ptp_amount" value="{{ fu.ptp_amount if fu and fu.ptp_amount is not none else '' }}" style="width:110px;"></td>
       <td data-tt-col="ptp_status">
         {% if d.ptp_status == 'Kept' %}<span class="pill status-kept">Kept</span>
         {% elif d.ptp_status == 'Broken' %}<span class="pill status-broken">Broken</span>
         {% elif d.ptp_status == 'Active' %}<span class="pill status-active">Active</span>
         {% else %}—{% endif %}
       </td>
-      <td>{{ (fu.next_action if fu else '') or '—' }}</td>
-      <td>{{ fu.expected_collection_date if fu else '' or '—' }}</td>
+      <td><input type="text" form="fu-{{ loop.index }}" name="next_action" value="{{ (fu.next_action if fu else '') or '' }}" style="width:130px;"></td>
+      <td><input type="date" form="fu-{{ loop.index }}" name="expected_collection_date" value="{{ fu.expected_collection_date if fu and fu.expected_collection_date else '' }}"></td>
+      <td>
+        <form id="fu-{{ loop.index }}" method="post" action="{{ url_for('sales_dn_follow_up_save') }}" style="display:flex; gap:4px; align-items:center;">
+          <input type="hidden" name="as_of" value="{{ as_of }}">
+          <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
+          <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
+          <input type="hidden" name="party_id" value="{{ row.party_id }}">
+          <input type="text" name="updated_by" placeholder="Your name" required style="width:90px;">
+          <button class="btn secondary" type="submit" style="padding:4px 10px;">Save</button>
+        </form>
+      </td>
     </tr>
   {% endfor %}
   </tbody>

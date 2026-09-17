@@ -1454,6 +1454,62 @@ def test_sales_dn_register_has_search_filter_and_selection_scaffolding(client):
     assert b"data-tt-row-select" in resp.data
 
 
+def test_sales_dn_register_ptp_fields_are_editable_inputs_not_read_only_text(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b'name="ptp_date"' in resp.data
+    assert b'name="ptp_amount"' in resp.data
+    assert b'name="next_action"' in resp.data
+    assert b'name="expected_collection_date"' in resp.data
+    assert b'action="/registers/sales-dn/follow-up"' in resp.data
+
+
+def test_sales_dn_follow_up_save_persists_ptp_and_redisplays(client):
+    _run_a_real_extraction(client)
+    resp = client.post(
+        "/registers/sales-dn/follow-up",
+        data={
+            "as_of": "2026-06-01",
+            "branch_id": "KOL",
+            "voucher_number": "SB/0142",
+            "party_id": "A & B Transport Pvt Ltd",
+            "ptp_date": "2026-06-15",
+            "ptp_amount": "50000.00",
+            "next_action": "Call customer",
+            "expected_collection_date": "2026-06-20",
+            "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Follow-up saved for SB/0142" in resp.data
+    assert b"2026-06-15" in resp.data
+    assert b"Call customer" in resp.data
+    assert b"2026-06-20" in resp.data
+
+
+def test_sales_dn_follow_up_save_requires_updated_by(client):
+    _run_a_real_extraction(client)
+    resp = client.post(
+        "/registers/sales-dn/follow-up",
+        data={
+            "as_of": "2026-06-01",
+            "branch_id": "KOL",
+            "voucher_number": "SB/0142",
+            "party_id": "A & B Transport Pvt Ltd",
+            "ptp_date": "2026-06-15",
+            "ptp_amount": "50000.00",
+            "next_action": "Call customer",
+            "expected_collection_date": "2026-06-20",
+            "updated_by": "",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Enter your name" in resp.data
+
+
 def test_credit_note_register_and_receipt_journal_register_render_when_empty(client):
     for path in ("/registers/credit-notes", "/registers/receipts-journals"):
         resp = client.get(path)
