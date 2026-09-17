@@ -1447,7 +1447,9 @@ def test_sales_dn_register_has_search_filter_and_selection_scaffolding(client):
     assert b'data-tt="salesdn"' in resp.data
     assert b"data-tt-search" in resp.data
     assert b'data-tt-filter data-tt-col="branch"' in resp.data
-    assert b'data-tt-sum="salesdn:open_amount"' in resp.data
+    for col in ("taxable_value", "cgst", "sgst", "igst", "round_off", "invoice_value",
+                "linked_cn_amount", "net_receivable", "receipts_applied", "open_amount", "ptp_amount"):
+        assert f'data-tt-sum="salesdn:{col}"'.encode() in resp.data
     assert b"data-tt-select-all" in resp.data
     assert b"data-tt-row-select" in resp.data
 
@@ -1468,9 +1470,46 @@ def test_sales_dn_register_shows_a_running_summary_of_open_and_overdue(client):
     # invoice is both open and overdue - both totals should reflect it.
     resp = client.get("/registers/sales-dn?as_of=2026-06-01")
     assert resp.status_code == 200
-    assert b"Total Invoice Value" in resp.data
+    assert b"Total Taxable Value" in resp.data
     assert b"1,25,000.00" in resp.data  # Indian grouping, confirms the real amount flowed through
     assert b"1 overdue invoice" in resp.data
+
+
+def test_sales_dn_register_total_tile_sums_taxable_value_not_gross_invoice_value(client):
+    # Client's own catch: this tile exists to cross-check against Tally's
+    # P&L, whose Sales figure is tax-exclusive - it must sum Taxable
+    # Value, not Invoice Value (which includes CGST/SGST and would never
+    # agree with P&L).
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("OMKAR ELECTRIC", "OMKAR ELECTRIC", "KOL", Decimal("0.00")))
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 1), voucher_number="CIPL/1/26-27",
+        branch_id="KOL", party_ledger_name="OMKAR ELECTRIC",
+        entries=[
+            LedgerEntry(party_ledger_name="OMKAR ELECTRIC", amount_as_extracted=Decimal("-36200.00"),
+                        bill_name="CIPL/1/26-27", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="SALES", amount_as_extracted=Decimal("30678.10")),
+            LedgerEntry(party_ledger_name="OUTPUT CGST 9%", amount_as_extracted=Decimal("2761.03")),
+            LedgerEntry(party_ledger_name="OUTPUT SGST 9%", amount_as_extracted=Decimal("2761.03")),
+            LedgerEntry(party_ledger_name="ROUND OFF", amount_as_extracted=Decimal("-0.16")),
+        ],
+    )
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 1), [voucher], {"OMKAR ELECTRIC": Decimal("-36200.00")})
+    store.close()
+
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    # The tile's own value must be the Taxable Value (30,678.10), not the
+    # Invoice Value (36,200.00) - 36,200.00 legitimately still appears
+    # elsewhere on the page (the row's own Invoice Value column), so the
+    # check is on the tile specifically, not a blanket absence check.
+    tile_html = resp.data.split(b"Total Taxable Value")[1].split(b"kpi-caption")[0]
+    assert b"30,678.10" in tile_html
+    assert b"36,200.00" not in tile_html
 
 
 def test_credit_note_register_has_an_as_of_date_and_running_summary(client):
@@ -1502,6 +1541,7 @@ def test_credit_note_register_has_search_filter_and_selection_scaffolding(client
     assert b'data-tt-filter data-tt-col="branch"' in resp.data
     assert b'data-tt-filter data-tt-col="classification"' in resp.data
     assert b'data-tt-sum="creditnotes:cn_amount"' in resp.data
+    assert b'data-tt-sum="creditnotes:unapplied_amount"' in resp.data
     assert b"data-tt-select-all" in resp.data
     assert b"data-tt-row-select" in resp.data
 
@@ -1572,6 +1612,8 @@ def test_receipt_journal_register_has_search_filter_and_selection_scaffolding(cl
     assert b"data-tt-search" in resp.data
     assert b'data-tt-filter data-tt-col="branch"' in resp.data
     assert b'data-tt-filter data-tt-col="voucher_type"' in resp.data
+    assert b'data-tt-sum="receiptjournal:applied_amount"' in resp.data
+    assert b'data-tt-sum="receiptjournal:unapplied_balance"' in resp.data
     assert b"data-tt-select-all" in resp.data
     assert b"data-tt-row-select" in resp.data
 

@@ -1010,8 +1010,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     # underneath it.
 
     def _sales_dn_summary(display_rows: list[dict], as_of: date) -> dict:
-        total_invoice_value = sum(
-            (d["row"].invoice_value for d in display_rows if d["row"].invoice_date <= as_of), Decimal("0.00")
+        # Taxable Value, not Invoice Value (GST-inclusive) - client's own
+        # cross-check purpose for this tile is against Tally's P&L, whose
+        # Sales figure is tax-exclusive. Summing Invoice Value here could
+        # never agree with P&L even on a perfectly clean extraction.
+        total_taxable_value = sum(
+            (d["row"].taxable_value for d in display_rows if d["row"].invoice_date <= as_of), Decimal("0.00")
         )
         total_open_amount = Decimal("0.00")
         open_invoice_count = 0
@@ -1027,7 +1031,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 overdue_invoice_count += 1
         return {
             "as_of": as_of,
-            "total_invoice_value": total_invoice_value,
+            "total_taxable_value": total_taxable_value,
             "total_open_amount": total_open_amount,
             "open_invoice_count": open_invoice_count,
             "total_overdue_amount": total_overdue_amount,

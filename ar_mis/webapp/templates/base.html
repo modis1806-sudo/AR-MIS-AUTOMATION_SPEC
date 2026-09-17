@@ -61,7 +61,25 @@
   .as-of-form label { margin:0; font-size:12px; font-weight:600; color:#374151; }
   .as-of-form input, .as-of-form select { padding:6px 8px; }
   .table-scroll { overflow-x:auto; background:#fff; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-  .table-scroll table { box-shadow:none; border-radius:0; white-space:nowrap; }
+  .table-scroll table { box-shadow:none; border-radius:0; white-space:nowrap; overflow:visible; }
+  /* Freeze the column-header row on every register/report table while
+     scrolling - client's explicit ask, applied globally here rather
+     than per-template so it can never be forgotten on a new screen.
+     `overflow-x:auto` alone silently computes overflow-y to `auto` too
+     (CSS overflow spec) - without its own bounded height this container
+     never scrolls on its own axis, so a sticky child has nothing to
+     stick against and just scrolls away with the page (confirmed live
+     with a screenshot before pushing this). Giving it a real max-height
+     + explicit overflow-y makes it a genuine scrolling pane, which is
+     also just what "frozen header" means in practice - a bounded area
+     with the header pinned inside it, not the whole page. Only the
+     first thead row freezes; a totals row (see .tt-totals-row below)
+     sits as a second thead row and scrolls normally, since stacking two
+     sticky rows reliably needs a fixed pixel offset that would break
+     the moment a header wraps to two lines on a narrow column. */
+  .table-scroll { max-height:75vh; overflow-y:auto; }
+  .table-scroll table thead tr:first-child th { position:sticky; top:0; z-index:2; }
+  .tt-totals-row th { background:#eef2ff; color:#3730a3; font-weight:700; font-variant-numeric:tabular-nums; }
   .pill.status-active { background:#e0f2fe; color:#075985; }
   .pill.status-kept { background:#dcfce7; color:#166534; }
   .pill.status-broken { background:#fee2e2; color:#991b1b; }

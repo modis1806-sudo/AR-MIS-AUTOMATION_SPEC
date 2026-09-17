@@ -18,9 +18,9 @@
 
 <div class="kpi-grid">
   <div class="kpi-tile">
-    <div class="kpi-label">Total Invoice Value</div>
-    <div class="kpi-value">{{ summary.total_invoice_value|inr }}</div>
-    <div class="kpi-caption">Invoiced on or before {{ as_of }}</div>
+    <div class="kpi-label">Total Taxable Value</div>
+    <div class="kpi-value">{{ summary.total_taxable_value|inr }}</div>
+    <div class="kpi-caption">Invoiced on or before {{ as_of }} — cross-check against Tally's P&amp;L Sales figure (tax-exclusive)</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Total Open Amount</div>
@@ -41,7 +41,6 @@
   <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
   <span class="tt-count" data-tt-count></span>
   <span class="tt-selected" data-tt-selected-count>0 selected</span>
-  <span class="tt-count">Open Amount of these rows: <strong data-tt-sum="salesdn:open_amount">0.00</strong></span>
 </div>
 <div class="table-scroll">
 <table data-tt-table="salesdn">
@@ -54,6 +53,15 @@
       <th>Net Receivable</th><th>Receipts Applied</th><th>Open Amount</th><th data-tt-filter data-tt-col="overdue">Overdue</th><th>DPD</th>
       <th data-tt-filter data-tt-col="bucket">Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th data-tt-filter data-tt-col="ptp_status">PTP Status</th><th>Next Action</th>
       <th>Expected Collection</th>
+    </tr>
+    <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
+      <th></th>
+      <th></th><th></th><th></th><th></th><th></th><th></th>
+      <th></th><th></th><th data-tt-sum="salesdn:taxable_value">0.00</th><th data-tt-sum="salesdn:cgst">0.00</th><th data-tt-sum="salesdn:sgst">0.00</th><th data-tt-sum="salesdn:igst">0.00</th>
+      <th data-tt-sum="salesdn:round_off">0.00</th><th data-tt-sum="salesdn:invoice_value">0.00</th><th></th><th></th><th data-tt-sum="salesdn:linked_cn_amount">0.00</th>
+      <th data-tt-sum="salesdn:net_receivable">0.00</th><th data-tt-sum="salesdn:receipts_applied">0.00</th><th data-tt-sum="salesdn:open_amount">0.00</th><th></th><th></th>
+      <th></th><th></th><th data-tt-sum="salesdn:ptp_amount">0.00</th><th></th><th></th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
@@ -71,23 +79,23 @@
       <td>{{ row.job_id or '—' }}</td>
       <td>{{ row.party_id }}</td>
       <td data-tt-col="grouping">{{ d.grouping or '—' }}</td>
-      <td>{{ row.taxable_value|inr }}</td>
-      <td>{{ row.cgst|inr }}</td>
-      <td>{{ row.sgst|inr }}</td>
-      <td>{{ row.igst|inr }}</td>
-      <td>{{ row.round_off|inr }}</td>
-      <td>{{ row.invoice_value|inr }}</td>
+      <td data-tt-col="taxable_value" data-value="{{ row.taxable_value }}">{{ row.taxable_value|inr }}</td>
+      <td data-tt-col="cgst" data-value="{{ row.cgst }}">{{ row.cgst|inr }}</td>
+      <td data-tt-col="sgst" data-value="{{ row.sgst }}">{{ row.sgst|inr }}</td>
+      <td data-tt-col="igst" data-value="{{ row.igst }}">{{ row.igst|inr }}</td>
+      <td data-tt-col="round_off" data-value="{{ row.round_off }}">{{ row.round_off|inr }}</td>
+      <td data-tt-col="invoice_value" data-value="{{ row.invoice_value }}">{{ row.invoice_value|inr }}</td>
       <td>{{ row.due_date }}</td>
       <td>{{ d.linked_cn_no or '—' }}</td>
-      <td>{{ pos.linked_cn_amount|inr }}</td>
-      <td>{{ (row.invoice_value - pos.linked_cn_amount)|inr }}</td>
-      <td>{{ pos.receipts_applied|inr }}</td>
+      <td data-tt-col="linked_cn_amount" data-value="{{ pos.linked_cn_amount }}">{{ pos.linked_cn_amount|inr }}</td>
+      <td data-tt-col="net_receivable" data-value="{{ row.invoice_value - pos.linked_cn_amount }}">{{ (row.invoice_value - pos.linked_cn_amount)|inr }}</td>
+      <td data-tt-col="receipts_applied" data-value="{{ pos.receipts_applied }}">{{ pos.receipts_applied|inr }}</td>
       <td data-tt-col="open_amount" data-value="{{ pos.open_amount }}">{{ pos.open_amount|inr }}</td>
       <td data-tt-col="overdue">{% if pos.is_overdue %}<span class="pill fail">Yes</span>{% else %}<span class="pill ok">No</span>{% endif %}</td>
       <td>{{ pos.days_past_due }}</td>
       <td data-tt-col="bucket">{{ pos.ageing_bucket }}</td>
       <td>{{ fu.ptp_date if fu else '' or '—' }}</td>
-      <td>{{ (fu.ptp_amount|inr) if (fu and fu.ptp_amount is not none) else '—' }}</td>
+      <td data-tt-col="ptp_amount"{% if fu and fu.ptp_amount is not none %} data-value="{{ fu.ptp_amount }}"{% endif %}>{{ (fu.ptp_amount|inr) if (fu and fu.ptp_amount is not none) else '—' }}</td>
       <td data-tt-col="ptp_status">
         {% if d.ptp_status == 'Kept' %}<span class="pill status-kept">Kept</span>
         {% elif d.ptp_status == 'Broken' %}<span class="pill status-broken">Broken</span>

@@ -52,6 +52,13 @@
       <th data-tt-filter data-tt-col="classification">Classification</th><th>DPD at Application</th><th>Age Unapplied Days</th><th>Invoice Fin Year</th>
       <th>Narration</th>
     </tr>
+    <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
+      <th></th>
+      <th></th><th></th><th></th><th></th><th></th>
+      <th></th><th></th><th data-tt-sum="receiptjournal:applied_amount">0.00</th><th data-tt-sum="receiptjournal:unapplied_balance">0.00</th>
+      <th></th><th></th><th></th><th></th>
+      <th></th>
+    </tr>
   </thead>
   <tbody>
   {% for d in display_rows %}
@@ -66,8 +73,8 @@
       <td>{{ row.party_id }}</td>
       <td data-tt-col="allocation_type">{% if row.target_doc_no %}Against Ref{% else %}Unapplied{% endif %}</td>
       <td>{{ row.target_doc_no or '—' }}</td>
-      <td>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
-      <td>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
+      <td data-tt-col="applied_amount"{% if row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
+      <td data-tt-col="unapplied_balance"{% if not row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
       <td data-tt-col="classification">
         {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
         {% elif row.classification.value == 'Pending Review' %}<span class="pill class-pending">Pending Review</span>
