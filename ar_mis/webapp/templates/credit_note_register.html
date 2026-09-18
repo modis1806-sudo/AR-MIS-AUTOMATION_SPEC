@@ -3,7 +3,7 @@
 {% block main_class %}wide{% endblock %}
 {% block content %}
 <h1>Credit Note Register</h1>
-<p class="subtitle">Voucher-wise, every branch combined, matched against the invoice it applies to via Customer + Bill Allocation Reference — never voucher number alone. Open/Unapplied CN Amount is recalculated for the date below, same as the Sales &amp; DN Register.</p>
+<p class="subtitle">Voucher-wise, every branch combined, matched against the invoice it applies to via Customer + Bill Allocation Reference — never voucher number alone. Open/Unapplied CN Amount is recalculated for the date below, same as the Sales &amp; DN Register. Linked Invoice Date/Value are that matched invoice's own facts, so you can confirm the match makes sense without leaving this page — click the reference itself to jump to that invoice on the Sales &amp; DN Register.</p>
 
 {% include "_freshness.html" %}
 
@@ -72,11 +72,13 @@
     <tr>
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th>Customer</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
+      <th>Linked Invoice Date</th><th>Linked Invoice Value</th>
       <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th>Age Unapplied Days</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
       <th></th><th></th><th></th><th></th><th></th>
+      <th></th><th></th>
       <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th>
     </tr>
   </thead>
@@ -89,7 +91,12 @@
       <td>{{ row.cn_date }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ row.voucher_number }}</td>
-      <td>{{ row.bill_allocation_reference or '—' }}</td>
+      <td>
+        {% if row.bill_allocation_reference %}<a href="{{ url_for('sales_dn_register', q=row.bill_allocation_reference) }}" title="Find this reference on the Sales &amp; DN Register">{{ row.bill_allocation_reference }}</a>
+        {% else %}—{% endif %}
+      </td>
+      <td>{{ d.fields.linked_invoice_date if d.fields.linked_invoice_date else '—' }}</td>
+      <td>{{ d.fields.linked_invoice_value|inr if d.fields.linked_invoice_value is not none else '—' }}</td>
       <td data-tt-col="cn_amount" data-value="{{ row.cn_amount }}">{{ row.cn_amount|inr }}</td>
       <td data-tt-col="unapplied_amount"{% if d.unapplied_amount is not none %} data-value="{{ d.unapplied_amount }}"{% endif %}>{{ d.unapplied_amount|inr if d.unapplied_amount is not none else '—' }}</td>
       <td data-tt-col="classification">

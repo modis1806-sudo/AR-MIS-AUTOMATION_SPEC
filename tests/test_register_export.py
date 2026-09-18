@@ -20,7 +20,7 @@ from ar_mis.register_export import (
     build_receipt_journal_register_workbook,
     build_sales_dn_register_workbook,
 )
-from ar_mis.registers import InvoicePosition, ReceiptJournalDisplayFields
+from ar_mis.registers import CreditNoteDisplayFields, InvoicePosition, ReceiptJournalDisplayFields
 
 
 def _sales_dn_row():
@@ -95,19 +95,26 @@ def test_credit_note_register_workbook_contains_headers_and_row_values():
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
         classification=RegisterClassification.CURRENT,
     )
-    display_rows = [{"row": row, "unapplied_amount": None, "age_unapplied_days": None}]
+    fields = CreditNoteDisplayFields(
+        linked_invoice_date=date(2026, 6, 1), linked_invoice_value=Decimal("12000.00")
+    )
+    display_rows = [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "fields": fields}]
 
     wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
     ws = wb.active
     assert ws.title == "Credit Note Register"
     header_row = [c.value for c in ws[3]]
     assert "CN Number" in header_row
+    assert "Linked Invoice Date" in header_row
+    assert "Linked Invoice Value" in header_row
 
     data_row = [c.value for c in ws[4]]
     assert "CN/01" in data_row
     assert "INV/002" in data_row
     assert 5000.0 in data_row
     assert "Current" in data_row
+    assert date(2026, 6, 1) in data_row
+    assert 12000.0 in data_row
 
 
 def test_credit_note_register_workbook_includes_age_unapplied_days():
@@ -115,7 +122,10 @@ def test_credit_note_register_workbook_includes_age_unapplied_days():
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference=None,
     )
-    display_rows = [{"row": row, "unapplied_amount": Decimal("5000.00"), "age_unapplied_days": 54}]
+    fields = CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
+    display_rows = [
+        {"row": row, "unapplied_amount": Decimal("5000.00"), "age_unapplied_days": 54, "fields": fields}
+    ]
 
     wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
     ws = wb.active
@@ -130,8 +140,10 @@ def test_credit_note_register_workbook_unapplied_amount_blank_when_allocated():
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
     )
+    fields = CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
     wb = build_credit_note_register_workbook(
-        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None}], as_of=date(2026, 9, 12)
+        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "fields": fields}],
+        as_of=date(2026, 9, 12),
     )
     data_row = [c.value for c in wb.active[4]]
     unapplied_col_index = [c.value for c in wb.active[3]].index("Open/Unapplied CN Amount")
@@ -198,8 +210,10 @@ def test_credit_note_register_workbook_applies_indian_format_to_cn_amount():
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
     )
+    fields = CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
     wb = build_credit_note_register_workbook(
-        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None}], as_of=date(2026, 9, 12)
+        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "fields": fields}],
+        as_of=date(2026, 9, 12),
     )
     ws = wb.active
     header_row = [c.value for c in ws[3]]

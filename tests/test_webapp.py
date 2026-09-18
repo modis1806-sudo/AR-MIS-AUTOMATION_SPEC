@@ -2155,6 +2155,93 @@ def test_receipt_journal_reclassify_batch_resolves_all_selected_pending_review_v
     assert customer.pre_mis_outstanding == Decimal("600.00")  # 1000 - 400
 
 
+# ---- Applied-item traceability: linked invoice + drill-down -----------
+
+
+def test_receipt_journal_register_shows_the_linked_invoices_own_date_and_value(client):
+    # Client's own question: "how can a user be certain that an applied
+    # receipt has actually been allocated against an outstanding invoice
+    # in Sales Register?" - the matched invoice's own date/value must be
+    # visible right on this row, not something to take on faith.
+    _run_a_real_extraction(client)
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 10), voucher_type="Receipt", voucher_number="RCPT/1",
+                party_id="A & B Transport Pvt Ltd", amount=Decimal("125000.00"), target_doc_no="SB/0142",
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals")
+    assert resp.status_code == 200
+    assert b"Linked Invoice Date" in resp.data
+    assert b"Linked Invoice Value" in resp.data
+    row_html = resp.data.split(b"RCPT/1", 1)[1].split(b"</tr>")[0]
+    assert b"2026-04-06" in row_html  # the invoice's own date
+    assert b"1,25,000.00" in row_html  # the invoice's own value, Indian-grouped
+    assert b'href="/registers/sales-dn?q=SB/0142"' in row_html
+
+
+def test_receipt_journal_register_unapplied_row_has_no_linked_invoice_or_link(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 10), voucher_type="Receipt", voucher_number="RCPT/ONACCOUNT",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no=None,
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals")
+    assert resp.status_code == 200
+    row_html = resp.data.split(b"RCPT/ONACCOUNT", 1)[1].split(b"</tr>")[0]
+    assert b"<a href=" not in row_html
+    assert row_html.count(b">\xe2\x80\x94<") >= 2  # em-dash placeholders for Target Doc No/Linked Invoice cells
+
+
+def test_credit_note_register_shows_the_linked_invoices_own_date_and_value(client):
+    _run_a_real_extraction(client)
+    from ar_mis.models import CreditNoteRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 4, 12), voucher_number="CN/1",
+            party_id="A & B Transport Pvt Ltd", cn_amount=Decimal("5000.00"), bill_allocation_reference="SB/0142",
+        )
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes")
+    assert resp.status_code == 200
+    assert b"Linked Invoice Date" in resp.data
+    assert b"Linked Invoice Value" in resp.data
+    row_html = resp.data.split(b"CN/1", 1)[1].split(b"</tr>")[0]
+    assert b"2026-04-06" in row_html
+    assert b"1,25,000.00" in row_html
+    assert b'href="/registers/sales-dn?q=SB/0142"' in row_html
+
+
+def test_sales_dn_register_prefills_search_from_query_param(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn?q=SB/0142")
+    assert resp.status_code == 200
+    assert b'data-tt-search placeholder="Search customer, voucher no..." value="SB/0142"' in resp.data
+
+
 # ---- Excel export -----------------------------------------------------
 
 _XLSX_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

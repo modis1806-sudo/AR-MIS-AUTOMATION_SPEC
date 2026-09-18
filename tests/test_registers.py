@@ -25,6 +25,7 @@ from ar_mis.registers import (
     compute_ageing_bucket,
     compute_collection_efficiency,
     compute_collections_in_window,
+    compute_credit_note_display_fields,
     compute_dso,
     compute_due_date,
     compute_invoice_position,
@@ -912,6 +913,10 @@ def test_receipt_journal_display_fields_for_applied_line():
     assert fields.dpd_at_application == 5  # paid 5 days after the Jan 31 due date
     assert fields.invoice_fin_year == "2025-26"
     assert fields.age_unapplied_days is None
+    # Traceability (client's own catch): the matched invoice's own date
+    # and value must be surfaced, not just used internally to derive DPD.
+    assert fields.linked_invoice_date == date(2026, 1, 1)
+    assert fields.linked_invoice_value == Decimal("1000.00")
 
 
 def test_receipt_journal_display_fields_for_unapplied_line():
@@ -923,6 +928,8 @@ def test_receipt_journal_display_fields_for_unapplied_line():
     assert fields.dpd_at_application is None
     assert fields.invoice_fin_year is None
     assert fields.age_unapplied_days == 24  # 2026-02-05 to 2026-03-01
+    assert fields.linked_invoice_date is None
+    assert fields.linked_invoice_value is None
 
 
 def test_receipt_journal_display_fields_for_unresolved_reference():
@@ -935,3 +942,38 @@ def test_receipt_journal_display_fields_for_unresolved_reference():
     assert fields.dpd_at_application is None
     assert fields.invoice_fin_year is None
     assert fields.age_unapplied_days is None
+    assert fields.linked_invoice_date is None
+    assert fields.linked_invoice_value is None
+
+
+def test_credit_note_display_fields_for_applied_reference():
+    invoice = _invoice("INV001", date(2026, 1, 1), Decimal("1000.00"))
+    lookup = {("ACME", "INV001"): invoice}
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV001",
+    )
+    fields = compute_credit_note_display_fields(cn, lookup)
+    assert fields.linked_invoice_date == date(2026, 1, 1)
+    assert fields.linked_invoice_value == Decimal("1000.00")
+
+
+def test_credit_note_display_fields_for_unapplied_cn():
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference=None,
+    )
+    fields = compute_credit_note_display_fields(cn, {})
+    assert fields.linked_invoice_date is None
+    assert fields.linked_invoice_value is None
+
+
+def test_credit_note_display_fields_for_unresolved_reference():
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV-UNKNOWN",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    fields = compute_credit_note_display_fields(cn, {})
+    assert fields.linked_invoice_date is None
+    assert fields.linked_invoice_value is None

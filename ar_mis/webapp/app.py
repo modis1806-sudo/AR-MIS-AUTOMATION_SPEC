@@ -65,6 +65,7 @@ from ar_mis.register_export import (
 )
 from ar_mis.registers import (
     build_bill_reference_lookup,
+    compute_credit_note_display_fields,
     compute_invoice_position,
     compute_linked_cn_reference_text,
     compute_ptp_kept_rate,
@@ -957,8 +958,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def _build_credit_note_display_rows(as_of: date):
         store = get_store()
         rows = store.all_credit_note_rows()
+        sales_dn_rows = store.all_sales_dn_rows()
         freshness = _freshness(store.last_extraction_at())
         store.close()
+        bill_reference_lookup = build_bill_reference_lookup(sales_dn_rows)
         # Open/Unapplied CN Amount (design doc item 2): the CN's own
         # amount only when it's genuinely on-account (no bill reference)
         # AND Current - a Pending Review/Pre-MIS CN isn't a real
@@ -992,6 +995,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 "age_unapplied_days": (
                     max((as_of - row.cn_date).days, 0) if row.bill_allocation_reference is None else None
                 ),
+                # Linked-invoice traceability (client's own catch: "how do
+                # I know this actually nets off against that invoice"): the
+                # matched Sales & DN row's own date/value, so a reviewer
+                # can eyeball the match without leaving this register.
+                "fields": compute_credit_note_display_fields(row, bill_reference_lookup),
             }
             for row in rows
         ]
@@ -1116,7 +1124,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         summary = _sales_dn_summary(display_rows, as_of)
         return render_template(
             "sales_dn_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
-            freshness=freshness, summary=summary,
+            freshness=freshness, summary=summary, search_query=request.args.get("q", ""),
         )
 
     @app.route("/registers/sales-dn/follow-up", methods=["POST"])

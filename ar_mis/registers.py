@@ -776,11 +776,23 @@ class ReceiptJournalDisplayFields:
     applied line has no Age Unapplied Days; an unapplied line has neither
     of the other two, since there is no target invoice to derive them
     from).
+
+    `linked_invoice_date`/`linked_invoice_value` answer a real traceability
+    gap the client raised: Target Doc No. is just a string on this row -
+    nothing on screen let a human confirm it actually names a real,
+    tracked invoice rather than a typo or an invoice this system never
+    saw. Both are the matched SalesDNRegisterRow's own facts, shown so a
+    reviewer can eyeball "does this applied amount and this invoice's own
+    date/value look like a plausible match" without leaving this register;
+    None when there's no match to show (unapplied, or a Pending Review
+    reference that never resolved to a tracked invoice).
     """
 
     dpd_at_application: int | None
     invoice_fin_year: str | None
     age_unapplied_days: int | None
+    linked_invoice_date: date | None = None
+    linked_invoice_value: Decimal | None = None
 
 
 def compute_receipt_journal_display_fields(
@@ -810,4 +822,31 @@ def compute_receipt_journal_display_fields(
         dpd_at_application=max((row.txn_date - invoice.due_date).days, 0),
         invoice_fin_year=financial_year_label(invoice.invoice_date),
         age_unapplied_days=None,
+        linked_invoice_date=invoice.invoice_date,
+        linked_invoice_value=invoice.invoice_value,
     )
+
+
+@dataclass
+class CreditNoteDisplayFields:
+    """Same traceability answer as ReceiptJournalDisplayFields' own
+    linked_invoice_date/linked_invoice_value, for a Credit Note's Original
+    Invoice/DN Ref - the identical "how do I know this really nets off
+    against that invoice" question the client raised, applies here just
+    as much as it does to an applied Receipt.
+    """
+
+    linked_invoice_date: date | None
+    linked_invoice_value: Decimal | None
+
+
+def compute_credit_note_display_fields(
+    row: CreditNoteRegisterRow,
+    bill_reference_lookup: dict[tuple[str, str], SalesDNRegisterRow],
+) -> CreditNoteDisplayFields:
+    if row.bill_allocation_reference is None:
+        return CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
+    invoice = bill_reference_lookup.get((row.party_id, row.bill_allocation_reference))
+    if invoice is None:
+        return CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
+    return CreditNoteDisplayFields(linked_invoice_date=invoice.invoice_date, linked_invoice_value=invoice.invoice_value)

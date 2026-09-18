@@ -3,7 +3,7 @@
 {% block main_class %}wide{% endblock %}
 {% block content %}
 <h1>Receipt &amp; Journal Register</h1>
-<p class="subtitle">Voucher-wise, every branch combined, bill-allocated. A voucher can apply against a specific invoice (Against Ref) or be left unapplied (New Ref/on-account) — this applies to Journals exactly like Receipts.</p>
+<p class="subtitle">Voucher-wise, every branch combined, bill-allocated. A voucher can apply against a specific invoice (Against Ref) or be left unapplied (New Ref/on-account) — this applies to Journals exactly like Receipts. Linked Invoice Date/Value are that matched invoice's own facts, so you can confirm an applied line really nets off against the invoice it claims to, without leaving this page — click the Target Doc No. itself to jump to that invoice on the Sales &amp; DN Register.</p>
 
 {% include "_freshness.html" %}
 
@@ -72,14 +72,16 @@
     <tr>
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th data-tt-filter data-tt-col="voucher_type">Voucher Type</th><th>Voucher No.</th><th>Customer</th>
-      <th data-tt-filter data-tt-col="allocation_type">Allocation Type</th><th>Target Doc No.</th><th>Applied Amount</th><th>Unapplied Balance</th>
+      <th data-tt-filter data-tt-col="allocation_type">Allocation Type</th><th>Target Doc No.</th><th>Linked Invoice Date</th><th>Linked Invoice Value</th>
+      <th>Applied Amount</th><th>Unapplied Balance</th>
       <th data-tt-filter data-tt-col="classification">Classification</th><th>DPD at Application</th><th>Age Unapplied Days</th><th>Invoice Fin Year</th>
       <th>Narration</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
       <th></th><th></th><th></th><th></th><th></th>
-      <th></th><th></th><th data-tt-sum="receiptjournal:applied_amount">0.00</th><th data-tt-sum="receiptjournal:unapplied_balance">0.00</th>
+      <th></th><th></th><th></th>
+      <th data-tt-sum="receiptjournal:applied_amount">0.00</th><th data-tt-sum="receiptjournal:unapplied_balance">0.00</th>
       <th></th><th></th><th></th><th></th>
       <th></th>
     </tr>
@@ -96,7 +98,12 @@
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.party_id }}</td>
       <td data-tt-col="allocation_type">{% if row.target_doc_no %}Against Ref{% else %}Unapplied{% endif %}</td>
-      <td>{{ row.target_doc_no or '—' }}</td>
+      <td>
+        {% if row.target_doc_no %}<a href="{{ url_for('sales_dn_register', q=row.target_doc_no) }}" title="Find this reference on the Sales &amp; DN Register">{{ row.target_doc_no }}</a>
+        {% else %}—{% endif %}
+      </td>
+      <td>{{ f.linked_invoice_date if f.linked_invoice_date else '—' }}</td>
+      <td>{{ f.linked_invoice_value|inr if f.linked_invoice_value is not none else '—' }}</td>
       <td data-tt-col="applied_amount"{% if row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
       <td data-tt-col="unapplied_balance"{% if not row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
       <td data-tt-col="classification">
