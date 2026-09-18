@@ -981,6 +981,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     and row.cn_date <= as_of
                     else None
                 ),
+                # Age Unapplied Days (client's own catch: a genuinely
+                # on-account CN sitting unapplied for weeks reads
+                # identically to a fresh one under the bare "Current"
+                # label - this is the number that actually distinguishes
+                # them). Mirrors compute_receipt_journal_display_fields'
+                # own rule exactly: any CN with no bill reference at all,
+                # regardless of classification, clamped to never go
+                # negative for a future-dated CN.
+                "age_unapplied_days": (
+                    max((as_of - row.cn_date).days, 0) if row.bill_allocation_reference is None else None
+                ),
             }
             for row in rows
         ]

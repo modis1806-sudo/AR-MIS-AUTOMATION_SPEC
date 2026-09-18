@@ -95,7 +95,7 @@ def test_credit_note_register_workbook_contains_headers_and_row_values():
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
         classification=RegisterClassification.CURRENT,
     )
-    display_rows = [{"row": row, "unapplied_amount": None}]
+    display_rows = [{"row": row, "unapplied_amount": None, "age_unapplied_days": None}]
 
     wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
     ws = wb.active
@@ -110,12 +110,29 @@ def test_credit_note_register_workbook_contains_headers_and_row_values():
     assert "Current" in data_row
 
 
+def test_credit_note_register_workbook_includes_age_unapplied_days():
+    row = CreditNoteRegisterRow(
+        branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
+        cn_amount=Decimal("5000.00"), bill_allocation_reference=None,
+    )
+    display_rows = [{"row": row, "unapplied_amount": Decimal("5000.00"), "age_unapplied_days": 54}]
+
+    wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
+    ws = wb.active
+    header_row = [c.value for c in ws[3]]
+    assert "Age Unapplied Days" in header_row
+    data_row = [c.value for c in ws[4]]
+    assert 54 in data_row
+
+
 def test_credit_note_register_workbook_unapplied_amount_blank_when_allocated():
     row = CreditNoteRegisterRow(
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
     )
-    wb = build_credit_note_register_workbook([{"row": row, "unapplied_amount": None}], as_of=date(2026, 9, 12))
+    wb = build_credit_note_register_workbook(
+        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None}], as_of=date(2026, 9, 12)
+    )
     data_row = [c.value for c in wb.active[4]]
     unapplied_col_index = [c.value for c in wb.active[3]].index("Open/Unapplied CN Amount")
     assert data_row[unapplied_col_index] is None
@@ -181,7 +198,9 @@ def test_credit_note_register_workbook_applies_indian_format_to_cn_amount():
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference="INV/002",
     )
-    wb = build_credit_note_register_workbook([{"row": row, "unapplied_amount": None}], as_of=date(2026, 9, 12))
+    wb = build_credit_note_register_workbook(
+        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None}], as_of=date(2026, 9, 12)
+    )
     ws = wb.active
     header_row = [c.value for c in ws[3]]
     cn_amount_col = header_row.index("CN Amount") + 1

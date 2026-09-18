@@ -98,7 +98,7 @@ def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workboo
 
 _CREDIT_NOTE_HEADERS = [
     "Branch", "Date", "Customer", "CN Number", "Original Invoice/DN Ref", "CN Amount",
-    "Open/Unapplied CN Amount", "Classification",
+    "Open/Unapplied CN Amount", "Classification", "Age Unapplied Days",
 ]
 # CN Amount, Open/Unapplied CN Amount.
 _CREDIT_NOTE_MONEY_COLUMNS = [6, 7]
@@ -120,7 +120,7 @@ def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Work
                 row.branch_id, row.cn_date, row.party_id, row.voucher_number,
                 row.bill_allocation_reference or "", float(row.cn_amount),
                 float(d["unapplied_amount"]) if d["unapplied_amount"] is not None else None,
-                row.classification.value,
+                row.classification.value, d["age_unapplied_days"],
             ]
         )
         _apply_inr_format(ws, _CREDIT_NOTE_MONEY_COLUMNS)

@@ -36,7 +36,7 @@
 
 <div class="card" style="font-size:13px; color:#4b5563; margin-bottom:16px;">
   <strong>What Classification means:</strong><br>
-  <span class="pill class-current">Current</span> — normal in-period item, nothing to review.
+  <span class="pill class-current">Current</span> — normal in-period item, nothing to review. Shown as <span class="pill class-current">Current · Unapplied Nd</span> when it's genuinely on-account and has sat unapplied for N days — the day count itself, not the label, is what tells you whether it's fresh or stale.
   <span class="pill class-pending">Pending Review</span> — this voucher's Target Doc No. didn't match any invoice this system tracks; someone needs to confirm whether it belongs to a Pre-MIS-period invoice or is a data-entry mistake. Use the <strong>Resolve</strong> control on the row to do that.
   <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total.
 </div>
@@ -100,7 +100,9 @@
       <td data-tt-col="applied_amount"{% if row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
       <td data-tt-col="unapplied_balance"{% if not row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
       <td data-tt-col="classification">
-        {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
+        {% if row.classification.value == 'Current' %}
+          {% if f.age_unapplied_days is not none %}<span class="pill class-current">Current · Unapplied {{ f.age_unapplied_days }}d</span>
+          {% else %}<span class="pill class-current">Current</span>{% endif %}
         {% elif row.classification.value == 'Pending Review' %}
           <span class="pill class-pending">Pending Review</span>
           <details>

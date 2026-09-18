@@ -1625,6 +1625,89 @@ def test_credit_note_register_as_of_date_excludes_a_future_dated_cn_from_the_sum
     assert b"200.00" in resp2.data
 
 
+def test_credit_note_register_shows_age_unapplied_days_and_labels_the_pill_with_it(client):
+    # Client's own catch: a genuinely on-account CN sitting unapplied for
+    # weeks read identically to a fresh one under a bare "Current" pill -
+    # the day count itself must show, both as its own column and right on
+    # the classification pill.
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 4, 1), voucher_number="CN/ONACCOUNT", party_id="ACME",
+            cn_amount=Decimal("300.00"), bill_allocation_reference=None,
+        )
+    )
+    # An applied CN (has a bill reference) must never get an age at all -
+    # "unapplied" doesn't apply to it.
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 4, 1), voucher_number="CN/APPLIED", party_id="ACME",
+            cn_amount=Decimal("150.00"), bill_allocation_reference="INV/1",
+        )
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes?as_of=2026-04-15")
+    assert resp.status_code == 200
+    assert b"Age Unapplied Days" in resp.data
+    assert b"Current \xc2\xb7 Unapplied 14d" in resp.data
+
+    onaccount_row_html = resp.data.split(b"CN/ONACCOUNT", 1)[1].split(b"</tr>")[0]
+    assert b">14<" in onaccount_row_html
+
+    applied_row_html = resp.data.split(b"CN/APPLIED", 1)[1].split(b"</tr>")[0]
+    assert b"Unapplied" not in applied_row_html
+    assert b">\xe2\x80\x94<" in applied_row_html  # em dash placeholder for "not applicable"
+
+
+def test_receipt_journal_register_labels_the_current_pill_with_unapplied_age(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 1), voucher_type="Receipt", voucher_number="RCPT/1",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no=None,
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals?as_of=2026-04-15")
+    assert resp.status_code == 200
+    assert b"Current \xc2\xb7 Unapplied 14d" in resp.data
+
+
+def test_receipt_journal_register_applied_row_keeps_plain_current_pill(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 1), voucher_type="Receipt", voucher_number="RCPT/APPLIED",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV/1",
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals?as_of=2026-04-15")
+    assert resp.status_code == 200
+    row_html = resp.data.split(b"RCPT/APPLIED", 1)[1].split(b"</tr>")[0]
+    assert b"Unapplied" not in row_html
+    assert b">Current<" in row_html
+
+
 def test_receipt_journal_register_shows_a_running_summary_of_unapplied_balance(client):
     from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
     from ar_mis.storage import Store
