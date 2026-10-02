@@ -1005,6 +1005,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store = get_store()
         rows = store.all_credit_note_rows()
         sales_dn_rows = store.all_sales_dn_rows()
+        # Same grouping lookup the Sales & DN Register already uses -
+        # client's own catch that it was missing here, even though every
+        # register is keyed off the same (party_id, branch_id) customer.
+        groupings = {
+            (r["party_id"], r["branch_id"]): r["grouping"] for r in store.all_customer_master_records()
+        }
         freshness = _freshness(store.last_extraction_at())
         store.close()
         bill_reference_lookup = build_bill_reference_lookup(sales_dn_rows)
@@ -1036,6 +1042,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             display_rows.append(
                 {
                     "row": row,
+                    "grouping": groupings.get((row.party_id, row.branch_id)),
                     "unapplied_amount": (
                         row.cn_amount
                         if row.bill_allocation_reference is None
@@ -1077,12 +1084,23 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store = get_store()
         rj_rows = store.all_receipt_journal_rows()
         sales_dn_rows = store.all_sales_dn_rows()
+        # Same grouping lookup the Sales & DN Register already uses -
+        # client's own catch that it was missing here, even though every
+        # register is keyed off the same (party_id, branch_id) customer.
+        groupings = {
+            (r["party_id"], r["branch_id"]): r["grouping"] for r in store.all_customer_master_records()
+        }
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
         lookup = build_bill_reference_lookup(sales_dn_rows)
         display_rows = [
-            {"row": row, "fields": compute_receipt_journal_display_fields(row, lookup, as_of)} for row in rj_rows
+            {
+                "row": row,
+                "grouping": groupings.get((row.party_id, row.branch_id)),
+                "fields": compute_receipt_journal_display_fields(row, lookup, as_of),
+            }
+            for row in rj_rows
         ]
         return display_rows, freshness
 

@@ -70,13 +70,13 @@
   <thead>
     <tr>
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
-      <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th>Customer</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
+      <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th>Customer</th><th data-tt-filter data-tt-col="grouping">Grouping</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
       <th>Linked Invoice Date</th><th>Linked Invoice Value</th>
       <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
-      <th></th><th></th><th></th><th></th><th></th>
+      <th></th><th></th><th></th><th></th><th></th><th></th>
       <th></th><th></th>
       <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th>
     </tr>
@@ -89,6 +89,7 @@
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.cn_date }}</td>
       <td>{{ row.party_id }}</td>
+      <td data-tt-col="grouping">{{ d.grouping or '—' }}</td>
       <td>{{ row.voucher_number }}</td>
       <td>
         {% if row.bill_allocation_reference %}<a href="{{ url_for('sales_dn_register', q=row.bill_allocation_reference) }}" title="Find this reference on the Sales &amp; DN Register">{{ row.bill_allocation_reference }}</a>

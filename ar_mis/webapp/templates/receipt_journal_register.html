@@ -71,6 +71,7 @@
     <tr>
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th data-tt-filter data-tt-col="voucher_type">Voucher Type</th><th>Voucher No.</th><th>Customer</th>
+      <th data-tt-filter data-tt-col="grouping">Grouping</th>
       <th data-tt-filter data-tt-col="allocation_type">Allocation Type</th><th>Target Doc No.</th><th>Linked Invoice Date</th><th>Linked Invoice Value</th>
       <th>Applied Amount</th><th>Unapplied Balance</th>
       <th data-tt-filter data-tt-col="classification">Classification</th><th>DPD at Application</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th><th>Invoice Fin Year</th>
@@ -79,6 +80,7 @@
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
       <th></th><th></th><th></th><th></th><th></th>
+      <th></th>
       <th></th><th></th><th></th>
       <th data-tt-sum="receiptjournal:applied_amount">0.00</th><th data-tt-sum="receiptjournal:unapplied_balance">0.00</th>
       <th></th><th></th><th></th><th></th>
@@ -96,6 +98,7 @@
       <td data-tt-col="voucher_type">{{ row.voucher_type }}</td>
       <td>{{ row.voucher_number }}</td>
       <td>{{ row.party_id }}</td>
+      <td data-tt-col="grouping">{{ d.grouping or '—' }}</td>
       <td data-tt-col="allocation_type">{% if row.target_doc_no %}Against Ref{% else %}Unapplied{% endif %}</td>
       <td>
         {% if row.target_doc_no %}<a href="{{ url_for('sales_dn_register', q=row.target_doc_no) }}" title="Find this reference on the Sales &amp; DN Register">{{ row.target_doc_no }}</a>

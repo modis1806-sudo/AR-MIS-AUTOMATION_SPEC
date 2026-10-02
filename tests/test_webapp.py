@@ -1934,6 +1934,33 @@ def test_receipt_journal_register_buckets_unapplied_age_with_no_current_state(cl
     assert b"Current \xc2\xb7 Unapplied" not in resp.data  # pill itself stays plain
 
 
+def test_credit_note_register_shows_customer_grouping_column(client):
+    # Client's own catch: the Sales & DN Register has always had a
+    # Grouping column, but the CN and Receipt & Journal registers never
+    # got it, even though every register is keyed off the same
+    # (party_id, branch_id) customer master record.
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, PartyGrouping
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(
+        CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00"), grouping=PartyGrouping.RELATED_PARTY)
+    )
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/1", party_id="ACME",
+            cn_amount=Decimal("200.00"),
+        )
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes")
+    assert resp.status_code == 200
+    assert b'data-tt-filter data-tt-col="grouping"' in resp.data
+    row_html = resp.data.split(b"CN/1", 1)[1].split(b"</tr>")[0]
+    assert b'data-tt-col="grouping">Related Party<' in row_html
+
+
 def test_receipt_journal_register_applied_row_keeps_plain_current_pill(client):
     from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
     from ar_mis.storage import Store
@@ -1955,6 +1982,31 @@ def test_receipt_journal_register_applied_row_keeps_plain_current_pill(client):
     row_html = resp.data.split(b"RCPT/APPLIED", 1)[1].split(b"</tr>")[0]
     assert b"Unapplied" not in row_html
     assert b">Current<" in row_html
+
+
+def test_receipt_journal_register_shows_customer_grouping_column(client):
+    from ar_mis.models import CustomerMasterRecord, PartyGrouping, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(
+        CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00"), grouping=PartyGrouping.SUNDRY_DEBTOR)
+    )
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 1), voucher_type="Receipt", voucher_number="RCPT/G1",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV/1",
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals")
+    assert resp.status_code == 200
+    assert b'data-tt-filter data-tt-col="grouping"' in resp.data
+    row_html = resp.data.split(b"RCPT/G1", 1)[1].split(b"</tr>")[0]
+    assert b'data-tt-col="grouping">Sundry Debtor<' in row_html
 
 
 def test_receipt_journal_register_shows_a_running_summary_of_unapplied_balance(client):

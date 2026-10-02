@@ -97,11 +97,11 @@ def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workboo
 
 
 _CREDIT_NOTE_HEADERS = [
-    "Branch", "Date", "Customer", "CN Number", "Original Invoice/DN Ref", "Linked Invoice Date",
+    "Branch", "Date", "Customer", "Grouping", "CN Number", "Original Invoice/DN Ref", "Linked Invoice Date",
     "Linked Invoice Value", "CN Amount", "Open/Unapplied CN Amount", "Classification", "Unapplied Ageing",
 ]
 # Linked Invoice Value, CN Amount, Open/Unapplied CN Amount.
-_CREDIT_NOTE_MONEY_COLUMNS = [7, 8, 9]
+_CREDIT_NOTE_MONEY_COLUMNS = [8, 9, 10]
 
 
 def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Workbook:
@@ -117,7 +117,7 @@ def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Work
         row, fields = d["row"], d["fields"]
         ws.append(
             [
-                row.branch_id, row.cn_date, row.party_id, row.voucher_number,
+                row.branch_id, row.cn_date, row.party_id, d.get("grouping") or "", row.voucher_number,
                 row.bill_allocation_reference or "", fields.linked_invoice_date,
                 float(fields.linked_invoice_value) if fields.linked_invoice_value is not None else None,
                 float(row.cn_amount),
@@ -131,12 +131,12 @@ def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Work
 
 
 _RECEIPT_JOURNAL_HEADERS = [
-    "Branch", "Date", "Voucher Type", "Voucher No.", "Customer", "Allocation Type", "Target Doc No.",
+    "Branch", "Date", "Voucher Type", "Voucher No.", "Customer", "Grouping", "Allocation Type", "Target Doc No.",
     "Linked Invoice Date", "Linked Invoice Value", "Applied Amount", "Unapplied Balance", "Classification",
     "DPD at Application", "Unapplied Ageing", "Invoice Fin Year", "Narration",
 ]
 # Linked Invoice Value, Applied Amount, Unapplied Balance.
-_RECEIPT_JOURNAL_MONEY_COLUMNS = [9, 10, 11]
+_RECEIPT_JOURNAL_MONEY_COLUMNS = [10, 11, 12]
 
 
 _UNRECONCILED_PARTIES_HEADERS = [
@@ -232,6 +232,7 @@ def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> 
         ws.append(
             [
                 row.branch_id, row.txn_date, row.voucher_type, row.voucher_number, row.party_id,
+                d.get("grouping") or "",
                 "Against Ref" if row.target_doc_no else "Unapplied", row.target_doc_no or "",
                 f.linked_invoice_date,
                 float(f.linked_invoice_value) if f.linked_invoice_value is not None else None,
