@@ -45,6 +45,7 @@
 {% if display_rows %}
 <div class="table-tools" data-tt="creditnotes">
   <input type="search" data-tt-search placeholder="Search customer, CN number...">
+  <select data-tt-search-scope title="Search in a specific column instead of the whole row"></select>
   <span data-tt-filters></span>
   <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
   <span class="tt-count" data-tt-count></span>
@@ -90,7 +91,7 @@
       <td>{{ row.cn_date }}</td>
       <td>{{ row.party_id }}</td>
       <td data-tt-col="grouping">{{ d.grouping or '—' }}</td>
-      <td>{{ row.voucher_number }}</td>
+      <td data-tt-row-label>{{ row.voucher_number }}</td>
       <td>
         {% if row.bill_allocation_reference %}<a href="{{ url_for('sales_dn_register', q=row.bill_allocation_reference) }}" title="Find this reference on the Sales &amp; DN Register">{{ row.bill_allocation_reference }}</a>
         {% else %}—{% endif %}

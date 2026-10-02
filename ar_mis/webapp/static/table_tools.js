@@ -8,6 +8,7 @@
  *
  *   <div class="table-tools" data-tt="UNIQUE_ID">
  *     <input type="search" data-tt-search>
+ *     <select data-tt-search-scope></select>  (optional - see below)
  *     <span data-tt-filters></span>          (dropdowns injected here)
  *     <button type="button" data-tt-clear>Clear filters</button>
  *     <span data-tt-count></span>
@@ -26,11 +27,19 @@
  *     </tbody>
  *   </table>
  *
- * Search matches the ENTIRE row's visible text, case-insensitive - the
- * client's own ask was simply "let me find the party in the list",
- * not a column-scoped search. Column filters are opt-in dropdowns,
- * auto-populated from whatever values actually appear in that column
- * (never a hardcoded list, so it never drifts from the real data).
+ * Search matches the ENTIRE row's visible text by default, case-
+ * insensitive. Client's own later catch, after a whole-row match swept
+ * an unintended row into a batch financial action (searching "25-26"
+ * to mean "target invoices from that FY" also matched a voucher whose
+ * OWN number happened to carry the same digits): an optional
+ * data-tt-search-scope <select> is auto-populated with one option per
+ * table column (by header label) plus "All columns", letting the exact
+ * same search box be pinned to a single column - Excel's own "search
+ * this column" behavior - without needing a text box per column, which
+ * would turn a 15+ column register header into clutter. Column filters
+ * are a separate, opt-in dropdown of exact values, auto-populated from
+ * whatever actually appears in that column (never a hardcoded list, so
+ * it never drifts from the real data).
  *
  * A live-sum target anywhere on the page (typically a KPI tile) can
  * declare data-tt-sum="UNIQUE_ID:col_name" and its text is replaced
@@ -40,6 +49,17 @@
  * Select-all only ever acts on currently visible rows (same as Gmail's
  * own select-all-in-this-view behavior, which the client named
  * explicitly) - filtering first, then selecting, is the whole point.
+ *
+ * Any <form> that a [data-tt-row-select] checkbox targets (via its own
+ * form="..." attribute - the batch-action forms on every register) gets
+ * a confirmation step wired on automatically: submitting it first shows
+ * exactly which rows (read from each row's own [data-tt-row-label] cell)
+ * and what field values are about to be applied, and only proceeds if
+ * the user confirms. Same root cause as the search-scope feature above -
+ * a batch action with real financial consequences must never commit to
+ * a selection the user hasn't actually seen confirmed, regardless of
+ * how a row ended up checked (a loose search match, a leftover
+ * selection, a misclick).
  */
 (function () {
   "use strict";
@@ -89,9 +109,18 @@
   function cellText(cell) {
     var filterValue = cell.getAttribute("data-tt-filter-value");
     if (filterValue !== null) return filterValue.trim();
-    var input = cell.querySelector('input[type="text"], input[type="number"]');
+    var input = cell.querySelector('input[type="text"], input[type="number"], input[type="date"]');
     if (input) return input.value.trim();
-    return cell.textContent.trim();
+    // Falls through here for a cell with a <select> but no input of its
+    // own (e.g. the Classification column's hidden Resolve form on a
+    // Pending Review row, before it ever gets a data-tt-filter-value) -
+    // stripped for the same reason rowSearchText strips it below: a
+    // <select>'s own option labels are boilerplate, not this row's data.
+    var clone = cell.cloneNode(true);
+    Array.prototype.forEach.call(clone.querySelectorAll("select"), function (s) {
+      s.parentNode.removeChild(s);
+    });
+    return clone.textContent.trim();
   }
 
   // Same problem at the whole-row level for the free-text search box:
@@ -121,6 +150,7 @@
     if (!table) return;
 
     var searchInput = container.querySelector("[data-tt-search]");
+    var searchScope = container.querySelector("[data-tt-search-scope]");
     var filtersHost = container.querySelector("[data-tt-filters]");
     var clearBtn = container.querySelector("[data-tt-clear]");
     var countEl = container.querySelector("[data-tt-count]");
@@ -129,6 +159,28 @@
     var headerRow = table.querySelector("thead tr");
     var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr[data-tt-row]"));
     var selects = [];
+
+    // Excel's own "search this column" - one option per header label,
+    // by cell position so it works whether or not that column also
+    // carries a data-tt-col (most do, for filters/sums; plain text
+    // columns like Date or Voucher No. often don't). A header with no
+    // text (the select-all checkbox column) is skipped - nothing to
+    // search there.
+    if (searchScope && headerRow) {
+      var allColumnsOpt = document.createElement("option");
+      allColumnsOpt.value = "";
+      allColumnsOpt.textContent = "All columns";
+      searchScope.appendChild(allColumnsOpt);
+      Array.prototype.forEach.call(headerRow.children, function (th, idx) {
+        var label = th.textContent.trim();
+        if (!label) return;
+        var opt = document.createElement("option");
+        opt.value = String(idx);
+        opt.textContent = label;
+        searchScope.appendChild(opt);
+      });
+      searchScope.addEventListener("change", applyFilters);
+    }
 
     if (headerRow && filtersHost) {
       var filterHeaders = Array.prototype.slice.call(
@@ -194,14 +246,23 @@
 
     function applyFilters() {
       var term = searchInput ? searchInput.value.trim().toLowerCase() : "";
+      // "" (the default "All columns" option) keeps the existing
+      // whole-row search; any other value pins the box to that one
+      // column index instead.
+      var scopeIndex = searchScope && searchScope.value !== "" ? parseInt(searchScope.value, 10) : -1;
       var activeFilters = selects.map(function (s) {
         return { col: s.getAttribute("data-tt-filter-col"), value: s.value };
       });
       var visible = 0;
       rows.forEach(function (row) {
         var matches = true;
-        if (term && rowSearchText(row).indexOf(term) === -1) {
-          matches = false;
+        if (term) {
+          if (scopeIndex === -1) {
+            if (rowSearchText(row).indexOf(term) === -1) matches = false;
+          } else {
+            var scopedCell = row.children[scopeIndex];
+            if (!scopedCell || cellText(scopedCell).toLowerCase().indexOf(term) === -1) matches = false;
+          }
         }
         if (matches) {
           for (var i = 0; i < activeFilters.length; i++) {
@@ -230,6 +291,7 @@
     if (clearBtn) {
       clearBtn.addEventListener("click", function () {
         if (searchInput) searchInput.value = "";
+        if (searchScope) searchScope.value = "";
         selects.forEach(function (s) {
           s.value = "";
         });
@@ -275,6 +337,51 @@
         });
       }
     );
+
+    // Client's own ask, after a loose search match swept an unintended
+    // row into a batch Pre-MIS resolve: every batch-action form (any
+    // <form> a [data-tt-row-select] checkbox targets via its own
+    // form="..." attribute) gets a confirmation step wired on
+    // automatically, no per-template markup needed beyond giving each
+    // row a [data-tt-row-label] cell to identify it by. Submitting the
+    // form first lists exactly which rows and field values are about to
+    // be applied and requires an explicit OK - this catches a wrong
+    // selection regardless of how it happened (a loose search match, a
+    // leftover checkbox, a misclick), which column-scoped search above
+    // helps prevent but can't fully rule out on its own.
+    var batchFormIds = {};
+    Array.prototype.forEach.call(table.querySelectorAll("[data-tt-row-select]"), function (cb) {
+      var formId = cb.getAttribute("form");
+      if (formId) batchFormIds[formId] = true;
+    });
+    Object.keys(batchFormIds).forEach(function (formId) {
+      var form = document.getElementById(formId);
+      if (!form) return;
+      form.addEventListener("submit", function (evt) {
+        var checked = Array.prototype.slice.call(table.querySelectorAll('[data-tt-row-select]:checked'));
+        if (checked.length === 0) return; // nothing selected - the server's own message handles this
+        var labels = checked.map(function (cb) {
+          var row = cb.closest("tr[data-tt-row]");
+          var labelCell = row && row.querySelector("[data-tt-row-label]");
+          return labelCell ? cellText(labelCell) : "(unlabeled row)";
+        });
+        var fieldSummary = [];
+        Array.prototype.forEach.call(form.querySelectorAll("input, select"), function (el) {
+          if (el.type === "hidden" || el.type === "checkbox" || el.name === "selected" || !el.value) return;
+          fieldSummary.push(el.name + ": " + el.value);
+        });
+        var shown = labels.slice(0, 20);
+        var message = "Apply to these " + labels.length + " selected row(s)?\n";
+        if (fieldSummary.length) message += "\n" + fieldSummary.join("\n") + "\n";
+        message += "\n" + shown.join("\n");
+        if (labels.length > shown.length) {
+          message += "\n...and " + (labels.length - shown.length) + " more";
+        }
+        if (!window.confirm(message)) {
+          evt.preventDefault();
+        }
+      });
+    });
 
     applyFilters();
   }

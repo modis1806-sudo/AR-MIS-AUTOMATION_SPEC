@@ -2091,6 +2091,57 @@ def test_credit_note_register_shows_resolve_action_only_for_pending_review_rows(
     assert resp.data.count(b'action="/registers/credit-notes/reclassify"') == 1
 
 
+def test_sales_dn_register_has_column_scoped_search_and_row_labels(client):
+    # Client's own ask, after a whole-row search match swept an
+    # unintended row into a batch financial action: a column-scope
+    # selector next to the search box, and each row's own identifying
+    # cell marked for the batch-confirmation feature - both wired up
+    # entirely in table_tools.js, so only the markup hooks need checking
+    # here.
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b"data-tt-search-scope" in resp.data
+    assert b"data-tt-row-label" in resp.data
+
+
+def test_credit_note_register_has_column_scoped_search_and_row_labels(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/1", party_id="ACME",
+                               cn_amount=Decimal("200.00"))
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes")
+    assert resp.status_code == 200
+    assert b"data-tt-search-scope" in resp.data
+    assert b"data-tt-row-label" in resp.data
+
+
+def test_receipt_journal_register_has_column_scoped_search_and_row_labels(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows([
+        ReceiptJournalRegisterRow(branch_id="KOL", txn_date=date(2026, 4, 1), voucher_type="Receipt",
+                                   voucher_number="RCPT/1", party_id="ACME", amount=Decimal("500.00"),
+                                   target_doc_no="INV/1")
+    ])
+    store.close()
+
+    resp = client.get("/registers/receipts-journals")
+    assert resp.status_code == 200
+    assert b"data-tt-search-scope" in resp.data
+    assert b"data-tt-row-label" in resp.data
+
+
 def test_credit_note_register_classification_cell_carries_a_clean_filter_value(client):
     # Client's own live-testing catch: once the Resolve form's "Reason"
     # text box was removed, the table_tools.js filter dropdown fell back
