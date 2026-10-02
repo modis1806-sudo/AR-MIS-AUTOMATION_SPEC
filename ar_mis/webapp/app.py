@@ -1815,22 +1815,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "ar_snapshot.html", snapshot=snapshot, as_of=as_of.isoformat(), freshness=freshness
         )
 
-    @app.route("/reports/branch-ageing")
-    def branch_ageing_report():
-        as_of = _parse_as_of()
-        store = get_store()
-        sales_dn_rows = store.all_sales_dn_rows()
-        cn_rows = store.all_credit_note_rows()
-        rj_rows = store.all_receipt_journal_rows()
-        freshness = _freshness(store.last_extraction_at())
-        store.close()
-
-        rows = compute_branch_ageing_schedule(sales_dn_rows, cn_rows, rj_rows, as_of)
-        bucket_order = AGEING_BUCKET_ORDER
-        return render_template(
-            "branch_ageing.html", rows=rows, bucket_order=bucket_order, as_of=as_of.isoformat(), freshness=freshness
-        )
-
     @app.route("/reports/exceptions")
     def exception_register_report():
         """Design doc item 15's six sub-reports in one screen - the

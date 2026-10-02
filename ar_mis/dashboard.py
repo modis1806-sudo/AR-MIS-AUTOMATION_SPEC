@@ -1,6 +1,11 @@
-"""AR Snapshot (KPI dashboard) and Branch-wise Ageing Schedule - design
+"""AR Snapshot (KPI dashboard) and the branch-level ageing summary - design
 doc item 15's report catalog, built on top of ar_mis.registers' per-
-invoice formulas. Every figure here is as-of-date selectable (item 14):
+invoice formulas. The branch-level summary (compute_branch_ageing_schedule)
+no longer has its own standalone report page - client's later call: it was
+an exact duplicate of the Branch Summary table Ageing Matrix already shows
+via the same function, so the dedicated page was removed and this is now
+reached only through Ageing Matrix. Every figure here is as-of-date
+selectable (item 14):
 nothing is a stored total, everything is recomputed from the raw
 registers for the selected date. Functions take already-fetched register
 lists rather than a Store, matching ar_mis.registers' own convention, so

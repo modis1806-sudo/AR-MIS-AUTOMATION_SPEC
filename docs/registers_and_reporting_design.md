@@ -425,10 +425,13 @@ Ageing Bucket definition, one as-of-date mechanism. The list below is scope
   categories.
   - **Notional Interest Cost** — interest rate assumed flat at **10%** for
     now (confirmed this session), applied over the relevant overdue period.
-- **Branch-wise Ageing Schedule** — one ageing-bucket row per branch plus a
-  total row, all branches.
-- **Ageing Matrix**, both a branch-level summary and a customer-level detail
-  view (Branch, Customer, Grouping, ageing buckets, Total Open), FY-scoped.
+- **Ageing Matrix**, both a branch-level summary (one ageing-bucket row per
+  branch plus a total row, all branches — this was shipped first as its own
+  separate "Branch-wise Ageing Schedule" screen, then removed as a later,
+  client-caught duplicate once Ageing Matrix's own branch summary, reusing
+  the identical function, made it redundant; see item 38) and a customer-
+  level detail view (Branch, Customer, Grouping, ageing buckets, Total
+  Open), FY-scoped.
   The customer-level view also ties each customer's register-derived Total
   Open against Tally's own ledger closing balance (likely sourced the same
   way as `fixtures/ledger_closing_balances.xml`) as an independent
@@ -1068,6 +1071,35 @@ resolves former open item 1.
     with both wrongly selected shows a dialog listing both voucher
     numbers and the field being applied, blocks on Cancel, proceeds on
     Accept.
+38. **NEW, resolved: removed the standalone Branch-wise Ageing Schedule
+    report - an exact duplicate of Ageing Matrix's own Branch Summary.**
+    Client's own catch, manually testing the Reports section: both
+    screens showed the identical branch-level ageing breakdown, because
+    both always called `ar_mis.dashboard.compute_branch_ageing_schedule`
+    - Ageing Matrix's own docstring already said as much (item 33).
+    Ageing Matrix is a strict superset (same branch summary, plus
+    customer-level detail, the Tally cross-check, an FY filter, and
+    search/grouping filters the standalone page never had), so the
+    standalone page added nothing. Removed entirely: its route
+    (`/reports/branch-ageing`), its template, its card on the Reports
+    home page, and its tests. `compute_branch_ageing_schedule` itself is
+    untouched and still runs exactly as before - only the dedicated page
+    exposing it on its own is gone; it's reached only through Ageing
+    Matrix now. Superseded item 15's report-catalog listing above, and
+    item 31 ("Build Branch-wise Ageing Schedule report screen") is
+    recorded here as reversed, not silently dropped.
+
+    Same session, same screen, two more client-driven UI fixes: the
+    Reports home page's 10 cards were stacked one full-width card per
+    row, forcing a long scroll to see them all - now a `.report-grid`
+    (same `auto-fill`/`minmax` CSS approach the KPI tile grid already
+    used) lands at 3+ cards per row, each card's button anchored to the
+    bottom via flexbox regardless of description length. That grid was
+    also still capped at the 960px default `<main>` width while every
+    register screen already used the roomier 1600px `main.wide` - client
+    caught the same page looking needlessly cramped right after the grid
+    shipped, so Reports now opts into `main.wide` too, the same as the
+    three master registers.
 
 ## Deferred to a later version (not rejected, not in scope now)
 

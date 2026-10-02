@@ -1,5 +1,4 @@
-"""Ageing Matrix - design doc item 15's customer-level detail report,
-sitting alongside the Branch-wise Ageing Schedule (ar_mis.dashboard). Two
+"""Ageing Matrix - design doc item 15's customer-level detail report. Two
 views:
 
 - Branch-level summary: this module just reuses
@@ -7,7 +6,10 @@ views:
   duplicate it. FY-scoping (see compute_ageing_matrix's docstring) is
   applied by the caller pre-filtering sales_dn_rows before calling either
   function, so compute_branch_ageing_schedule's own signature never
-  changes.
+  changes. This used to also have its own standalone "Branch-wise Ageing
+  Schedule" report page - client's later call: removed, since it was an
+  exact duplicate of this same branch summary with no FY filter and no
+  customer-level detail. Reached only through this screen now.
 - Customer-level detail (this module's own compute_ageing_matrix): one
   row per (party_id, branch_id) with the full ageing-bucket breakdown of
   its Open Amount, PLUS an independent cross-check against Tally's own

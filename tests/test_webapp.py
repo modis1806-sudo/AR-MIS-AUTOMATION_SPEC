@@ -2859,25 +2859,11 @@ def test_ar_snapshot_reachable_by_checker_not_by_extraction_routes(roleless_clie
     assert resp.status_code == 200
 
 
-def test_branch_ageing_report_renders_with_no_data(client):
-    resp = client.get("/reports/branch-ageing")
-    assert resp.status_code == 200
-    assert b"Branch-wise Ageing Schedule" in resp.data
-
-
-def test_branch_ageing_report_shows_the_extracted_branch(client):
-    _run_a_real_extraction(client)
-    resp = client.get("/reports/branch-ageing?as_of=2026-09-12")
-    assert resp.status_code == 200
-    assert b"KOL" in resp.data
-    assert b"All Branches" in resp.data
-
-
 def test_reports_home_links_to_both_new_reports(client):
     resp = client.get("/reports")
     assert resp.status_code == 200
     assert b"AR Snapshot" in resp.data
-    assert b"Branch-wise Ageing Schedule" in resp.data
+    assert b"Ageing Matrix" in resp.data
 
 
 # ---- Reports: Exception Register ------------------------------------------
