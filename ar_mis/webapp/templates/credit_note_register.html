@@ -36,9 +36,10 @@
 
 <div class="card" style="font-size:13px; color:#4b5563; margin-bottom:16px;">
   <strong>What Classification means:</strong><br>
-  <span class="pill class-current">Current</span> — normal in-period item, nothing to review. Shown as <span class="pill class-current">Current · Unapplied Nd</span> when it's genuinely on-account and has sat unapplied for N days — the day count itself, not the label, is what tells you whether it's fresh or stale.
+  <span class="pill class-current">Current</span> — normal in-period item, nothing to review.
   <span class="pill class-pending">Pending Review</span> — this CN's Bill Allocation Reference didn't match any invoice this system tracks; someone needs to confirm whether it belongs to a Pre-MIS-period invoice or is a data-entry mistake. Use the <strong>Resolve</strong> control on the row to do that.
   <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total.
+  <br>A genuinely on-account Current CN also gets an <strong>Unapplied Ageing</strong> bucket (same Current/1-30/.../181+ scheme as the Sales &amp; DN Register) once it's sat unapplied a while — a CN unapplied 181 days is just as stale as an invoice that old, and the bucket says so instead of still reading "Current".
 </div>
 
 {% if display_rows %}
@@ -61,7 +62,6 @@
         <option value="current">Current (data-entry correction)</option>
       </select>
     </div>
-    <div><label style="display:block; font-size:12px; font-weight:600;">Reason</label><input type="text" name="reason" required style="width:220px;"></div>
     <button class="btn" type="submit">Apply to selected</button>
   </form>
 </details>
@@ -72,13 +72,13 @@
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th>Customer</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
       <th>Linked Invoice Date</th><th>Linked Invoice Value</th>
-      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th>Age Unapplied Days</th>
+      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th>Age Unapplied Days</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
       <th></th><th></th><th></th><th></th><th></th>
       <th></th><th></th>
-      <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th>
+      <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -99,9 +99,7 @@
       <td data-tt-col="cn_amount" data-value="{{ row.cn_amount }}">{{ row.cn_amount|inr }}</td>
       <td data-tt-col="unapplied_amount"{% if d.unapplied_amount is not none %} data-value="{{ d.unapplied_amount }}"{% endif %}>{{ d.unapplied_amount|inr if d.unapplied_amount is not none else '—' }}</td>
       <td data-tt-col="classification">
-        {% if row.classification.value == 'Current' %}
-          {% if d.age_unapplied_days is not none %}<span class="pill class-current">Current · Unapplied {{ d.age_unapplied_days }}d</span>
-          {% else %}<span class="pill class-current">Current</span>{% endif %}
+        {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
         {% elif row.classification.value == 'Pending Review' %}
           <span class="pill class-pending">Pending Review</span>
           <details>
@@ -115,13 +113,13 @@
                 <option value="pre_mis">Pre-MIS Adjustment (reduces Pre-MIS Outstanding)</option>
                 <option value="current">Current (data-entry correction)</option>
               </select>
-              <input type="text" name="reason" placeholder="Reason" required>
               <button class="btn" type="submit" style="padding:4px 10px;">Save</button>
             </form>
           </details>
         {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}
       </td>
       <td>{{ d.age_unapplied_days if d.age_unapplied_days is not none else '—' }}</td>
+      <td data-tt-col="unapplied_bucket">{{ d.unapplied_bucket or '—' }}</td>
     </tr>
   {% endfor %}
   </tbody>

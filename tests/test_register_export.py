@@ -98,7 +98,7 @@ def test_credit_note_register_workbook_contains_headers_and_row_values():
     fields = CreditNoteDisplayFields(
         linked_invoice_date=date(2026, 6, 1), linked_invoice_value=Decimal("12000.00")
     )
-    display_rows = [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "fields": fields}]
+    display_rows = [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "unapplied_bucket": None, "fields": fields}]
 
     wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
     ws = wb.active
@@ -124,7 +124,7 @@ def test_credit_note_register_workbook_includes_age_unapplied_days():
     )
     fields = CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
     display_rows = [
-        {"row": row, "unapplied_amount": Decimal("5000.00"), "age_unapplied_days": 54, "fields": fields}
+        {"row": row, "unapplied_amount": Decimal("5000.00"), "age_unapplied_days": 54, "unapplied_bucket": "31-60", "fields": fields}
     ]
 
     wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
@@ -142,7 +142,7 @@ def test_credit_note_register_workbook_unapplied_amount_blank_when_allocated():
     )
     fields = CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
     wb = build_credit_note_register_workbook(
-        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "fields": fields}],
+        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "unapplied_bucket": None, "fields": fields}],
         as_of=date(2026, 9, 12),
     )
     data_row = [c.value for c in wb.active[4]]
@@ -212,7 +212,7 @@ def test_credit_note_register_workbook_applies_indian_format_to_cn_amount():
     )
     fields = CreditNoteDisplayFields(linked_invoice_date=None, linked_invoice_value=None)
     wb = build_credit_note_register_workbook(
-        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "fields": fields}],
+        [{"row": row, "unapplied_amount": None, "age_unapplied_days": None, "unapplied_bucket": None, "fields": fields}],
         as_of=date(2026, 9, 12),
     )
     ws = wb.active

@@ -823,6 +823,13 @@ class ReceiptJournalDisplayFields:
     age_unapplied_days: int | None
     linked_invoice_date: date | None = None
     linked_invoice_value: Decimal | None = None
+    # Client's own catch (seen first on the Credit Note Register, applies
+    # identically here): a voucher sitting unapplied for 181 days still
+    # read as plain "Current" - nothing told a reviewer it was just as
+    # stale as a 181+ overdue invoice. Bucketed through the exact same
+    # AGEING_BUCKET_ORDER progression, so "stale" means the same thing
+    # everywhere in this app.
+    unapplied_bucket: str | None = None
 
 
 def compute_receipt_journal_display_fields(
@@ -838,10 +845,12 @@ def compute_receipt_journal_display_fields(
     the (branch, voucher_number, party) identity PTP matching uses.
     """
     if row.target_doc_no is None:
+        age_unapplied_days = max((as_of - row.txn_date).days, 0)
         return ReceiptJournalDisplayFields(
             dpd_at_application=None,
             invoice_fin_year=None,
-            age_unapplied_days=max((as_of - row.txn_date).days, 0),
+            age_unapplied_days=age_unapplied_days,
+            unapplied_bucket=compute_ageing_bucket(age_unapplied_days),
         )
     invoice = bill_reference_lookup.get((row.party_id, row.target_doc_no))
     if invoice is None:

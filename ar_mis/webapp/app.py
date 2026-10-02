@@ -66,6 +66,7 @@ from ar_mis.register_export import (
 from ar_mis.registers import (
     AGEING_BUCKET_ORDER,
     build_bill_reference_lookup,
+    compute_ageing_bucket,
     compute_credit_note_display_fields,
     compute_invoice_position,
     compute_linked_cn_reference_text,
@@ -94,6 +95,19 @@ ROLES = {
 # PreMisAdjustment.adjusted_by); each row's own updated_at timestamp is
 # what tells a reviewer when it last changed.
 MAKER_ATTRIBUTION = "Maker"
+
+# Client's own later call on the CN/Receipt Resolve forms: a free-text
+# "Reason" box was redundant busywork, not a real second fact - the
+# target classification itself already says why a row is being resolved
+# that way (Pre-MIS because it matches a Pre-MIS-era invoice; Current
+# because it was a data-entry mistake). Deriving the stored reason from
+# the chosen classification keeps the audit trail's reason column
+# populated (it's a NOT NULL field, never shown on screen today) without
+# asking anyone to type something the classification already states.
+_RESOLUTION_REASON_BY_TARGET = {
+    "pre_mis": "Pre-MIS Adjustment",
+    "current": "Data-entry correction",
+}
 
 
 def create_app(db_path: str = "data/ar_mis.db") -> Flask:
@@ -1006,35 +1020,49 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         # already applies to Sales/DN. Every row still appears (nothing
         # here is ever hidden), only the Unapplied CN Amount is zeroed
         # for a CN not yet in effect as of the chosen date.
-        display_rows = [
-            {
-                "row": row,
-                "unapplied_amount": (
-                    row.cn_amount
-                    if row.bill_allocation_reference is None
-                    and row.classification == RegisterClassification.CURRENT
-                    and row.cn_date <= as_of
-                    else None
-                ),
-                # Age Unapplied Days (client's own catch: a genuinely
-                # on-account CN sitting unapplied for weeks reads
-                # identically to a fresh one under the bare "Current"
-                # label - this is the number that actually distinguishes
-                # them). Mirrors compute_receipt_journal_display_fields'
-                # own rule exactly: any CN with no bill reference at all,
-                # regardless of classification, clamped to never go
-                # negative for a future-dated CN.
-                "age_unapplied_days": (
-                    max((as_of - row.cn_date).days, 0) if row.bill_allocation_reference is None else None
-                ),
-                # Linked-invoice traceability (client's own catch: "how do
-                # I know this actually nets off against that invoice"): the
-                # matched Sales & DN row's own date/value, so a reviewer
-                # can eyeball the match without leaving this register.
-                "fields": compute_credit_note_display_fields(row, bill_reference_lookup),
-            }
-            for row in rows
-        ]
+        display_rows = []
+        for row in rows:
+            # Age Unapplied Days (client's own catch: a genuinely
+            # on-account CN sitting unapplied for weeks reads identically
+            # to a fresh one under the bare "Current" label - this is the
+            # number that actually distinguishes them). Mirrors
+            # compute_receipt_journal_display_fields' own rule exactly:
+            # any CN with no bill reference at all, regardless of
+            # classification, clamped to never go negative for a
+            # future-dated CN.
+            age_unapplied_days = (
+                max((as_of - row.cn_date).days, 0) if row.bill_allocation_reference is None else None
+            )
+            display_rows.append(
+                {
+                    "row": row,
+                    "unapplied_amount": (
+                        row.cn_amount
+                        if row.bill_allocation_reference is None
+                        and row.classification == RegisterClassification.CURRENT
+                        and row.cn_date <= as_of
+                        else None
+                    ),
+                    "age_unapplied_days": age_unapplied_days,
+                    # Client's own catch: an unapplied CN sitting for 181
+                    # days still read as plain "Current" - nothing told a
+                    # reviewer it was just as stale as a 181+ overdue
+                    # invoice. Bucketed through the exact same
+                    # AGEING_BUCKET_ORDER progression Sales & DN uses, so
+                    # "stale" means the same thing everywhere in this app,
+                    # and the column filter gets a handful of buckets
+                    # instead of one option per distinct day count.
+                    "unapplied_bucket": (
+                        compute_ageing_bucket(age_unapplied_days) if age_unapplied_days is not None else None
+                    ),
+                    # Linked-invoice traceability (client's own catch: "how
+                    # do I know this actually nets off against that
+                    # invoice"): the matched Sales & DN row's own
+                    # date/value, so a reviewer can eyeball the match
+                    # without leaving this register.
+                    "fields": compute_credit_note_display_fields(row, bill_reference_lookup),
+                }
+            )
         return display_rows, freshness
 
     def _build_receipt_journal_display_rows(as_of: date):
@@ -1385,7 +1413,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         voucher_number = request.form.get("voucher_number", "")
         party_id = request.form.get("party_id", "")
         target = request.form.get("target_classification", "")
-        reason = request.form.get("reason", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1393,8 +1420,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         if target not in ("pre_mis", "current"):
             return _redisplay("Choose a valid resolution.")
-        if not reason:
-            return _redisplay("Enter a reason for this resolution.")
+        reason = _RESOLUTION_REASON_BY_TARGET[target]
 
         store = get_store()
         rows = [
@@ -1436,7 +1462,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
         target = request.form.get("target_classification", "")
-        reason = request.form.get("reason", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1446,8 +1471,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Select at least one row to resolve.")
         if target not in ("pre_mis", "current"):
             return _redisplay("Choose a valid resolution.")
-        if not reason:
-            return _redisplay("Enter a reason for this resolution.")
+        reason = _RESOLUTION_REASON_BY_TARGET[target]
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
@@ -1500,7 +1524,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         voucher_number = request.form.get("voucher_number", "")
         party_id = request.form.get("party_id", "")
         target = request.form.get("target_classification", "")
-        reason = request.form.get("reason", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1508,8 +1531,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         if target not in ("pre_mis", "current"):
             return _redisplay("Choose a valid resolution.")
-        if not reason:
-            return _redisplay("Enter a reason for this resolution.")
+        reason = _RESOLUTION_REASON_BY_TARGET[target]
 
         store = get_store()
         rows = [
@@ -1550,7 +1572,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
         target = request.form.get("target_classification", "")
-        reason = request.form.get("reason", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1560,8 +1581,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Select at least one row to resolve.")
         if target not in ("pre_mis", "current"):
             return _redisplay("Choose a valid resolution.")
-        if not reason:
-            return _redisplay("Enter a reason for this resolution.")
+        reason = _RESOLUTION_REASON_BY_TARGET[target]
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT

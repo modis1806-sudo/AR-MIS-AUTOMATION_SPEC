@@ -1867,11 +1867,13 @@ def test_credit_note_register_as_of_date_excludes_a_future_dated_cn_from_the_sum
     assert b"200.00" in resp2.data
 
 
-def test_credit_note_register_shows_age_unapplied_days_and_labels_the_pill_with_it(client):
+def test_credit_note_register_shows_age_unapplied_days_and_its_ageing_bucket(client):
     # Client's own catch: a genuinely on-account CN sitting unapplied for
     # weeks read identically to a fresh one under a bare "Current" pill -
-    # the day count itself must show, both as its own column and right on
-    # the classification pill.
+    # the classification pill stays plain "Current", but a separate
+    # Unapplied Ageing column (bucketed through the same Current/1-30/
+    # .../181+ scheme as the Sales & DN Register) must show how stale it
+    # actually is.
     from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord
     from ar_mis.storage import Store
 
@@ -1896,17 +1898,18 @@ def test_credit_note_register_shows_age_unapplied_days_and_labels_the_pill_with_
     resp = client.get("/registers/credit-notes?as_of=2026-04-15")
     assert resp.status_code == 200
     assert b"Age Unapplied Days" in resp.data
-    assert b"Current \xc2\xb7 Unapplied 14d" in resp.data
+    assert b'data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing' in resp.data
 
     onaccount_row_html = resp.data.split(b"CN/ONACCOUNT", 1)[1].split(b"</tr>")[0]
-    assert b">14<" in onaccount_row_html
+    assert b">14<" in onaccount_row_html  # the raw day count, still shown
+    assert b'data-tt-col="unapplied_bucket">1-30<' in onaccount_row_html  # 14 days falls in 1-30
+    assert b"Current \xc2\xb7 Unapplied" not in onaccount_row_html  # pill itself stays plain
 
     applied_row_html = resp.data.split(b"CN/APPLIED", 1)[1].split(b"</tr>")[0]
-    assert b"Unapplied" not in applied_row_html
-    assert b">\xe2\x80\x94<" in applied_row_html  # em dash placeholder for "not applicable"
+    assert b'data-tt-col="unapplied_bucket">\xe2\x80\x94<' in applied_row_html  # em dash: not applicable
 
 
-def test_receipt_journal_register_labels_the_current_pill_with_unapplied_age(client):
+def test_receipt_journal_register_buckets_unapplied_age_the_same_as_invoices(client):
     from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
     from ar_mis.storage import Store
 
@@ -1924,7 +1927,8 @@ def test_receipt_journal_register_labels_the_current_pill_with_unapplied_age(cli
 
     resp = client.get("/registers/receipts-journals?as_of=2026-04-15")
     assert resp.status_code == 200
-    assert b"Current \xc2\xb7 Unapplied 14d" in resp.data
+    assert b'data-tt-col="unapplied_bucket">1-30<' in resp.data  # 14 days falls in 1-30
+    assert b"Current \xc2\xb7 Unapplied" not in resp.data  # pill itself stays plain
 
 
 def test_receipt_journal_register_applied_row_keeps_plain_current_pill(client):
