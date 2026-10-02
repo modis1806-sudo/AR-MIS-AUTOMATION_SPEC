@@ -64,6 +64,7 @@ from ar_mis.register_export import (
     build_unreconciled_parties_workbook,
 )
 from ar_mis.registers import (
+    AGEING_BUCKET_ORDER,
     build_bill_reference_lookup,
     compute_credit_note_display_fields,
     compute_invoice_position,
@@ -1613,7 +1614,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
 
         rows = compute_branch_ageing_schedule(sales_dn_rows, cn_rows, rj_rows, as_of)
-        bucket_order = ["Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
+        bucket_order = AGEING_BUCKET_ORDER
         return render_template(
             "branch_ageing.html", rows=rows, bucket_order=bucket_order, as_of=as_of.isoformat(), freshness=freshness
         )
@@ -1686,7 +1687,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         customer_rows = compute_ageing_matrix(
             scoped_sales_dn_rows, cn_rows, rj_rows, customer_masters, tally_closing_by_party, as_of
         )
-        bucket_order = ["Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
+        bucket_order = AGEING_BUCKET_ORDER
 
         return render_template(
             "ageing_matrix.html",

@@ -37,6 +37,7 @@ from ar_mis.models import (
     SalesDNRegisterRow,
 )
 from ar_mis.registers import (
+    AGEING_BUCKET_ORDER,
     compute_collection_efficiency,
     compute_collections_in_window,
     compute_dso,
@@ -208,7 +209,7 @@ def compute_ar_snapshot(
     )
 
 
-_AGEING_BUCKET_ORDER = ["Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
+_AGEING_BUCKET_ORDER = AGEING_BUCKET_ORDER
 
 
 @dataclass

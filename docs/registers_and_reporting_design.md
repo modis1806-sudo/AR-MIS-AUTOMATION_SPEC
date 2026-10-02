@@ -539,9 +539,16 @@ resolves former open item 1.
    & Journal Register and the Credit Note Register.
 3. ~~Final Ageing Bucket granularity~~ — **resolved: client's explicit
    scheme**, standardized across every report:
-   `Current, 1-30, 31-60, 61-90, 91-120, 121-150, 151-180, 181+`
-   (Current = within credit period; every band after that is days past
-   the due date.) Implemented in `ar_mis.registers.compute_ageing_bucket`.
+   `Current, 1-30, 31-60, 61-90, 91-120, 121-150, 151-180, 181+, Closed`
+   (Current = within credit period, not yet due; every band after that is
+   days past the due date; Closed = fully settled - client's own later
+   catch, added so a paid-off invoice stops reading identically to one
+   simply not yet due, which both used to show as bare "Current".)
+   Implemented as `ar_mis.registers.AGEING_BUCKET_ORDER` (the full list,
+   shared by every report that lists or totals buckets) and
+   `ar_mis.registers.compute_ageing_bucket` (the overdue-progression math
+   only - `compute_invoice_position` applies the Closed override on top,
+   whenever Open Amount is zero or negative).
 4. ~~Weekly Movement Register storage mechanism~~ — **resolved this
    session: append-only stored history**, not live recompute. Each week's
    row is written once and kept as-is, so the trend reflects genuine

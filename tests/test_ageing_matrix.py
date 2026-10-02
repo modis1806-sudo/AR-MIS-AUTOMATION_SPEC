@@ -55,6 +55,23 @@ def test_no_tally_balance_on_record_is_none_not_zero():
     assert rows[0].difference is None
 
 
+def test_closed_bucket_is_present_and_does_not_raise():
+    from ar_mis.models import ReceiptJournalRegisterRow
+
+    inv = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
+    receipt_rows = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 15), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no="INV001",
+        ),
+    ]
+    rows = compute_ageing_matrix([inv], [], receipt_rows, {}, {}, as_of=date(2026, 9, 12))
+    assert "Closed" in rows[0].buckets
+    assert rows[0].buckets["Closed"] == Decimal("0.00")
+    assert rows[0].buckets["Current"] == Decimal("0.00")
+    assert rows[0].total_open == Decimal("0.00")
+
+
 def test_difference_computed_when_tally_balance_present():
     inv = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
     rows = compute_ageing_matrix(

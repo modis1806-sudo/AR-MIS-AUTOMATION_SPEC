@@ -585,12 +585,77 @@ def test_compute_invoice_position_fully_paid_is_not_overdue():
     position = compute_invoice_position(invoice, [], receipt_rows, as_of=date(2026, 5, 1))
     assert position.open_amount == Decimal("0.00")
     assert position.is_overdue is False
-    assert position.ageing_bucket == "Current"
+    # Client's own later catch: a fully-paid invoice must read as Closed,
+    # not Current - "Current" is reserved for an invoice that's simply
+    # not yet due, which this one no longer is or ever will be again.
+    assert position.ageing_bucket == "Closed"
     # Live-confirmed real bug: this exact scenario (paid off, well past its
     # own due date) used to still show the raw day count here (139 in the
     # real case) instead of 0 - this test never checked the field that was
     # actually wrong, which is exactly how it went unnoticed.
     assert position.days_past_due == 0
+
+
+def test_compute_invoice_position_closed_bucket_distinguishes_from_not_yet_due():
+    # The whole point of the Closed bucket: a fully-paid invoice must not
+    # look like an invoice that's merely not yet due - both used to read
+    # as the identical "Current" label before this fix.
+    from ar_mis.models import ReceiptJournalRegisterRow
+
+    invoice = build_sales_dn_register_row(
+        sales_voucher(
+            [
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-1000.00"), bill_name="INV001", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales Revenue", amount_as_extracted=Decimal("1000.00")),
+            ],
+            voucher_date=date(2026, 4, 1),
+        ),
+        CUSTOMER,
+        RegisterBuildExceptions(),
+    )
+    # As-of a date before the due date (2026-05-01) - nothing paid yet.
+    not_yet_due = compute_invoice_position(invoice, [], [], as_of=date(2026, 4, 15))
+    assert not_yet_due.ageing_bucket == "Current"
+
+    # Same invoice, fully paid before its own due date - must be Closed,
+    # not Current, even though it was never overdue either.
+    receipt_rows = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 4, 20), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no="INV001",
+        ),
+    ]
+    paid_early = compute_invoice_position(invoice, [], receipt_rows, as_of=date(2026, 4, 25))
+    assert paid_early.ageing_bucket == "Closed"
+
+
+def test_compute_invoice_position_overpaid_invoice_is_also_closed():
+    # An overpayment (open_amount goes negative) is flagged separately for
+    # review by compute_negative_open_amount_invoices, but it still has
+    # nothing left to chase - the ageing bucket must say Closed, not
+    # silently fall back to Current.
+    from ar_mis.models import ReceiptJournalRegisterRow
+
+    invoice = build_sales_dn_register_row(
+        sales_voucher(
+            [
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-1000.00"), bill_name="INV001", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales Revenue", amount_as_extracted=Decimal("1000.00")),
+            ],
+            voucher_date=date(2026, 1, 1),
+        ),
+        CUSTOMER,
+        RegisterBuildExceptions(),
+    )
+    receipt_rows = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 15), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("1200.00"), target_doc_no="INV001",
+        ),
+    ]
+    position = compute_invoice_position(invoice, [], receipt_rows, as_of=date(2026, 5, 1))
+    assert position.open_amount == Decimal("-200.00")
+    assert position.ageing_bucket == "Closed"
 
 
 def test_compute_invoice_position_before_invoice_date_contributes_nothing():

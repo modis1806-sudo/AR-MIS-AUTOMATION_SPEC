@@ -184,9 +184,54 @@ def test_branch_ageing_schedule_every_bucket_present_even_when_empty():
     invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
     rows = compute_branch_ageing_schedule([invoice], [], [], date(2026, 1, 15))  # not yet due -> Current
     b1_row = rows[0]
-    assert set(b1_row.buckets) == {"Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"}
+    assert set(b1_row.buckets) == {
+        "Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+", "Closed",
+    }
     assert b1_row.buckets["Current"] == Decimal("1000.00")
     assert b1_row.buckets["1-30"] == Decimal("0.00")
+    assert b1_row.buckets["Closed"] == Decimal("0.00")
+
+
+def test_branch_ageing_schedule_sorts_a_fully_paid_invoice_out_of_current_and_181_plus():
+    # A fully-paid invoice has 0.00 open - same as any other empty bucket -
+    # but the point is WHICH bucket it's filed under: before this fix it
+    # silently inflated "Current" (or "181+" if overdue) with a zero that
+    # hid the fact there were actually zero genuinely-open invoices there.
+    from ar_mis.models import ReceiptJournalRegisterRow
+
+    invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
+    receipt_rows = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 15), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no="INV001",
+        ),
+    ]
+    rows = compute_branch_ageing_schedule([invoice], [], receipt_rows, date(2026, 9, 12))
+    b1_row = rows[0]
+    assert b1_row.buckets["Closed"] == Decimal("0.00")
+    assert b1_row.buckets["Current"] == Decimal("0.00")
+    assert b1_row.buckets["181+"] == Decimal("0.00")
+    assert b1_row.total == Decimal("0.00")
+
+
+def test_branch_ageing_schedule_an_overpaid_invoice_shows_up_under_closed():
+    # An overpayment (negative open_amount) is the one case Closed carries
+    # a real non-zero figure - still nothing left to chase, just the
+    # opposite sign, and it must not land in Current by default.
+    from ar_mis.models import ReceiptJournalRegisterRow
+
+    invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
+    receipt_rows = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2026, 1, 15), voucher_type="Receipt",
+            voucher_number="R1", party_id="ACME", amount=Decimal("1200.00"), target_doc_no="INV001",
+        ),
+    ]
+    rows = compute_branch_ageing_schedule([invoice], [], receipt_rows, date(2026, 9, 12))
+    b1_row = rows[0]
+    assert b1_row.buckets["Closed"] == Decimal("-200.00")
+    assert b1_row.buckets["Current"] == Decimal("0.00")
+    assert b1_row.total == Decimal("-200.00")
 
 
 def test_branch_ageing_schedule_empty_portfolio_has_only_total_row():

@@ -34,9 +34,9 @@ from datetime import date
 from decimal import Decimal
 
 from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, ReceiptJournalRegisterRow, SalesDNRegisterRow
-from ar_mis.registers import compute_invoice_position
+from ar_mis.registers import AGEING_BUCKET_ORDER, compute_invoice_position
 
-_AGEING_BUCKET_ORDER = ["Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
+_AGEING_BUCKET_ORDER = AGEING_BUCKET_ORDER
 
 
 @dataclass

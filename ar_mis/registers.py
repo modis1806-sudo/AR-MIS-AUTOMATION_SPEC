@@ -435,12 +435,31 @@ def compute_unapplied_cn_by_party(rows: list[CreditNoteRegisterRow]) -> dict[str
     return totals
 
 
+# CONFIRMED scheme (client's own explicit specification): the full
+# ageing-bucket vocabulary used everywhere a bucket is listed or totaled
+# (Sales & DN Register, Branch-wise Ageing Schedule, Ageing Matrix) - the
+# one place this list is spelled out, so every report stays in lockstep
+# with it. "Closed" was added second (client's own later catch): without
+# it, a fully-paid invoice was indistinguishable from one simply not yet
+# due - both just said "Current". It's placed last because it isn't part
+# of the overdue progression at all; it's a separate "nothing left to
+# chase, ever" state compute_invoice_position assigns directly (never via
+# compute_ageing_bucket below, which stays pure days-past-due arithmetic).
+AGEING_BUCKET_ORDER = [
+    "Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+", "Closed",
+]
+
+
 def compute_ageing_bucket(days_past_due: int) -> str:
     """CONFIRMED scheme (client's own explicit specification, resolving
     the design doc's former open item): the finer 91-180 split this
     function already used provisionally turned out to be exactly right -
     only the exact labels below are the client's own wording, not a
-    guess:
+    guess. This covers only the overdue progression itself
+    (days_past_due <= 0 reads as "Current" here, meaning "not overdue" -
+    compute_invoice_position is responsible for the further "Closed"
+    override when the invoice is also fully settled; see
+    AGEING_BUCKET_ORDER's own docstring):
 
         Current, 1-30, 31-60, 61-90, 91-120, 121-150, 151-180, 181+
     """
@@ -544,6 +563,17 @@ def compute_invoice_position(
     # (e.g. 139) kept showing here even though nothing is actually
     # outstanding to be days-past-due on anymore.
     days_past_due_display = max(days_past_due, 0) if is_overdue else 0
+    # Closed (client's own later catch): a fully-settled invoice
+    # (open_amount <= 0 - zero, or negative from an overpayment/over-
+    # issued CN, which compute_negative_open_amount_invoices separately
+    # flags for review) has nothing left to chase, ever - it must read
+    # differently from an invoice that's merely not yet due. Checked
+    # before is_overdue's own "not overdue" case so a closed invoice
+    # never gets mislabeled "Current" again.
+    if open_amount <= 0:
+        ageing_bucket = "Closed"
+    else:
+        ageing_bucket = compute_ageing_bucket(days_past_due if is_overdue else 0)
     return InvoicePosition(
         row=row,
         linked_cn_amount=linked_cn_amount,
@@ -551,7 +581,7 @@ def compute_invoice_position(
         open_amount=open_amount,
         is_overdue=is_overdue,
         days_past_due=days_past_due_display,
-        ageing_bucket=compute_ageing_bucket(days_past_due if is_overdue else 0),
+        ageing_bucket=ageing_bucket,
     )
 
 
