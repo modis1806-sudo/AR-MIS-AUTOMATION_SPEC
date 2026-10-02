@@ -35,6 +35,10 @@
 </div>
 
 {% if display_rows %}
+{% set next_action_options = [
+  "Call customer", "Send reminder email", "Escalate to manager",
+  "Send legal notice", "Visit customer site", "Awaiting customer response",
+] %}
 <div class="table-tools" data-tt="salesdn">
   <input type="search" data-tt-search placeholder="Search customer, voucher no..." value="{{ search_query }}">
   <span data-tt-filters></span>
@@ -48,7 +52,14 @@
   <form id="salesdn-batch-form" method="post" action="{{ url_for('sales_dn_follow_up_batch_save') }}" style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
     <input type="hidden" name="as_of" value="{{ as_of }}">
     <div><label style="display:block; font-size:12px; font-weight:600;">PTP Date</label><input type="date" name="ptp_date"></div>
-    <div><label style="display:block; font-size:12px; font-weight:600;">Next Action</label><input type="text" name="next_action" style="width:150px;"></div>
+    <div>
+      <label style="display:block; font-size:12px; font-weight:600;">Next Action</label>
+      <select onchange="document.getElementById('batch-next-action').value = this.value; this.selectedIndex = 0;" style="font-size:12px; width:150px; display:block; margin-bottom:2px;">
+        <option value="">Quick pick…</option>
+        {% for opt in next_action_options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+      </select>
+      <input type="text" id="batch-next-action" name="next_action" placeholder="Or type your own" style="width:150px;">
+    </div>
     <div><label style="display:block; font-size:12px; font-weight:600;">Expected Collection</label><input type="date" name="expected_collection_date"></div>
     <div><label style="display:block; font-size:12px; font-weight:600;">Your name</label><input type="text" name="updated_by" required style="width:110px;"></div>
     <button class="btn" type="submit">Apply to selected</button>
@@ -114,7 +125,13 @@
         {% elif d.ptp_status == 'Active' %}<span class="pill status-active">Active</span>
         {% else %}—{% endif %}
       </td>
-      <td><input type="text" form="fu-{{ loop.index }}" name="next_action" value="{{ (fu.next_action if fu else '') or '' }}" style="width:130px;"></td>
+      <td>
+        <select onchange="document.getElementById('next-action-{{ loop.index }}').value = this.value; this.selectedIndex = 0;" style="font-size:11px; width:100%; display:block; margin-bottom:2px;">
+          <option value="">Quick pick…</option>
+          {% for opt in next_action_options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+        </select>
+        <input type="text" id="next-action-{{ loop.index }}" form="fu-{{ loop.index }}" name="next_action" value="{{ (fu.next_action if fu else '') or '' }}" style="width:130px;">
+      </td>
       <td><input type="date" form="fu-{{ loop.index }}" name="expected_collection_date" value="{{ fu.expected_collection_date if fu and fu.expected_collection_date else '' }}"></td>
       <td>
         <form id="fu-{{ loop.index }}" method="post" action="{{ url_for('sales_dn_follow_up_save') }}" style="display:flex; gap:4px; align-items:center;">

@@ -1454,6 +1454,43 @@ def test_sales_dn_register_has_search_filter_and_selection_scaffolding(client):
     assert b"data-tt-row-select" in resp.data
 
 
+def test_sales_dn_register_next_action_has_a_quick_pick_dropdown(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    for option in (
+        "Call customer", "Send reminder email", "Escalate to manager",
+        "Send legal notice", "Visit customer site", "Awaiting customer response",
+    ):
+        assert f'<option value="{option}">{option}</option>'.encode() in resp.data
+    # Still a genuine free-text box underneath - the dropdown is a
+    # convenience, not a restriction to only these six phrases.
+    assert b'name="next_action"' in resp.data
+
+
+def test_sales_dn_follow_up_save_accepts_free_text_next_action_not_in_the_dropdown(client):
+    # The dropdown is a quick-pick convenience, never a hard restriction -
+    # confirms the save path still accepts arbitrary text.
+    _run_a_real_extraction(client)
+    resp = client.post(
+        "/registers/sales-dn/follow-up",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
+            "party_id": "A & B Transport Pvt Ltd", "ptp_date": "", "ptp_amount": "",
+            "next_action": "Something specific to this customer", "expected_collection_date": "",
+            "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    fu = store.get_invoice_follow_up("KOL", "SB/0142", "A & B Transport Pvt Ltd")
+    store.close()
+    assert fu.next_action == "Something specific to this customer"
+
+
 def test_sales_dn_register_ptp_fields_are_editable_inputs_not_read_only_text(client):
     _run_a_real_extraction(client)
     resp = client.get("/registers/sales-dn")
@@ -2217,7 +2254,11 @@ def test_sales_dn_follow_up_batch_save_applies_to_every_selected_row(client):
     )
     assert resp.status_code == 200
     assert b"Follow-up applied to 2 invoice(s)" in resp.data
-    assert resp.data.count(b"Send reminder email") == 2
+    # "Send reminder email" also appears as a quick-pick <option> on every
+    # row and in the batch panel now, so match the actual saved <input>
+    # specifically (it carries a name= attribute; a dropdown <option>
+    # never does) rather than a blind count of the whole page.
+    assert resp.data.count(b'name="next_action" value="Send reminder email"') == 2
 
 
 def test_sales_dn_follow_up_batch_save_blank_field_preserves_each_rows_own_value(client):
