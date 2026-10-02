@@ -1468,6 +1468,14 @@ def test_sales_dn_register_next_action_has_a_quick_pick_dropdown(client):
     assert b'name="next_action"' in resp.data
 
 
+def test_sales_dn_register_next_action_column_is_filterable(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b'data-tt-filter data-tt-col="next_action"' in resp.data
+    assert b'<td data-tt-col="next_action">' in resp.data
+
+
 def test_sales_dn_follow_up_save_accepts_free_text_next_action_not_in_the_dropdown(client):
     # The dropdown is a quick-pick convenience, never a hard restriction -
     # confirms the save path still accepts arbitrary text.

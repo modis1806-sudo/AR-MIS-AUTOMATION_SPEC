@@ -68,6 +68,40 @@
     return (negative ? "-" : "") + grouped + "." + fracPart;
   }
 
+  // A data-tt-col cell that holds a live-editable input (PTP Amount,
+  // Next Action, etc.) must be read/filtered/searched by what's actually
+  // typed in that input right now, not the cell's static textContent -
+  // the server only ever rendered the saved value into the input's own
+  // value attribute, so textContent of the cell is empty or (worse, for
+  // a cell that also holds a quick-pick <select>) full of every preset
+  // option's label instead of the real current value.
+  function cellText(cell) {
+    var input = cell.querySelector('input[type="text"], input[type="number"]');
+    if (input) return input.value.trim();
+    return cell.textContent.trim();
+  }
+
+  // Same problem at the whole-row level for the free-text search box:
+  // row.textContent would (a) miss every input's current value entirely
+  // and (b) for a row containing a quick-pick <select>, incorrectly
+  // match on every one of that select's option labels regardless of
+  // what's actually selected or typed - a search for "customer" would
+  // hit every single row once a Next Action dropdown existed, because
+  // "Call customer" sits in its option list whether or not anyone chose
+  // it. Select elements are excluded entirely; their own sibling input
+  // (if any) already carries the real value and is included below.
+  function rowSearchText(row) {
+    var clone = row.cloneNode(true);
+    Array.prototype.forEach.call(clone.querySelectorAll("select"), function (s) {
+      s.parentNode.removeChild(s);
+    });
+    var text = clone.textContent || "";
+    Array.prototype.forEach.call(row.querySelectorAll('input[type="text"], input[type="number"]'), function (el) {
+      text += " " + (el.value || "");
+    });
+    return text.toLowerCase();
+  }
+
   function initTable(container) {
     var id = container.getAttribute("data-tt");
     var table = document.querySelector('table[data-tt-table="' + id + '"]');
@@ -93,7 +127,14 @@
         var values = {};
         rows.forEach(function (row) {
           var cell = row.querySelector('td[data-tt-col="' + col + '"]');
-          if (cell) values[cell.textContent.trim()] = true;
+          // A blank value (e.g. no Next Action set yet) is skipped here -
+          // the dropdown's own "All ..." option already covers "show
+          // everything", so a second, unlabeled blank entry would just
+          // be a confusing duplicate of it.
+          if (cell) {
+            var v = cellText(cell);
+            if (v) values[v] = true;
+          }
         });
         var sorted = Object.keys(values).sort();
         var select = document.createElement("select");
@@ -146,7 +187,7 @@
       var visible = 0;
       rows.forEach(function (row) {
         var matches = true;
-        if (term && row.textContent.toLowerCase().indexOf(term) === -1) {
+        if (term && rowSearchText(row).indexOf(term) === -1) {
           matches = false;
         }
         if (matches) {
@@ -154,7 +195,7 @@
             var f = activeFilters[i];
             if (!f.value) continue;
             var cell = row.querySelector('td[data-tt-col="' + f.col + '"]');
-            if (!cell || cell.textContent.trim() !== f.value) {
+            if (!cell || cellText(cell) !== f.value) {
               matches = false;
               break;
             }
@@ -225,7 +266,44 @@
     applyFilters();
   }
 
+  // Client's own catch: retyping your name on every single save/batch
+  // action is cumbersome, and this app has no login to read a current
+  // user from (a deliberate decision - see the webapp's own docstring).
+  // A per-browser remembered name is the pragmatic stand-in: whoever
+  // typed one last on this browser gets it pre-filled into every empty
+  // "Your name"/reviewer box from then on, on any register's forms, but
+  // can always type over it for someone else at the same machine.
+  // Plain localStorage - never sent anywhere, never shared across
+  // browsers or devices.
+  var NAME_FIELDS_SELECTOR = 'input[name="updated_by"], input[name="reviewed_by"]';
+  var NAME_STORAGE_KEY = "ar_mis_last_name";
+
+  function initRememberedName() {
+    var rememberedName = "";
+    try {
+      rememberedName = localStorage.getItem(NAME_STORAGE_KEY) || "";
+    } catch (e) {
+      rememberedName = "";
+    }
+    if (rememberedName) {
+      Array.prototype.forEach.call(document.querySelectorAll(NAME_FIELDS_SELECTOR), function (input) {
+        if (!input.value) input.value = rememberedName;
+      });
+    }
+    document.addEventListener("submit", function (evt) {
+      var nameField = evt.target.querySelector && evt.target.querySelector(NAME_FIELDS_SELECTOR);
+      if (nameField && nameField.value.trim()) {
+        try {
+          localStorage.setItem(NAME_STORAGE_KEY, nameField.value.trim());
+        } catch (e) {
+          // Private browsing / storage disabled - not fatal, just no memory.
+        }
+      }
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     Array.prototype.forEach.call(document.querySelectorAll("[data-tt]"), initTable);
+    initRememberedName();
   });
 })();

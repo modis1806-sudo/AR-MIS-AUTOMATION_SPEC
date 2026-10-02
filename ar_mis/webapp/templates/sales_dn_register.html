@@ -74,7 +74,7 @@
       <th>Customer</th><th data-tt-filter data-tt-col="grouping">Grouping</th><th>Taxable Value</th><th>CGST</th><th>SGST</th><th>IGST</th>
       <th>Round Off</th><th>Invoice Value</th><th>Due Date</th><th>Linked CN No.</th><th>Linked CN Amt</th>
       <th>Net Receivable</th><th>Receipts Applied</th><th>Open Amount</th><th data-tt-filter data-tt-col="overdue">Overdue</th><th>DPD</th>
-      <th data-tt-filter data-tt-col="bucket">Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th data-tt-filter data-tt-col="ptp_status">PTP Status</th><th>Next Action</th>
+      <th data-tt-filter data-tt-col="bucket">Ageing Bucket</th><th>PTP Date</th><th>PTP Amount</th><th data-tt-filter data-tt-col="ptp_status">PTP Status</th><th data-tt-filter data-tt-col="next_action">Next Action</th>
       <th>Expected Collection</th><th>Follow-up</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
@@ -125,7 +125,7 @@
         {% elif d.ptp_status == 'Active' %}<span class="pill status-active">Active</span>
         {% else %}—{% endif %}
       </td>
-      <td>
+      <td data-tt-col="next_action">
         <select onchange="document.getElementById('next-action-{{ loop.index }}').value = this.value; this.selectedIndex = 0;" style="font-size:11px; width:100%; display:block; margin-bottom:2px;">
           <option value="">Quick pick…</option>
           {% for opt in next_action_options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
