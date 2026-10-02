@@ -38,7 +38,7 @@
   <strong>What Classification means:</strong><br>
   <span class="pill class-current">Current</span> — normal in-period item, nothing to review.
   <span class="pill class-pending">Pending Review</span> — this voucher's Target Doc No. didn't match any invoice this system tracks; someone needs to confirm whether it belongs to a Pre-MIS-period invoice or is a data-entry mistake. Use the <strong>Resolve</strong> control on the row to do that.
-  <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total.
+  <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total. Use <strong>Revert</strong> if this was confirmed by mistake — it reverses the exact balance move with its own logged entry and sends the row back to Pending Review.
   <br>A genuinely on-account Current voucher also gets an <strong>Unapplied Ageing</strong> bucket (0-30/31-60/.../181+) once it's sat unapplied a while — a voucher unapplied 181 days is just as stale as an invoice that old, and the bucket says so. Unlike the Sales &amp; DN Register's own ageing bucket, there's no separate "Current" state here — that word already means something else on this page (above), so day 0 onward starts straight at 0-30.
 </div>
 
@@ -123,7 +123,20 @@
               <button class="btn" type="submit" style="padding:4px 10px;">Save</button>
             </form>
           </details>
-        {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}
+        {% else %}
+          <span class="pill class-premis">Pre-MIS Adjustment</span>
+          <details>
+            <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Revert</summary>
+            <form method="post" action="{{ url_for('receipt_journal_revert_to_pending_review') }}" style="margin-top:6px; min-width:200px;"
+                  onsubmit="return confirm('Reverse this Pre-MIS Adjustment and send {{ row.voucher_number }} back to Pending Review?');">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
+              <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
+              <input type="hidden" name="party_id" value="{{ row.party_id }}">
+              <button class="btn secondary" type="submit" style="padding:4px 10px;">Confirm revert</button>
+            </form>
+          </details>
+        {% endif %}
       </td>
       <td>{{ f.dpd_at_application if f.dpd_at_application is not none else '—' }}</td>
       <td data-tt-col="unapplied_bucket">{{ f.unapplied_bucket or '—' }}</td>

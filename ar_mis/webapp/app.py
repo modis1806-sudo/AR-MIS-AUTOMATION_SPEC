@@ -1517,6 +1517,60 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(message, "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
+    @app.route("/registers/credit-notes/revert-to-pending-review", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_revert_to_pending_review():
+        """Client's own live-testing catch: a batch Resolve scoped by the
+        free-text search (which matches the whole row, including the CN's
+        own voucher number - never just the field the client meant to
+        filter on) can sweep up a row the client never intended to touch,
+        and once resolved there was no way back - Resolve only ever
+        offered on a Pending Review row. This is the correction path:
+        flips the row back to Pending Review, and if it had been
+        confirmed as a Pre-MIS Adjustment, reverses that exact balance
+        move with its own explicit, logged, opposite-sign entry (never a
+        silent rewrite of the original adjustment - same philosophy as
+        record_pre_mis_adjustment's own docstring). A row already Pending
+        Review, or one that's never been resolved at all, has nothing to
+        revert.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        branch_id = request.form.get("branch_id", "")
+        voucher_number = request.form.get("voucher_number", "")
+        party_id = request.form.get("party_id", "")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        store = get_store()
+        rows = [
+            r for r in store.all_credit_note_rows(branch_id)
+            if r.voucher_number == voucher_number and r.party_id == party_id
+        ]
+        if not rows:
+            store.close()
+            return _redisplay(f"No credit note found for {voucher_number}.")
+        current = rows[0].classification
+        if current == RegisterClassification.PENDING_REVIEW:
+            store.close()
+            return _redisplay(f"{voucher_number} is already Pending Review - nothing to revert.")
+
+        if current == RegisterClassification.PRE_MIS_ADJUSTMENT:
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=party_id, branch_id=branch_id, amount=rows[0].cn_amount,
+                    reason=f"Reversal of CN {voucher_number} Pre-MIS Adjustment (reverted to Pending Review)",
+                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                )
+            )
+        store.resolve_credit_note_classification(
+            branch_id, voucher_number, party_id, RegisterClassification.PENDING_REVIEW, ""
+        )
+        store.close()
+        flash(f"{voucher_number} reverted to Pending Review.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
     @app.route("/registers/receipts-journals/reclassify", methods=["POST"])
     @requires_role("maker")
     def receipt_journal_reclassify():
@@ -1629,6 +1683,57 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if skipped_count:
             message += f" {skipped_count} skipped (not Pending Review)."
         flash(message, "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/revert-to-pending-review", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_revert_to_pending_review():
+        """Same correction path as credit_note_revert_to_pending_review -
+        see its own docstring. The reversal amount is recomputed fresh
+        from the voucher's own current lines (the same sum
+        receipt_journal_reclassify itself used), never looked up from the
+        original adjustment's log entry, so it's correct regardless of
+        how that entry's reason text was worded.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        branch_id = request.form.get("branch_id", "")
+        voucher_number = request.form.get("voucher_number", "")
+        party_id = request.form.get("party_id", "")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        store = get_store()
+        rows = [
+            r for r in store.all_receipt_journal_rows(branch_id)
+            if r.voucher_number == voucher_number and r.party_id == party_id
+        ]
+        if not rows:
+            store.close()
+            return _redisplay(f"No receipt or journal found for {voucher_number}.")
+        current = rows[0].classification
+        if current == RegisterClassification.PENDING_REVIEW:
+            store.close()
+            return _redisplay(f"{voucher_number} is already Pending Review - nothing to revert.")
+
+        if current == RegisterClassification.PRE_MIS_ADJUSTMENT:
+            total_amount = sum((r.amount for r in rows), Decimal("0.00"))
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=party_id, branch_id=branch_id, amount=total_amount,
+                    reason=(
+                        f"Reversal of {rows[0].voucher_type} {voucher_number} Pre-MIS Adjustment"
+                        " (reverted to Pending Review)"
+                    ),
+                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                )
+            )
+        store.resolve_receipt_journal_classification(
+            branch_id, voucher_number, party_id, RegisterClassification.PENDING_REVIEW
+        )
+        store.close()
+        flash(f"{voucher_number} reverted to Pending Review.", "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals")

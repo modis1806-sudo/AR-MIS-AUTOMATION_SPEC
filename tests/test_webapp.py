@@ -2101,6 +2101,86 @@ def test_credit_note_reclassify_as_pre_mis_reduces_pre_mis_outstanding(client):
     assert row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
 
 
+def test_credit_note_revert_to_pending_review_reverses_the_pre_mis_adjustment(client):
+    # Client's own live-testing catch: a batch Resolve scoped by the
+    # free-text search (which matches a CN's own voucher number, not just
+    # the field the client meant to filter by) swept up a row that was
+    # never meant to be touched - and there was no way back. This is the
+    # correction path: it must both flip the classification back AND
+    # restore the exact Pre-MIS Outstanding balance that was moved.
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/WRONGLY_RESOLVED", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="STALE/REF",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    store.close()
+
+    client.post(
+        "/registers/credit-notes/reclassify",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/WRONGLY_RESOLVED", "party_id": "ACME",
+            "target_classification": "pre_mis",
+        },
+    )
+    # Confirms the mistake really happened, same as the client saw it.
+    store_mid = Store(client.application.config["DB_PATH"])
+    assert store_mid.get_customer_master("ACME", "KOL").pre_mis_outstanding == Decimal("800.00")
+    store_mid.close()
+
+    resp = client.post(
+        "/registers/credit-notes/revert-to-pending-review",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/WRONGLY_RESOLVED", "party_id": "ACME",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"reverted to Pending Review" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    row = [r for r in store2.all_credit_note_rows("KOL") if r.voucher_number == "CN/WRONGLY_RESOLVED"][0]
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("1000.00")  # fully restored
+    assert row.classification == RegisterClassification.PENDING_REVIEW
+
+
+def test_credit_note_revert_to_pending_review_rejects_a_row_already_pending_review(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/STILL_PENDING", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="STALE/REF",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/credit-notes/revert-to-pending-review",
+        data={"as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/STILL_PENDING", "party_id": "ACME"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"already Pending Review" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("1000.00")  # untouched
+
+
 def test_credit_note_reclassify_as_current_does_not_touch_pre_mis_outstanding(client):
     from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
     from ar_mis.storage import Store
@@ -2233,6 +2313,97 @@ def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(cli
     store2.close()
     assert customer.pre_mis_outstanding == Decimal("550.00")  # 1000 - 300 - 150
     assert all(r.classification == RegisterClassification.PRE_MIS_ADJUSTMENT for r in rows)
+
+
+def test_receipt_journal_revert_to_pending_review_reverses_the_pre_mis_adjustment(client):
+    # Same correction path as the Credit Note Register's own revert test -
+    # the live-testing mistake this fixes was found on a Receipt first:
+    # a batch Resolve scoped by free-text search matched a voucher's OWN
+    # number (which happened to carry an unrelated FY tag), not the
+    # invoice it was actually applied against, and wrongly moved its full
+    # multi-line amount into Pre-MIS Outstanding.
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt",
+                voucher_number="RCPT/WRONGLY_RESOLVED", party_id="ACME", amount=Decimal("300.00"),
+                target_doc_no="STALE/REF/1", classification=RegisterClassification.PENDING_REVIEW,
+            ),
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt",
+                voucher_number="RCPT/WRONGLY_RESOLVED", party_id="ACME", amount=Decimal("150.00"),
+                target_doc_no="STALE/REF/2", classification=RegisterClassification.PENDING_REVIEW,
+            ),
+        ]
+    )
+    store.close()
+
+    client.post(
+        "/registers/receipts-journals/reclassify",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/WRONGLY_RESOLVED",
+            "party_id": "ACME", "target_classification": "pre_mis",
+        },
+    )
+    store_mid = Store(client.application.config["DB_PATH"])
+    assert store_mid.get_customer_master("ACME", "KOL").pre_mis_outstanding == Decimal("550.00")
+    store_mid.close()
+
+    resp = client.post(
+        "/registers/receipts-journals/revert-to-pending-review",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/WRONGLY_RESOLVED",
+            "party_id": "ACME",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"reverted to Pending Review" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    rows = [r for r in store2.all_receipt_journal_rows("KOL") if r.voucher_number == "RCPT/WRONGLY_RESOLVED"]
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("1000.00")  # fully restored
+    assert all(r.classification == RegisterClassification.PENDING_REVIEW for r in rows)
+
+
+def test_receipt_journal_revert_to_pending_review_rejects_a_row_already_pending_review(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt",
+                voucher_number="RCPT/STILL_PENDING", party_id="ACME", amount=Decimal("300.00"),
+                target_doc_no="STALE/REF", classification=RegisterClassification.PENDING_REVIEW,
+            ),
+        ]
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/receipts-journals/revert-to-pending-review",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/STILL_PENDING", "party_id": "ACME",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"already Pending Review" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    store2.close()
+    assert customer.pre_mis_outstanding == Decimal("1000.00")  # untouched
 
 
 # ---- Batch actions on a filtered/selected range ------------------------
