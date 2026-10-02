@@ -6,63 +6,65 @@
 
 {% include "_freshness.html" %}
 
-<div class="card">
-  <h2 style="margin-top:0;">TB Reconciliation Cross-Check</h2>
-  <p>Tally's own Trial Balance closing balance, side by side with this app's own workings, one row per party per branch per week — the answer to "how do I know this data is correct?"</p>
-  <a class="btn" href="{{ url_for('tb_cross_check_report') }}">Open TB Cross-Check</a>
-</div>
+<div class="report-grid">
+  <div class="card">
+    <h2>TB Reconciliation Cross-Check</h2>
+    <p>Tally's own Trial Balance closing balance, side by side with this app's own workings, one row per party per branch per week — the answer to "how do I know this data is correct?"</p>
+    <a class="btn" href="{{ url_for('tb_cross_check_report') }}">Open TB Cross-Check</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">Branch Sales + CN + DN Total</h2>
-  <p>A simple per-branch turnover total for a chosen period, easy to eyeball directly against Tally's own P&amp;L page.</p>
-  <a class="btn" href="{{ url_for('branch_totals_report') }}">Open Branch Totals</a>
-</div>
+  <div class="card">
+    <h2>Branch Sales + CN + DN Total</h2>
+    <p>A simple per-branch turnover total for a chosen period, easy to eyeball directly against Tally's own P&amp;L page.</p>
+    <a class="btn" href="{{ url_for('branch_totals_report') }}">Open Branch Totals</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">Backdated Entry Findings</h2>
-  <p>Every voucher a fresh full-year Tally pull found that no prior weekly extraction ever captured — kept here until acknowledged, not just shown once and lost.</p>
-  <a class="btn" href="{{ url_for('drift_findings_report') }}">Open Drift Findings</a>
-</div>
+  <div class="card">
+    <h2>Backdated Entry Findings</h2>
+    <p>Every voucher a fresh full-year Tally pull found that no prior weekly extraction ever captured — kept here until acknowledged, not just shown once and lost.</p>
+    <a class="btn" href="{{ url_for('drift_findings_report') }}">Open Drift Findings</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">AR Concentration Risk</h2>
-  <p>Is receivables exposure spread across many customers, or does a handful of them make up most of it — a risk in its own right, independent of whether they're currently overdue.</p>
-  <a class="btn" href="{{ url_for('concentration_risk_report') }}">Open Concentration Risk</a>
-</div>
+  <div class="card">
+    <h2>AR Concentration Risk</h2>
+    <p>Is receivables exposure spread across many customers, or does a handful of them make up most of it — a risk in its own right, independent of whether they're currently overdue.</p>
+    <a class="btn" href="{{ url_for('concentration_risk_report') }}">Open Concentration Risk</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">Register Exceptions Review</h2>
-  <p>Every voucher Extract &amp; Save or Manual Upload couldn't confidently place into a register — kept here until reviewed, not just shown once and lost.</p>
-  <a class="btn" href="{{ url_for('register_exceptions_review') }}">Open Register Exceptions Review</a>
-</div>
+  <div class="card">
+    <h2>Register Exceptions Review</h2>
+    <p>Every voucher Extract &amp; Save or Manual Upload couldn't confidently place into a register — kept here until reviewed, not just shown once and lost.</p>
+    <a class="btn" href="{{ url_for('register_exceptions_review') }}">Open Register Exceptions Review</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">AR Snapshot</h2>
-  <p>Outstanding position, overdue and ageing, DSO, Collection Efficiency, PTP Kept Rate — the main dashboard.</p>
-  <a class="btn" href="{{ url_for('ar_snapshot_report') }}">Open AR Snapshot</a>
-</div>
+  <div class="card">
+    <h2>AR Snapshot</h2>
+    <p>Outstanding position, overdue and ageing, DSO, Collection Efficiency, PTP Kept Rate — the main dashboard.</p>
+    <a class="btn" href="{{ url_for('ar_snapshot_report') }}">Open AR Snapshot</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">Branch-wise Ageing Schedule</h2>
-  <p>One ageing-bucket row per branch, plus an all-branches total.</p>
-  <a class="btn" href="{{ url_for('branch_ageing_report') }}">Open Ageing Schedule</a>
-</div>
+  <div class="card">
+    <h2>Branch-wise Ageing Schedule</h2>
+    <p>One ageing-bucket row per branch, plus an all-branches total.</p>
+    <a class="btn" href="{{ url_for('branch_ageing_report') }}">Open Ageing Schedule</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">Exception Register</h2>
-  <p>Six lists in one place: unapplied cash, unapplied credit notes, negative open amounts, non-active debtors, unresolved references, and your top 20 overdue customers.</p>
-  <a class="btn" href="{{ url_for('exception_register_report') }}">Open Exception Register</a>
-</div>
+  <div class="card">
+    <h2>Exception Register</h2>
+    <p>Six lists in one place: unapplied cash, unapplied credit notes, negative open amounts, non-active debtors, unresolved references, and your top 20 overdue customers.</p>
+    <a class="btn" href="{{ url_for('exception_register_report') }}">Open Exception Register</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">Ageing Matrix</h2>
-  <p>Branch summary plus customer-level detail, cross-checked against Tally's own ledger closing balance for every party.</p>
-  <a class="btn" href="{{ url_for('ageing_matrix_report') }}">Open Ageing Matrix</a>
-</div>
+  <div class="card">
+    <h2>Ageing Matrix</h2>
+    <p>Branch summary plus customer-level detail, cross-checked against Tally's own ledger closing balance for every party.</p>
+    <a class="btn" href="{{ url_for('ageing_matrix_report') }}">Open Ageing Matrix</a>
+  </div>
 
-<div class="card">
-  <h2 style="margin-top:0;">Weekly Movement Register</h2>
-  <p>A recorded history of the big numbers, one row per week — unlike the reports above, this one doesn't recalculate; each week's row is locked in once and kept as-is.</p>
-  <a class="btn" href="{{ url_for('weekly_movement_report') }}">Open Weekly Movement Register</a>
+  <div class="card">
+    <h2>Weekly Movement Register</h2>
+    <p>A recorded history of the big numbers, one row per week — unlike the reports above, this one doesn't recalculate; each week's row is locked in once and kept as-is.</p>
+    <a class="btn" href="{{ url_for('weekly_movement_report') }}">Open Weekly Movement Register</a>
+  </div>
 </div>
 {% endblock %}

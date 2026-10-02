@@ -105,6 +105,18 @@
   .section-heading { font-size:16px; font-weight:700; margin:28px 0 12px; color:#1f2937; }
   .section-heading:first-of-type { margin-top:0; }
 
+  /* Reports home - client's explicit ask: cards in a grid (3-4 per row
+     on a normal desktop width), not one full-width card per report
+     stacked vertically. minmax(260px, 1fr) on this page's default
+     960px-wide main lands at 3 per row; a wider window naturally grows
+     to 4+ rather than stretching each card absurdly wide, same
+     auto-fill approach the KPI tile grid above already uses. */
+  .report-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:16px; }
+  .report-grid .card { margin-bottom:0; display:flex; flex-direction:column; }
+  .report-grid .card h2 { font-size:16px; margin:0 0 8px; }
+  .report-grid .card p { font-size:13px; color:#6b7280; flex:1; margin:0 0 16px; }
+  .report-grid .card .btn { align-self:flex-start; }
+
   /* Table search / filter / select-all toolbar (table_tools.js) */
   .table-tools { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
   .table-tools input[type="search"] { padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; min-width:220px; }
