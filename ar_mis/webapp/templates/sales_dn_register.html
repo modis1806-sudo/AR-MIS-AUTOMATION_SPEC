@@ -61,7 +61,6 @@
       <input type="text" id="batch-next-action" name="next_action" placeholder="Or type your own" style="width:150px;">
     </div>
     <div><label style="display:block; font-size:12px; font-weight:600;">Expected Collection</label><input type="date" name="expected_collection_date"></div>
-    <div><label style="display:block; font-size:12px; font-weight:600;">Your name</label><input type="text" name="updated_by" required style="width:110px;"></div>
     <button class="btn" type="submit">Apply to selected</button>
   </form>
 </details>
@@ -139,11 +138,10 @@
           <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
           <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
           <input type="hidden" name="party_id" value="{{ row.party_id }}">
-          <input type="text" name="updated_by" placeholder="Your name" required style="width:90px;">
           <button class="btn secondary" type="submit" style="padding:4px 10px;">Save</button>
         </form>
-        {% if fu and fu.updated_by %}
-          <div style="font-size:11px; color:#6b7280; margin-top:4px;">Last updated by {{ fu.updated_by }}{% if fu.logged_at %} · PTP promise logged {{ fu.logged_at }}{% endif %}</div>
+        {% if fu and fu.updated_at %}
+          <div style="font-size:11px; color:#6b7280; margin-top:4px;">Last updated {{ fu.updated_at }}{% if fu.logged_at %} · PTP promised {{ fu.logged_at }}{% endif %}</div>
         {% endif %}
       </td>
     </tr>

@@ -64,7 +64,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -422,6 +422,17 @@ ALTER TABLE customer_master ADD COLUMN credit_limit TEXT NOT NULL DEFAULT '10000
     # gap for anything logged before this migration, never guessed at.
     12: """
 ALTER TABLE register_build_exception ADD COLUMN voucher_type TEXT NOT NULL DEFAULT '';
+""",
+    # Client's own later call: a free-text "who made this edit" box was
+    # pure friction on a single-operator Maker role with no real login
+    # behind it (InvoiceFollowUp.updated_by is now a fixed "Maker"
+    # literal, never typed) - "when" has to carry the full audit signal
+    # alone from here. logged_at only moves when the PTP promise itself
+    # changes (see its own docstring); this is the genuine "row touched"
+    # timestamp, stamped on every single save regardless of which field
+    # changed.
+    13: """
+ALTER TABLE invoice_follow_up ADD COLUMN updated_at TEXT;
 """,
 }
 
@@ -1653,14 +1664,15 @@ class Store:
         self.conn.execute(
             "INSERT INTO invoice_follow_up"
             " (branch_id, voucher_number, party_id, ptp_date, ptp_amount,"
-            " next_action, expected_collection_date, updated_by, logged_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " next_action, expected_collection_date, updated_by, logged_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(branch_id, voucher_number, party_id) DO UPDATE SET"
             " ptp_date=excluded.ptp_date, ptp_amount=excluded.ptp_amount,"
             " next_action=excluded.next_action,"
             " expected_collection_date=excluded.expected_collection_date,"
             " updated_by=excluded.updated_by,"
-            " logged_at=excluded.logged_at",
+            " logged_at=excluded.logged_at,"
+            " updated_at=excluded.updated_at",
             (
                 follow_up.branch_id,
                 follow_up.voucher_number,
@@ -1671,6 +1683,7 @@ class Store:
                 follow_up.expected_collection_date.isoformat() if follow_up.expected_collection_date else None,
                 follow_up.updated_by,
                 logged_at.isoformat() if logged_at else None,
+                today.isoformat(),
             ),
         )
         self.conn.commit()
@@ -1695,6 +1708,7 @@ class Store:
             ),
             updated_by=r["updated_by"],
             logged_at=date.fromisoformat(r["logged_at"]) if r["logged_at"] else None,
+            updated_at=date.fromisoformat(r["updated_at"]) if r["updated_at"] else None,
         )
 
     def all_invoice_follow_ups(self, branch_id: str | None = None) -> list[InvoiceFollowUp]:
@@ -1720,6 +1734,7 @@ class Store:
                 ),
                 updated_by=r["updated_by"],
                 logged_at=date.fromisoformat(r["logged_at"]) if r["logged_at"] else None,
+                updated_at=date.fromisoformat(r["updated_at"]) if r["updated_at"] else None,
             )
             for r in cur.fetchall()
         ]

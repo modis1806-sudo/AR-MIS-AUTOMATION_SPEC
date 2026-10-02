@@ -85,6 +85,16 @@ ROLES = {
     "checker": "Checker",
 }
 
+# Client's own later call: every follow-up/reclassify edit used to ask the
+# preparer to type their own name, but this tool has no real login behind
+# its role picker (see this module's own docstring) - there was never
+# anything that free-text box could actually verify, only friction it
+# added. A fixed "Maker" literal replaces it everywhere an edit still
+# needs some attribution value stored (InvoiceFollowUp.updated_by,
+# PreMisAdjustment.adjusted_by); each row's own updated_at timestamp is
+# what tells a reviewer when it last changed.
+MAKER_ATTRIBUTION = "Maker"
+
 
 def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     app = Flask(__name__)
@@ -1165,14 +1175,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         branch_id = request.form.get("branch_id", "")
         voucher_number = request.form.get("voucher_number", "")
         party_id = request.form.get("party_id", "")
-        updated_by = request.form.get("updated_by", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
             return redirect(url_for("sales_dn_register", as_of=as_of_raw))
-
-        if not updated_by:
-            return _redisplay("Enter your name to save a follow-up update.")
 
         raw_ptp_date = request.form.get("ptp_date", "").strip()
         raw_ptp_amount = request.form.get("ptp_amount", "").strip()
@@ -1213,7 +1219,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             InvoiceFollowUp(
                 branch_id=branch_id, voucher_number=voucher_number, party_id=party_id,
                 ptp_date=ptp_date, ptp_amount=ptp_amount, next_action=next_action,
-                expected_collection_date=expected_collection_date, updated_by=updated_by,
+                expected_collection_date=expected_collection_date, updated_by=MAKER_ATTRIBUTION,
             ),
             today=date.today(),
         )
@@ -1235,7 +1241,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         """
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
-        updated_by = request.form.get("updated_by", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1243,8 +1248,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         if not selected:
             return _redisplay("Select at least one row to apply a batch update.")
-        if not updated_by:
-            return _redisplay("Enter your name to save a batch follow-up update.")
 
         raw_ptp_date = request.form.get("ptp_date", "").strip()
         raw_expected = request.form.get("expected_collection_date", "").strip()
@@ -1313,7 +1316,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     expected_collection_date=(
                         new_expected if raw_expected else (existing.expected_collection_date if existing else None)
                     ),
-                    updated_by=updated_by,
+                    updated_by=MAKER_ATTRIBUTION,
                 ),
                 today=today,
             )
@@ -1383,7 +1386,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         party_id = request.form.get("party_id", "")
         target = request.form.get("target_classification", "")
         reason = request.form.get("reason", "").strip()
-        reviewed_by = request.form.get("reviewed_by", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1393,8 +1395,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Choose a valid resolution.")
         if not reason:
             return _redisplay("Enter a reason for this resolution.")
-        if not reviewed_by:
-            return _redisplay("Enter your name to resolve a classification.")
 
         store = get_store()
         rows = [
@@ -1416,7 +1416,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             store.record_pre_mis_adjustment(
                 PreMisAdjustment(
                     party_id=party_id, branch_id=branch_id, amount=-rows[0].cn_amount,
-                    reason=f"CN {voucher_number}: {reason}", adjusted_by=reviewed_by, adjusted_at=date.today(),
+                    reason=f"CN {voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
                 )
             )
         store.close()
@@ -1437,7 +1437,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         selected = request.form.getlist("selected")
         target = request.form.get("target_classification", "")
         reason = request.form.get("reason", "").strip()
-        reviewed_by = request.form.get("reviewed_by", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1449,8 +1448,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Choose a valid resolution.")
         if not reason:
             return _redisplay("Enter a reason for this resolution.")
-        if not reviewed_by:
-            return _redisplay("Enter your name to resolve a classification.")
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
@@ -1476,7 +1473,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 store.record_pre_mis_adjustment(
                     PreMisAdjustment(
                         party_id=party_id, branch_id=branch_id, amount=-row.cn_amount,
-                        reason=f"CN {voucher_number}: {reason}", adjusted_by=reviewed_by, adjusted_at=date.today(),
+                        reason=f"CN {voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION,
+                        adjusted_at=date.today(),
                     )
                 )
             resolved_count += 1
@@ -1503,7 +1501,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         party_id = request.form.get("party_id", "")
         target = request.form.get("target_classification", "")
         reason = request.form.get("reason", "").strip()
-        reviewed_by = request.form.get("reviewed_by", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1513,8 +1510,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Choose a valid resolution.")
         if not reason:
             return _redisplay("Enter a reason for this resolution.")
-        if not reviewed_by:
-            return _redisplay("Enter your name to resolve a classification.")
 
         store = get_store()
         rows = [
@@ -1537,7 +1532,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             store.record_pre_mis_adjustment(
                 PreMisAdjustment(
                     party_id=party_id, branch_id=branch_id, amount=-total_amount,
-                    reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=reviewed_by,
+                    reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION,
                     adjusted_at=date.today(),
                 )
             )
@@ -1556,7 +1551,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         selected = request.form.getlist("selected")
         target = request.form.get("target_classification", "")
         reason = request.form.get("reason", "").strip()
-        reviewed_by = request.form.get("reviewed_by", "").strip()
 
         def _redisplay(message: str):
             flash(message, "error")
@@ -1568,8 +1562,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Choose a valid resolution.")
         if not reason:
             return _redisplay("Enter a reason for this resolution.")
-        if not reviewed_by:
-            return _redisplay("Enter your name to resolve a classification.")
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
@@ -1599,7 +1591,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 store.record_pre_mis_adjustment(
                     PreMisAdjustment(
                         party_id=party_id, branch_id=branch_id, amount=-total_amount,
-                        reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=reviewed_by,
+                        reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION,
                         adjusted_at=date.today(),
                     )
                 )

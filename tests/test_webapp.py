@@ -1486,7 +1486,6 @@ def test_sales_dn_follow_up_save_accepts_free_text_next_action_not_in_the_dropdo
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
             "party_id": "A & B Transport Pvt Ltd", "ptp_date": "", "ptp_amount": "",
             "next_action": "Something specific to this customer", "expected_collection_date": "",
-            "updated_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -1523,7 +1522,6 @@ def test_sales_dn_follow_up_save_persists_ptp_and_redisplays(client):
             "ptp_amount": "50000.00",
             "next_action": "Call customer",
             "expected_collection_date": "2026-06-20",
-            "updated_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -1532,27 +1530,6 @@ def test_sales_dn_follow_up_save_persists_ptp_and_redisplays(client):
     assert b"2026-06-15" in resp.data
     assert b"Call customer" in resp.data
     assert b"2026-06-20" in resp.data
-
-
-def test_sales_dn_follow_up_save_requires_updated_by(client):
-    _run_a_real_extraction(client)
-    resp = client.post(
-        "/registers/sales-dn/follow-up",
-        data={
-            "as_of": "2026-06-01",
-            "branch_id": "KOL",
-            "voucher_number": "SB/0142",
-            "party_id": "A & B Transport Pvt Ltd",
-            "ptp_date": "2026-06-15",
-            "ptp_amount": "50000.00",
-            "next_action": "Call customer",
-            "expected_collection_date": "2026-06-20",
-            "updated_by": "",
-        },
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    assert b"Enter your name" in resp.data
 
 
 def test_sales_dn_follow_up_save_defaults_ptp_amount_to_open_balance_when_blank(client):
@@ -1566,7 +1543,7 @@ def test_sales_dn_follow_up_save_defaults_ptp_amount_to_open_balance_when_blank(
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
             "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "",
-            "next_action": "", "expected_collection_date": "", "updated_by": "Test User",
+            "next_action": "", "expected_collection_date": "",
         },
         follow_redirects=True,
     )
@@ -1588,7 +1565,7 @@ def test_sales_dn_follow_up_save_never_overrides_an_existing_ptp_amount(client):
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
             "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "50000.00",
-            "next_action": "", "expected_collection_date": "", "updated_by": "Test User",
+            "next_action": "", "expected_collection_date": "",
         },
     )
     # Re-save the same row (PTP Date resubmitted as still in effect, from
@@ -1599,7 +1576,7 @@ def test_sales_dn_follow_up_save_never_overrides_an_existing_ptp_amount(client):
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
             "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "",
-            "next_action": "Call again", "expected_collection_date": "", "updated_by": "Test User",
+            "next_action": "Call again", "expected_collection_date": "",
         },
     )
 
@@ -1616,19 +1593,19 @@ def test_sales_dn_follow_up_save_never_overrides_an_existing_ptp_amount(client):
     assert fu.next_action == "Call again"
 
 
-def test_sales_dn_register_shows_last_updated_by_after_a_save(client):
+def test_sales_dn_register_shows_last_updated_date_after_a_save(client):
     _run_a_real_extraction(client)
     client.post(
         "/registers/sales-dn/follow-up",
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
             "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "50000.00",
-            "next_action": "", "expected_collection_date": "", "updated_by": "Jane Doe",
+            "next_action": "", "expected_collection_date": "",
         },
     )
     resp = client.get("/registers/sales-dn")
     assert resp.status_code == 200
-    assert b"Last updated by Jane Doe" in resp.data
+    assert f"Last updated {date.today()}".encode() in resp.data
 
 
 def test_sales_dn_follow_up_batch_save_defaults_each_rows_own_open_balance(client):
@@ -1659,7 +1636,6 @@ def test_sales_dn_follow_up_batch_save_defaults_each_rows_own_open_balance(clien
             "as_of": "2026-06-01",
             "selected": ["KOL|INV/1|ACME", "KOL|INV/2|ACME"],
             "ptp_date": "2026-06-15",
-            "updated_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -1707,7 +1683,6 @@ def test_sales_dn_follow_up_batch_save_preserves_an_existing_amount_but_defaults
             "as_of": "2026-06-01",
             "selected": ["KOL|INV/HASAMOUNT|ACME", "KOL|INV/BLANK|ACME"],
             "ptp_date": "2026-06-15",
-            "updated_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -1761,7 +1736,6 @@ def test_sales_dn_follow_up_batch_save_skips_an_already_closed_invoice(client):
             "as_of": "2026-06-01",
             "selected": ["KOL|INV/OPEN|ACME", "KOL|INV/PAID|ACME"],
             "ptp_date": "2026-06-15",
-            "updated_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2078,7 +2052,6 @@ def test_credit_note_reclassify_as_pre_mis_reduces_pre_mis_outstanding(client):
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/PENDING", "party_id": "ACME",
             "target_classification": "pre_mis", "reason": "Matches Pre-MIS invoice INV/24-25/07",
-            "reviewed_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2113,7 +2086,6 @@ def test_credit_note_reclassify_as_current_does_not_touch_pre_mis_outstanding(cl
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/PENDING", "party_id": "ACME",
             "target_classification": "current", "reason": "Data-entry typo, not Pre-MIS",
-            "reviewed_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2147,7 +2119,6 @@ def test_credit_note_reclassify_rejects_a_row_that_is_not_pending_review(client)
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "CN/CURRENT", "party_id": "ACME",
             "target_classification": "pre_mis", "reason": "Trying to resolve an already-fine row",
-            "reviewed_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2210,7 +2181,6 @@ def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(cli
         data={
             "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/PENDING", "party_id": "ACME",
             "target_classification": "pre_mis", "reason": "Both lines relate to Pre-MIS invoices",
-            "reviewed_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2256,7 +2226,6 @@ def test_sales_dn_follow_up_batch_save_applies_to_every_selected_row(client):
             "as_of": "2026-06-01",
             "selected": ["KOL|INV/1|ACME", "KOL|INV/2|ACME"],
             "next_action": "Send reminder email",
-            "updated_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2309,7 +2278,6 @@ def test_sales_dn_follow_up_batch_save_blank_field_preserves_each_rows_own_value
             "as_of": "2026-06-01",
             "selected": ["KOL|INV/1|ACME", "KOL|INV/2|ACME"],
             "next_action": "Call customer",
-            "updated_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2328,7 +2296,7 @@ def test_sales_dn_follow_up_batch_save_blank_field_preserves_each_rows_own_value
 def test_sales_dn_follow_up_batch_save_requires_a_selection(client):
     resp = client.post(
         "/registers/sales-dn/follow-up/batch",
-        data={"as_of": "2026-06-01", "next_action": "Call customer", "updated_by": "Test User"},
+        data={"as_of": "2026-06-01", "next_action": "Call customer"},
         follow_redirects=True,
     )
     assert resp.status_code == 200
@@ -2372,7 +2340,6 @@ def test_credit_note_reclassify_batch_resolves_all_selected_pending_review_rows(
             "selected": ["KOL|CN/OLD/1|ACME", "KOL|CN/OLD/2|ACME", "KOL|CN/CURRENT|ACME"],
             "target_classification": "pre_mis",
             "reason": "All relate to 24-25 invoices",
-            "reviewed_by": "Test User",
         },
         follow_redirects=True,
     )
@@ -2414,7 +2381,6 @@ def test_receipt_journal_reclassify_batch_resolves_all_selected_pending_review_v
             "selected": ["KOL|RCPT/OLD|ACME"],
             "target_classification": "pre_mis",
             "reason": "Relates to a 24-25 invoice",
-            "reviewed_by": "Test User",
         },
         follow_redirects=True,
     )

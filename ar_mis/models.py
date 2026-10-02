@@ -419,6 +419,14 @@ class InvoiceFollowUp:
     count toward keeping it. Storage.upsert_invoice_follow_up is
     responsible for stamping this only when the promise itself actually
     changes, never on every edit.
+
+    `updated_by` is a fixed "Maker" literal, not something a human types
+    per edit (client's own later call: this is a single-operator Maker
+    role with no real login behind it - see the webapp's own docstring -
+    so a free-text "who" box was pure friction with nothing it could
+    actually verify). `updated_at` is what replaces it as the audit
+    signal: stamped on every single save regardless of which field
+    changed, unlike the narrower, PTP-promise-specific `logged_at` above.
     """
 
     branch_id: str
@@ -430,6 +438,7 @@ class InvoiceFollowUp:
     expected_collection_date: date | None = None
     updated_by: str = ""
     logged_at: date | None = None
+    updated_at: date | None = None
 
 
 @dataclass(frozen=True)

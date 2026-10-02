@@ -266,44 +266,7 @@
     applyFilters();
   }
 
-  // Client's own catch: retyping your name on every single save/batch
-  // action is cumbersome, and this app has no login to read a current
-  // user from (a deliberate decision - see the webapp's own docstring).
-  // A per-browser remembered name is the pragmatic stand-in: whoever
-  // typed one last on this browser gets it pre-filled into every empty
-  // "Your name"/reviewer box from then on, on any register's forms, but
-  // can always type over it for someone else at the same machine.
-  // Plain localStorage - never sent anywhere, never shared across
-  // browsers or devices.
-  var NAME_FIELDS_SELECTOR = 'input[name="updated_by"], input[name="reviewed_by"]';
-  var NAME_STORAGE_KEY = "ar_mis_last_name";
-
-  function initRememberedName() {
-    var rememberedName = "";
-    try {
-      rememberedName = localStorage.getItem(NAME_STORAGE_KEY) || "";
-    } catch (e) {
-      rememberedName = "";
-    }
-    if (rememberedName) {
-      Array.prototype.forEach.call(document.querySelectorAll(NAME_FIELDS_SELECTOR), function (input) {
-        if (!input.value) input.value = rememberedName;
-      });
-    }
-    document.addEventListener("submit", function (evt) {
-      var nameField = evt.target.querySelector && evt.target.querySelector(NAME_FIELDS_SELECTOR);
-      if (nameField && nameField.value.trim()) {
-        try {
-          localStorage.setItem(NAME_STORAGE_KEY, nameField.value.trim());
-        } catch (e) {
-          // Private browsing / storage disabled - not fatal, just no memory.
-        }
-      }
-    });
-  }
-
   document.addEventListener("DOMContentLoaded", function () {
     Array.prototype.forEach.call(document.querySelectorAll("[data-tt]"), initTable);
-    initRememberedName();
   });
 })();
