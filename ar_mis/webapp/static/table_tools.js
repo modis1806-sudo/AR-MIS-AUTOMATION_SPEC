@@ -198,6 +198,30 @@
       cb.addEventListener("change", updateSelectedCount);
     });
 
+    // An editable numeric cell (e.g. PTP Amount) only had its data-value
+    // set once, from the server-rendered page - typing a new figure into
+    // the input never touched that attribute, so the live SUMIFS-style
+    // total above the table silently ignored every unsaved edit. Any
+    // number input living directly inside a data-tt-col cell now keeps
+    // that cell's data-value in sync on every keystroke, so the total
+    // reflects what's actually in the box right now, not just what was
+    // last saved to the database.
+    Array.prototype.forEach.call(
+      table.querySelectorAll('td[data-tt-col] > input[type="number"]'),
+      function (input) {
+        var cell = input.parentElement;
+        input.addEventListener("input", function () {
+          var n = parseFloat(input.value);
+          if (isNaN(n)) {
+            cell.removeAttribute("data-value");
+          } else {
+            cell.setAttribute("data-value", input.value);
+          }
+          updateSums();
+        });
+      }
+    );
+
     applyFilters();
   }
 

@@ -916,6 +916,27 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         except ValueError:
             return date.today()
 
+    def _parse_as_of_form_value(raw: str) -> date:
+        try:
+            return date.fromisoformat(raw) if raw else date.today()
+        except ValueError:
+            return date.today()
+
+    def _default_ptp_amount_to_open_balance(
+        sales_dn_row, cn_rows: list, rj_rows: list, as_of: date
+    ) -> Decimal | None:
+        """Client's own catch while testing the batch PTP tool: setting a
+        PTP Date with no amount silently left PTP Amount blank, even
+        though a promise to pay with no figure attached reasonably means
+        the whole outstanding balance. Used only when there's no amount
+        already on record for this invoice (see both call sites) - it
+        fills a gap, it never overwrites a figure someone deliberately
+        entered, and the field stays a normal editable box afterward for
+        a genuinely partial promise.
+        """
+        position = compute_invoice_position(sales_dn_row, cn_rows, rj_rows, as_of)
+        return position.open_amount if position.open_amount > 0 else None
+
     def _build_sales_dn_display_rows(as_of: date):
         """Shared by the Sales & DN Register's HTML view and its Excel
         export - both render exactly this data, so a download can never
@@ -1172,6 +1193,22 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Enter a valid expected collection date.")
 
         store = get_store()
+        if ptp_date is not None and ptp_amount is None:
+            # Unlike the batch form, this form's own PTP Amount box is
+            # always prefilled with whatever's on record - blank here can
+            # only mean the preparer deliberately cleared it, not "leave
+            # it alone", so it always re-defaults to the current Open
+            # Amount rather than silently wiping a prior figure to empty.
+            matching_row = next(
+                (r for r in store.all_sales_dn_rows(branch_id)
+                 if r.voucher_number == voucher_number and r.party_id == party_id),
+                None,
+            )
+            if matching_row is not None:
+                ptp_amount = _default_ptp_amount_to_open_balance(
+                    matching_row, store.all_credit_note_rows(branch_id),
+                    store.all_receipt_journal_rows(branch_id), _parse_as_of_form_value(as_of_raw),
+                )
         store.upsert_invoice_follow_up(
             InvoiceFollowUp(
                 branch_id=branch_id, voucher_number=voucher_number, party_id=party_id,
@@ -1210,10 +1247,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Enter your name to save a batch follow-up update.")
 
         raw_ptp_date = request.form.get("ptp_date", "").strip()
-        raw_ptp_amount = request.form.get("ptp_amount", "").strip()
         raw_expected = request.form.get("expected_collection_date", "").strip()
         raw_next_action = request.form.get("next_action", "").strip()
-        if not (raw_ptp_date or raw_ptp_amount or raw_expected or raw_next_action):
+        if not (raw_ptp_date or raw_expected or raw_next_action):
             return _redisplay("Fill in at least one field to apply to the selected rows.")
 
         try:
@@ -1221,16 +1257,20 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         except ValueError:
             return _redisplay("Enter a valid PTP date.")
         try:
-            new_ptp_amount = to_money(Decimal(raw_ptp_amount)) if raw_ptp_amount else None
-        except InvalidOperation:
-            return _redisplay(f"'{raw_ptp_amount}' is not a valid PTP amount.")
-        try:
             new_expected = date.fromisoformat(raw_expected) if raw_expected else None
         except ValueError:
             return _redisplay("Enter a valid expected collection date.")
 
         store = get_store()
         today = date.today()
+        as_of_for_default = _parse_as_of_form_value(as_of_raw)
+        # Fetched once for the whole batch, not per row - avoids an N+1
+        # query pattern when 50+ rows are selected.
+        sales_dn_rows_by_identity = {
+            (r.branch_id, r.voucher_number, r.party_id): r for r in store.all_sales_dn_rows()
+        }
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
         updated_count = 0
         for identity in selected:
             parts = identity.split("|", 2)
@@ -1238,11 +1278,27 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 continue
             branch_id, voucher_number, party_id = parts
             existing = store.get_invoice_follow_up(branch_id, voucher_number, party_id)
+            merged_ptp_date = new_ptp_date if raw_ptp_date else (existing.ptp_date if existing else None)
+            # PTP Amount is never set directly from this form - it's
+            # row-specific (client's own catch: a shared batch figure
+            # makes no sense across invoices with different balances).
+            # Keep whatever's already on record, or default to this
+            # invoice's own current Open Amount once a PTP Date is in
+            # effect and no amount exists yet.
+            if existing is not None and existing.ptp_amount is not None:
+                merged_ptp_amount = existing.ptp_amount
+            elif merged_ptp_date is not None:
+                matching_row = sales_dn_rows_by_identity.get((branch_id, voucher_number, party_id))
+                merged_ptp_amount = (
+                    _default_ptp_amount_to_open_balance(matching_row, cn_rows, rj_rows, as_of_for_default)
+                    if matching_row is not None else None
+                )
+            else:
+                merged_ptp_amount = None
             store.upsert_invoice_follow_up(
                 InvoiceFollowUp(
                     branch_id=branch_id, voucher_number=voucher_number, party_id=party_id,
-                    ptp_date=new_ptp_date if raw_ptp_date else (existing.ptp_date if existing else None),
-                    ptp_amount=new_ptp_amount if raw_ptp_amount else (existing.ptp_amount if existing else None),
+                    ptp_date=merged_ptp_date, ptp_amount=merged_ptp_amount,
                     next_action=raw_next_action if raw_next_action else (existing.next_action if existing else ""),
                     expected_collection_date=(
                         new_expected if raw_expected else (existing.expected_collection_date if existing else None)

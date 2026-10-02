@@ -44,11 +44,10 @@
 </div>
 <details class="card" style="margin-bottom:16px;">
   <summary style="cursor:pointer; font-weight:600;">Batch: apply Follow-up to selected rows</summary>
-  <p style="font-size:12px; color:#6b7280; margin:8px 0;">Fill in only the fields you want to change — any field left blank keeps each selected row's own existing value untouched (it never clears a field in bulk). Tick the rows below, then Apply.</p>
+  <p style="font-size:12px; color:#6b7280; margin:8px 0;">Fill in only the fields you want to change — any field left blank keeps each selected row's own existing value untouched (it never clears a field in bulk). PTP Amount isn't here: it's row-specific, so setting a PTP Date defaults each row to its own Open Amount automatically (edit it per row afterward for a partial promise). Tick the rows below, then Apply.</p>
   <form id="salesdn-batch-form" method="post" action="{{ url_for('sales_dn_follow_up_batch_save') }}" style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
     <input type="hidden" name="as_of" value="{{ as_of }}">
     <div><label style="display:block; font-size:12px; font-weight:600;">PTP Date</label><input type="date" name="ptp_date"></div>
-    <div><label style="display:block; font-size:12px; font-weight:600;">PTP Amount</label><input type="number" step="0.01" name="ptp_amount" style="width:110px;"></div>
     <div><label style="display:block; font-size:12px; font-weight:600;">Next Action</label><input type="text" name="next_action" style="width:150px;"></div>
     <div><label style="display:block; font-size:12px; font-weight:600;">Expected Collection</label><input type="date" name="expected_collection_date"></div>
     <div><label style="display:block; font-size:12px; font-weight:600;">Your name</label><input type="text" name="updated_by" required style="width:110px;"></div>
@@ -126,6 +125,9 @@
           <input type="text" name="updated_by" placeholder="Your name" required style="width:90px;">
           <button class="btn secondary" type="submit" style="padding:4px 10px;">Save</button>
         </form>
+        {% if fu and fu.updated_by %}
+          <div style="font-size:11px; color:#6b7280; margin-top:4px;">Last by {{ fu.updated_by }}{% if fu.logged_at %} · promised {{ fu.logged_at }}{% endif %}</div>
+        {% endif %}
       </td>
     </tr>
   {% endfor %}

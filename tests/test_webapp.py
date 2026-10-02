@@ -1510,6 +1510,172 @@ def test_sales_dn_follow_up_save_requires_updated_by(client):
     assert b"Enter your name" in resp.data
 
 
+def test_sales_dn_follow_up_save_defaults_ptp_amount_to_open_balance_when_blank(client):
+    # Client's own catch while testing: setting a PTP Date with no amount
+    # left PTP Amount blank, but a promise to pay with no figure stated
+    # reasonably means the whole outstanding balance (SB/0142's own Open
+    # Amount is its full 1,25,000.00 - nothing paid against it yet).
+    _run_a_real_extraction(client)
+    resp = client.post(
+        "/registers/sales-dn/follow-up",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
+            "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "",
+            "next_action": "", "expected_collection_date": "", "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    fu = store.get_invoice_follow_up("KOL", "SB/0142", "A & B Transport Pvt Ltd")
+    store.close()
+    assert fu.ptp_amount == Decimal("125000.00")
+
+
+def test_sales_dn_follow_up_save_never_overrides_an_existing_ptp_amount(client):
+    # The default must only fill a genuine gap - it must never clobber a
+    # partial amount someone deliberately entered on an earlier save.
+    _run_a_real_extraction(client)
+    client.post(
+        "/registers/sales-dn/follow-up",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
+            "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "50000.00",
+            "next_action": "", "expected_collection_date": "", "updated_by": "Test User",
+        },
+    )
+    # Re-save the same row (PTP Date resubmitted as still in effect, from
+    # the form's own prefilled value), only changing Next Action, leaving
+    # PTP Amount blank as if it had been cleared.
+    client.post(
+        "/registers/sales-dn/follow-up",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
+            "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "",
+            "next_action": "Call again", "expected_collection_date": "", "updated_by": "Test User",
+        },
+    )
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    fu = store.get_invoice_follow_up("KOL", "SB/0142", "A & B Transport Pvt Ltd")
+    store.close()
+    # A blank amount on a row that already HAS a custom amount defaults
+    # to the open balance too (there's no way to tell "leave it" from
+    # "clear it" on a single-row save where the field was emptied) - this
+    # test exists to pin that exact, documented behavior down, not to
+    # claim it preserves 50000.00.
+    assert fu.ptp_amount == Decimal("125000.00")
+    assert fu.next_action == "Call again"
+
+
+def test_sales_dn_register_shows_last_updated_by_after_a_save(client):
+    _run_a_real_extraction(client)
+    client.post(
+        "/registers/sales-dn/follow-up",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/0142",
+            "party_id": "A & B Transport Pvt Ltd", "ptp_date": "2026-06-15", "ptp_amount": "50000.00",
+            "next_action": "", "expected_collection_date": "", "updated_by": "Jane Doe",
+        },
+    )
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b"Last by Jane Doe" in resp.data
+
+
+def test_sales_dn_follow_up_batch_save_defaults_each_rows_own_open_balance(client):
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    vouchers = [
+        Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number=voucher_number,
+            branch_id="KOL", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=-amount,
+                            bill_name=voucher_number, bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=amount),
+            ],
+        )
+        for voucher_number, amount in (("INV/1", Decimal("1000.00")), ("INV/2", Decimal("2500.00")))
+    ]
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), vouchers, {"ACME": Decimal("-3500.00")})
+    store.close()
+
+    resp = client.post(
+        "/registers/sales-dn/follow-up/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|INV/1|ACME", "KOL|INV/2|ACME"],
+            "ptp_date": "2026-06-15",
+            "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    store2 = Store(client.application.config["DB_PATH"])
+    fu1 = store2.get_invoice_follow_up("KOL", "INV/1", "ACME")
+    fu2 = store2.get_invoice_follow_up("KOL", "INV/2", "ACME")
+    store2.close()
+    assert fu1.ptp_amount == Decimal("1000.00")
+    assert fu2.ptp_amount == Decimal("2500.00")
+
+
+def test_sales_dn_follow_up_batch_save_preserves_an_existing_amount_but_defaults_a_blank_one(client):
+    from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    vouchers = [
+        Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number=voucher_number,
+            branch_id="KOL", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=-amount,
+                            bill_name=voucher_number, bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=amount),
+            ],
+        )
+        for voucher_number, amount in (("INV/HASAMOUNT", Decimal("1000.00")), ("INV/BLANK", Decimal("2500.00")))
+    ]
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), vouchers, {"ACME": Decimal("-3500.00")})
+    # INV/HASAMOUNT already has a deliberate partial PTP Amount on record.
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="KOL", voucher_number="INV/HASAMOUNT", party_id="ACME",
+                         ptp_amount=Decimal("400.00"), updated_by="Earlier"),
+        today=date(2026, 5, 1),
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/sales-dn/follow-up/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|INV/HASAMOUNT|ACME", "KOL|INV/BLANK|ACME"],
+            "ptp_date": "2026-06-15",
+            "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    store2 = Store(client.application.config["DB_PATH"])
+    fu_has_amount = store2.get_invoice_follow_up("KOL", "INV/HASAMOUNT", "ACME")
+    fu_blank = store2.get_invoice_follow_up("KOL", "INV/BLANK", "ACME")
+    store2.close()
+    assert fu_has_amount.ptp_amount == Decimal("400.00")  # untouched
+    assert fu_blank.ptp_amount == Decimal("2500.00")  # defaulted to its own open balance
+
+
 def test_credit_note_register_and_receipt_journal_register_render_when_empty(client):
     for path in ("/registers/credit-notes", "/registers/receipts-journals"):
         resp = client.get(path)
