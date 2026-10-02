@@ -304,6 +304,20 @@ above was never built and remains out of scope; if a real override feature
 is added later it still needs its own audit trail regardless of how login
 is handled.
 
+**Superseded again, later session — client's explicit call:** every
+PTP-follow-up save and CN/Receipt reclassify action used to additionally
+ask the preparer to type their own name into a free-text "Your name" box
+per edit. With no real login behind the Maker/Checker picker (immediately
+above), that box verified nothing — it was friction, not an audit control.
+Removed entirely; every such edit now attributes to a fixed `"Maker"`
+literal (`ar_mis.webapp.app.MAKER_ATTRIBUTION`), and a genuine
+`InvoiceFollowUp.updated_at` timestamp (schema v13, stamped on every save
+regardless of which field changed) carries the "when" half of the audit
+signal alone — "who" was never a real signal here to begin with, only
+"when" was. This does not touch the older, separate Register Exceptions
+Review log (item 28), which still records a typed reviewer name — that
+feature predates this call and was out of scope for it.
+
 ### 12. Deployment/packaging
 
 Keep the existing local Flask web app architecture (SQLite + local server +
@@ -958,6 +972,102 @@ resolves former open item 1.
     itself, and the Catch Up a Party correction path, are considered
     functionally complete for now - revisit only if something surfaces
     in further use, not on a schedule.
+
+33. **NEW, resolved: a genuinely on-account CN/Receipt sitting unapplied
+    for months read identically to a fresh one - "Unapplied Ageing"
+    buckets this separately from invoice ageing.** Client's live-testing
+    catch: a CN unapplied 181 days still showed the bare word "Current"
+    on the Credit Note and Receipt & Journal registers, the same label a
+    same-day CN gets. Bucketed through a new, deliberately SEPARATE
+    scheme from item 3's own `AGEING_BUCKET_ORDER`:
+    `ar_mis.registers.UNAPPLIED_AGEING_BUCKET_ORDER` /
+    `compute_unapplied_ageing_bucket` -
+    `0-30, 31-60, 61-90, 91-120, 121-150, 151-180, 181+`, with **no
+    "Current" bucket at all**. Reusing item 3's own "Current" label here
+    was tried first and rejected by the client: it collided with the
+    Classification column's own, unrelated "Current" meaning (resolved-
+    vs-pending, not ageing) sitting right next to it on the same row,
+    making the two columns look like they said the same thing. The raw
+    "Age Unapplied Days" count that used to sit alongside this bucket was
+    dropped from both registers and their Excel exports - client's own
+    call, once the bucket exists showing the exact day count too is
+    redundant (the day count is still computed internally to derive the
+    bucket, just no longer rendered as its own column).
+34. **NEW, resolved: the CN/Receipt Resolve action's free-text "Reason"
+    box was redundant - the chosen classification already states it.**
+    Client's own words: "If it is Pre-MIS it is the reason, if there is
+    data entry change, it is in itself the reason." Removed from both the
+    single-row and batch Resolve forms on both registers; the stored
+    `reason` column (still NOT NULL) is now auto-derived from
+    `target_classification` via `app._RESOLUTION_REASON_BY_TARGET`
+    ("Pre-MIS Adjustment" / "Data-entry correction") rather than typed.
+    Trade-off flagged to the client and accepted: this loses the ability
+    to record which SPECIFIC old invoice a Pre-MIS CN relates back to -
+    acceptable because that detail was never surfaced anywhere in the UI
+    to begin with, only ever written to a column nobody reads.
+35. **NEW, resolved: a wrongly-resolved Pre-MIS Adjustment had no way
+    back - added a Revert control.** Found live: a batch Resolve scoped
+    by the free-text search (which matches a voucher's own number, not
+    just the field the client meant to filter by - item 37 below) swept
+    an unintended voucher into a Pre-MIS Adjustment, permanently reducing
+    a party's real Pre-MIS Outstanding balance with no correction path
+    anywhere in the app - Resolve only ever appears on a row that's
+    currently Pending Review. `credit_note_revert_to_pending_review` /
+    `receipt_journal_revert_to_pending_review` flip the row back to
+    Pending Review and reverse the exact balance move with its own
+    explicit, logged, opposite-sign `PreMisAdjustment` entry - never a
+    silent rewrite of the original, same philosophy as
+    `record_pre_mis_adjustment`'s own docstring (item 10). Safe by
+    construction: PRE_MIS_ADJUSTMENT is never auto-assigned by the
+    register-building pipeline, only ever reached via this human Resolve
+    action, so any row showing it is always a legitimate revert target.
+    Deliberately NOT covered yet: reverting a wrong "Current" (data-entry
+    correction) resolution - neither register currently stores a signal
+    distinguishing "manually resolved to Current" from "was always
+    Current" (the Receipt & Journal row has no `reason` column at all),
+    so a safe revert there needs a small schema addition first.
+36. **NEW, resolved: Grouping column was missing from the Credit Note and
+    Receipt & Journal registers.** Client's own catch - the Sales & DN
+    Register has always shown and filtered by each customer's Grouping
+    (item 5), but the other two registers never got it, despite every
+    register being keyed off the same `(party_id, branch_id)` customer
+    master record. Added the same lookup, filterable column, and Excel
+    export column to both, in the same position (right after Customer)
+    as Sales & DN.
+37. **NEW, resolved: column-scoped search and a batch-action
+    confirmation step, on all three registers.** Root cause of item 35's
+    incident: the search box legitimately matches the WHOLE row (its own
+    placeholder says "Search customer, voucher no..."), so scoping a
+    batch Resolve by typing "25-26" to mean "target invoices from that
+    FY" also matched a voucher whose OWN number happened to carry the
+    same digits - confirmed by direct reproduction, not guesswork. Two
+    changes, both generic in `table_tools.js` (no per-register logic):
+    - `data-tt-search-scope`: an optional `<select>`, auto-populated with
+      one option per table column by its header label (by cell position,
+      so it works whether or not that column separately carries a
+      `data-tt-col`), that pins the existing search box to a single
+      column instead of the whole row - Excel's own "search this column"
+      behavior, without a text box per column cluttering an already-wide
+      register header (client's own first proposal, declined in favor of
+      this: 15+ input boxes in one header row was judged worse to use
+      than what existed, and still wouldn't have ruled out every wrong-
+      selection scenario on its own).
+    - Any `<form>` a `[data-tt-row-select]` checkbox targets (every
+      batch-action form on all three registers) now shows a confirmation
+      dialog before submitting - every selected row (by its own
+      `[data-tt-row-label]` cell) and every non-blank field about to be
+      applied, require an explicit OK. This is the real safety net:
+      it catches a wrong selection regardless of how it happened (a
+      loose search match, a leftover checked box, a misclick), which
+      column-scoped search reduces but can't fully rule out by itself.
+    Both live-verified end to end by reproducing item 35's exact incident
+    on both the Credit Note and Receipt & Journal registers: whole-row
+    search for "25-26" still matches both the intended and the
+    unintended voucher; scoping to the actual reference column narrows
+    correctly to just the intended one; and submitting the batch form
+    with both wrongly selected shows a dialog listing both voucher
+    numbers and the field being applied, blocks on Cancel, proceeds on
+    Accept.
 
 ## Deferred to a later version (not rejected, not in scope now)
 
