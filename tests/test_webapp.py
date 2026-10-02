@@ -1583,7 +1583,7 @@ def test_sales_dn_register_shows_last_updated_by_after_a_save(client):
     )
     resp = client.get("/registers/sales-dn")
     assert resp.status_code == 200
-    assert b"Last by Jane Doe" in resp.data
+    assert b"Last updated by Jane Doe" in resp.data
 
 
 def test_sales_dn_follow_up_batch_save_defaults_each_rows_own_open_balance(client):
@@ -1674,6 +1674,63 @@ def test_sales_dn_follow_up_batch_save_preserves_an_existing_amount_but_defaults
     store2.close()
     assert fu_has_amount.ptp_amount == Decimal("400.00")  # untouched
     assert fu_blank.ptp_amount == Decimal("2500.00")  # defaulted to its own open balance
+
+
+def test_sales_dn_follow_up_batch_save_skips_an_already_closed_invoice(client):
+    # Client's own catch, live-testing: selecting a date range can easily
+    # sweep up an invoice that's already fully paid alongside the open
+    # ones it was meant for. Setting a PTP Date on a settled invoice is
+    # meaningless - it must be skipped, not silently stamped anyway.
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    vouchers = [
+        Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 1), voucher_number=voucher_number,
+            branch_id="KOL", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=-amount,
+                            bill_name=voucher_number, bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=amount),
+            ],
+        )
+        for voucher_number, amount in (("INV/OPEN", Decimal("1000.00")), ("INV/PAID", Decimal("500.00")))
+    ]
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 2), vouchers, {"ACME": Decimal("-1500.00")})
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 10), voucher_type="Receipt", voucher_number="RCPT/1",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV/PAID",
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/sales-dn/follow-up/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|INV/OPEN|ACME", "KOL|INV/PAID|ACME"],
+            "ptp_date": "2026-06-15",
+            "updated_by": "Test User",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Follow-up applied to 1 invoice(s)" in resp.data
+    assert b"1 skipped (already settled/closed)" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    fu_open = store2.get_invoice_follow_up("KOL", "INV/OPEN", "ACME")
+    fu_paid = store2.get_invoice_follow_up("KOL", "INV/PAID", "ACME")
+    store2.close()
+    assert fu_open.ptp_date == date(2026, 6, 15)
+    assert fu_open.ptp_amount == Decimal("1000.00")
+    assert fu_paid is None  # never touched
 
 
 def test_credit_note_register_and_receipt_journal_register_render_when_empty(client):

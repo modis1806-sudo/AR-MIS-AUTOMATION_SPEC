@@ -1272,11 +1272,25 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         updated_count = 0
+        skipped_closed_count = 0
         for identity in selected:
             parts = identity.split("|", 2)
             if len(parts) != 3:
                 continue
             branch_id, voucher_number, party_id = parts
+            matching_row = sales_dn_rows_by_identity.get((branch_id, voucher_number, party_id))
+            position = (
+                compute_invoice_position(matching_row, cn_rows, rj_rows, as_of_for_default)
+                if matching_row is not None else None
+            )
+            if raw_ptp_date and position is not None and position.open_amount <= 0:
+                # Client's own catch: a date-range selection can easily
+                # sweep up an already-settled invoice alongside the open
+                # ones it was meant for - there's nothing left to promise
+                # payment against, so a new PTP Date is never applied to
+                # one. Skipped silently per row, reported once as a count.
+                skipped_closed_count += 1
+                continue
             existing = store.get_invoice_follow_up(branch_id, voucher_number, party_id)
             merged_ptp_date = new_ptp_date if raw_ptp_date else (existing.ptp_date if existing else None)
             # PTP Amount is never set directly from this form - it's
@@ -1287,12 +1301,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             # effect and no amount exists yet.
             if existing is not None and existing.ptp_amount is not None:
                 merged_ptp_amount = existing.ptp_amount
-            elif merged_ptp_date is not None:
-                matching_row = sales_dn_rows_by_identity.get((branch_id, voucher_number, party_id))
-                merged_ptp_amount = (
-                    _default_ptp_amount_to_open_balance(matching_row, cn_rows, rj_rows, as_of_for_default)
-                    if matching_row is not None else None
-                )
+            elif merged_ptp_date is not None and position is not None:
+                merged_ptp_amount = position.open_amount if position.open_amount > 0 else None
             else:
                 merged_ptp_amount = None
             store.upsert_invoice_follow_up(
@@ -1309,7 +1319,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             )
             updated_count += 1
         store.close()
-        flash(f"Follow-up applied to {updated_count} invoice(s).", "success")
+        message = f"Follow-up applied to {updated_count} invoice(s)."
+        if skipped_closed_count:
+            message += f" {skipped_closed_count} skipped (already settled/closed)."
+        flash(message, "success")
         return redirect(url_for("sales_dn_register", as_of=as_of_raw))
 
     @app.route("/registers/sales-dn/export.xlsx")
