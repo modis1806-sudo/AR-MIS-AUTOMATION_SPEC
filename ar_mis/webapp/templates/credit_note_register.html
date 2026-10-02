@@ -98,7 +98,7 @@
       <td>{{ d.fields.linked_invoice_value|inr if d.fields.linked_invoice_value is not none else '—' }}</td>
       <td data-tt-col="cn_amount" data-value="{{ row.cn_amount }}">{{ row.cn_amount|inr }}</td>
       <td data-tt-col="unapplied_amount"{% if d.unapplied_amount is not none %} data-value="{{ d.unapplied_amount }}"{% endif %}>{{ d.unapplied_amount|inr if d.unapplied_amount is not none else '—' }}</td>
-      <td data-tt-col="classification">
+      <td data-tt-col="classification" data-tt-filter-value="{{ row.classification.value }}">
         {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
         {% elif row.classification.value == 'Pending Review' %}
           <span class="pill class-pending">Pending Review</span>

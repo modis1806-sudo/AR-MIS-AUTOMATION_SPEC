@@ -75,7 +75,20 @@
   // value attribute, so textContent of the cell is empty or (worse, for
   // a cell that also holds a quick-pick <select>) full of every preset
   // option's label instead of the real current value.
+  //
+  // A cell can also hold an inline action form of its own (the CN/Receipt
+  // Classification column's "Resolve" details/select/button, for a
+  // Pending Review row) with no input box to key off at all - live-caught
+  // regression: once the Resolve form's old Reason text box was removed,
+  // cellText() fell through to raw textContent and the filter dropdown
+  // started listing the whole hidden form (its select options, its Save
+  // button) as one garbled "option". data-tt-filter-value is the escape
+  // hatch for exactly this: a cell says explicitly what it means for
+  // filtering, instead of this function trying to guess it out of
+  // arbitrary markup.
   function cellText(cell) {
+    var filterValue = cell.getAttribute("data-tt-filter-value");
+    if (filterValue !== null) return filterValue.trim();
     var input = cell.querySelector('input[type="text"], input[type="number"]');
     if (input) return input.value.trim();
     return cell.textContent.trim();

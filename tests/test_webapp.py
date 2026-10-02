@@ -2036,6 +2036,34 @@ def test_credit_note_register_shows_resolve_action_only_for_pending_review_rows(
     assert resp.data.count(b'action="/registers/credit-notes/reclassify"') == 1
 
 
+def test_credit_note_register_classification_cell_carries_a_clean_filter_value(client):
+    # Client's own live-testing catch: once the Resolve form's "Reason"
+    # text box was removed, the table_tools.js filter dropdown fell back
+    # to the Classification cell's raw textContent for a Pending Review
+    # row - which also contains the hidden Resolve <select>'s own option
+    # labels and its Save button - producing one garbled catch-all
+    # "option" instead of a clean "Pending Review". The cell must declare
+    # its own filter value explicitly rather than let the filter guess at
+    # arbitrary nested markup.
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/PENDING", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="STALE/REF",
+            classification=RegisterClassification.PENDING_REVIEW,
+        )
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes")
+    assert resp.status_code == 200
+    assert b'data-tt-filter-value="Pending Review"' in resp.data
+
+
 def test_credit_note_reclassify_as_pre_mis_reduces_pre_mis_outstanding(client):
     from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
     from ar_mis.storage import Store
@@ -2156,6 +2184,11 @@ def test_receipt_journal_register_shows_resolve_action_for_pending_review_rows(c
     assert resp.status_code == 200
     assert b"What Classification means" in resp.data
     assert b'action="/registers/receipts-journals/reclassify"' in resp.data
+    # Same filter-dropdown regression as the Credit Note Register (see its
+    # own test's comment): the Classification cell must declare its own
+    # clean filter value rather than let the filter dropdown pick up the
+    # hidden Resolve form's own select options and Save button.
+    assert b'data-tt-filter-value="Pending Review"' in resp.data
 
 
 def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(client):
