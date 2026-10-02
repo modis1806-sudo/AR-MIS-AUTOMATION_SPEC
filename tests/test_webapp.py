@@ -761,6 +761,27 @@ def test_test_extraction_save_writes_data_and_shows_reconciled_clean(client, mon
     store.close()
 
 
+def test_test_extraction_save_shows_inline_tb_and_branch_pl_cross_check(client, monkeypatch):
+    # Client's own call: these "aren't really reports" - a Maker needs to
+    # see them every time data is pulled, so a scoped version of both now
+    # shows automatically right on this result page too.
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
+    )
+    assert resp.status_code == 200
+    assert b"TB Reconciliation Cross-Check \xe2\x80\x94 this run" in resp.data
+    assert b"Branch P&amp;L Cross-Check \xe2\x80\x94 this run" in resp.data
+    # Not just the heading - the real sales figure from FakeTallyClientForCommit's
+    # own voucher (Rs 1000.00) must actually appear in the Branch P&L table,
+    # closing the gap that let an empty/broken Branch P&L section slip through
+    # with only a heading-presence check.
+    assert b"1,000.00" in resp.data
+
+
 def test_test_extraction_save_mismatch_still_writes_data(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientMismatch)
     _add_branch(client)
@@ -1090,6 +1111,83 @@ def test_manual_upload_clean_run_shows_reconciled_clean(client):
         content_type="multipart/form-data",
     )
     assert b"RECONCILED CLEAN" in resp.data
+
+
+def test_manual_upload_shows_inline_tb_and_branch_pl_cross_check(client):
+    # Client's own call: TB Reconciliation Cross-Check and the Branch
+    # P&L Cross-Check "aren't really reports" - a Maker needs to see them
+    # every time data is pulled or imported, so a scoped version of both
+    # now shows automatically right on the Manual Upload result page,
+    # not only in the separate Reports section.
+    #
+    # Deliberately NOT using fixtures/voucher_collection_sales.xml here:
+    # that fixture (built for narrower parser/reconciliation tests) has
+    # no top-level PARTYLEDGERNAME on its VOUCHER elements, only on each
+    # ALLLEDGERENTRIES.LIST entry - enough for TB reconciliation (which
+    # keys off the entry-level name) but NOT enough for
+    # build_sales_dn_register_row (which requires voucher.party_ledger_name
+    # - see ar_mis.pipeline._build_and_persist_registers). A real Tally
+    # export always carries it (confirmed against fixtures/real_samples/
+    # SalesReg.xml) - this inline XML matches that real shape, so this
+    # test can actually assert the Branch P&L figures appear, not just
+    # the section heading.
+    _add_manual_upload_branch(client)
+    _seed_manual_upload_openings(client)
+    sales_xml = b"""<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260406</DATE>
+  <VOUCHERNUMBER>SB/0142</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>A &amp; B Transport Pvt Ltd</PARTYLEDGERNAME>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>A &amp; B Transport Pvt Ltd</LEDGERNAME>
+   <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+   <AMOUNT>-125000.00</AMOUNT>
+   <BILLALLOCATIONS.LIST><NAME>SB/0142</NAME><AMOUNT>-125000.00</AMOUNT></BILLALLOCATIONS.LIST>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Freight Income</LEDGERNAME>
+   <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+   <AMOUNT>125000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+ <VOUCHER>
+  <DATE>20260407</DATE>
+  <VOUCHERNUMBER>SB/0143</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>Reliable Cargo Movers</PARTYLEDGERNAME>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Reliable Cargo Movers</LEDGERNAME>
+   <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+   <AMOUNT>-87500.00</AMOUNT>
+   <BILLALLOCATIONS.LIST><NAME>SB/0143</NAME><AMOUNT>-87500.00</AMOUNT></BILLALLOCATIONS.LIST>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Freight Income</LEDGERNAME>
+   <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+   <AMOUNT>87500.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    tb_xml = (MANUAL_UPLOAD_FIXTURES / "ledger_closing_balances.xml").read_bytes()
+
+    resp = client.post(
+        "/manual-upload",
+        data={
+            "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+            "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+            "trial_balance": (BytesIO(tb_xml), "tb.xml"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 200
+    assert b"TB Reconciliation Cross-Check \xe2\x80\x94 this run" in resp.data
+    assert b"Branch P&amp;L Cross-Check \xe2\x80\x94 this run" in resp.data
+    assert b"A &amp; B Transport Pvt Ltd" in resp.data  # the party shows in the scoped TB table
+    # Not just the heading - the real combined sales figure (1,25,000 +
+    # 87,500) must actually appear in the Branch P&L table.
+    assert b"2,12,500.00" in resp.data
+    assert b"No invoices recorded for this run." not in resp.data
 
 
 def test_manual_upload_mismatch_still_writes_data_and_shows_mismatch_badge(client):
@@ -3162,6 +3260,41 @@ def test_tb_cross_check_date_range_scopes_the_table_but_never_shrinks_the_runnin
     assert b"1,000.00" in resp.data  # still in the Total Debtor tile
 
 
+def test_tb_cross_check_branch_filter_scopes_table_and_tiles(client):
+    # Client's later ask: a Branch filter, default All Branches, where
+    # picking one actually changes the figures - not just which rows show.
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    client.post(
+        "/branches/new",
+        data={"branch_id": "KOL", "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
+              "tally_host": "localhost", "tally_port": "9000"},
+    )
+    client.post(
+        "/branches/new",
+        data={"branch_id": "DEL", "branch_name": "Delhi", "tally_company_name": "Delhi HQ",
+              "tally_host": "localhost", "tally_port": "9000"},
+    )
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("P2", "P2", "DEL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("-1000.00")})
+    process_branch_data(store, "DEL", "Delhi", date(2026, 4, 5), [], {"P2": Decimal("-500.00")})
+    store.close()
+
+    both = client.get("/reports/tb-cross-check")
+    assert b'<option value="" selected>All Branches</option>' in both.data
+    assert b"1,500.00" in both.data  # combined Total Debtor as per Books
+
+    kol_only = client.get("/reports/tb-cross-check?branch_id=KOL")
+    assert b"1,000.00" in kol_only.data  # KOL's own Total Debtor
+    assert b"P2" not in kol_only.data  # Delhi's party doesn't leak into the table
+    assert b'<option value="KOL" selected>Kolkata</option>' in kol_only.data
+
+
 def test_tb_cross_check_as_of_excludes_a_week_recorded_after_the_chosen_to_date(client):
     from ar_mis.models import CustomerMasterRecord
     from ar_mis.pipeline import process_branch_data
@@ -3387,7 +3520,7 @@ def test_concentration_risk_reachable_by_checker(roleless_client):
 def test_branch_totals_renders_with_no_data(client):
     resp = client.get("/reports/branch-totals")
     assert resp.status_code == 200
-    assert b"Branch Sales + CN + DN Total" in resp.data
+    assert b"Branch P&amp;L Cross-Check" in resp.data
     assert b"No invoices on record" in resp.data
 
 
@@ -3410,6 +3543,61 @@ def test_branch_totals_period_filter_excludes_out_of_range_invoice(client):
     assert b"1,25,000.00" not in resp.data
 
 
+def test_branch_totals_branch_filter_scopes_figures_and_drops_redundant_all_branches_row(client):
+    # Client's later ask: a Branch filter, default All Branches, where
+    # picking one branch changes the actual figures (not just highlights
+    # a row) - and the "All Branches" aggregate, which would just repeat
+    # the one branch left, is dropped rather than shown as a confusing
+    # duplicate.
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    client.post(
+        "/branches/new",
+        data={"branch_id": "KOL", "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
+              "tally_host": "localhost", "tally_port": "9000"},
+    )
+    client.post(
+        "/branches/new",
+        data={"branch_id": "DEL", "branch_name": "Delhi", "tally_company_name": "Delhi HQ",
+              "tally_host": "localhost", "tally_port": "9000"},
+    )
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("P2", "P2", "DEL", Decimal("0.00")))
+    kol_voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number="SB/1",
+        branch_id="KOL", party_ledger_name="P1",
+        entries=[
+            LedgerEntry(party_ledger_name="P1", amount_as_extracted=Decimal("-125000.00"), bill_name="SB/1", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Sales", amount_as_extracted=Decimal("125000.00")),
+        ],
+    )
+    del_voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number="SB/2",
+        branch_id="DEL", party_ledger_name="P2",
+        entries=[
+            LedgerEntry(party_ledger_name="P2", amount_as_extracted=Decimal("-87500.00"), bill_name="SB/2", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Sales", amount_as_extracted=Decimal("87500.00")),
+        ],
+    )
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), [kol_voucher], {"P1": Decimal("125000.00")})
+    process_branch_data(store, "DEL", "Delhi", date(2026, 4, 7), [del_voucher], {"P2": Decimal("87500.00")})
+    store.close()
+
+    both = client.get("/reports/branch-totals?period_start=2026-01-01&period_end=2026-12-31")
+    assert b"KOL" in both.data and b"DEL" in both.data and b"All Branches" in both.data
+    assert b"2,12,500.00" in both.data  # combined net total
+
+    kol_only = client.get("/reports/branch-totals?period_start=2026-01-01&period_end=2026-12-31&branch_id=KOL")
+    assert b"1,25,000.00" in kol_only.data
+    assert b"<td>DEL</td>" not in kol_only.data  # Delhi's row is gone (dropdown option for it still is, by design)
+    assert b"<td>All Branches</td>" not in kol_only.data  # no redundant duplicate row (the dropdown's own "All Branches" option is unaffected)
+    assert b'<option value="KOL" selected>Kolkata</option>' in kol_only.data
+
+
 def test_branch_totals_reachable_by_checker(roleless_client):
     roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/branch-totals")
@@ -3418,7 +3606,7 @@ def test_branch_totals_reachable_by_checker(roleless_client):
 
 def test_reports_home_links_to_branch_totals(client):
     resp = client.get("/reports")
-    assert b"Branch Sales + CN + DN Total" in resp.data
+    assert b"Branch P&amp;L Cross-Check" in resp.data
 
 
 def test_reports_home_links_to_tb_cross_check(client):

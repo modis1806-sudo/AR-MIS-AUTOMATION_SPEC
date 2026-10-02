@@ -9,18 +9,6 @@
 
 <div class="report-grid">
   <div class="card">
-    <h2>TB Reconciliation Cross-Check</h2>
-    <p>Tally's own Trial Balance closing balance, side by side with this app's own workings, one row per party per branch per week — the answer to "how do I know this data is correct?"</p>
-    <a class="btn" href="{{ url_for('tb_cross_check_report') }}">Open TB Cross-Check</a>
-  </div>
-
-  <div class="card">
-    <h2>Branch Sales + CN + DN Total</h2>
-    <p>A simple per-branch turnover total for a chosen period, easy to eyeball directly against Tally's own P&amp;L page.</p>
-    <a class="btn" href="{{ url_for('branch_totals_report') }}">Open Branch Totals</a>
-  </div>
-
-  <div class="card">
     <h2>Backdated Entry Findings</h2>
     <p>Every voucher a fresh full-year Tally pull found that no prior weekly extraction ever captured — kept here until acknowledged, not just shown once and lost.</p>
     <a class="btn" href="{{ url_for('drift_findings_report') }}">Open Drift Findings</a>
@@ -60,6 +48,18 @@
     <h2>Weekly Movement Register</h2>
     <p>A recorded history of the big numbers, one row per week — unlike the reports above, this one doesn't recalculate; each week's row is locked in once and kept as-is.</p>
     <a class="btn" href="{{ url_for('weekly_movement_report') }}">Open Weekly Movement Register</a>
+  </div>
+
+  <div class="card">
+    <h2>TB Reconciliation Cross-Check</h2>
+    <p>Tally's own Trial Balance closing balance, side by side with this app's own workings, one row per party per branch per week. A scoped version of this already shows automatically right after an Extract &amp; Save or Manual Upload — open this for the full history across every branch instead.</p>
+    <a class="btn" href="{{ url_for('tb_cross_check_report') }}">Open TB Cross-Check</a>
+  </div>
+
+  <div class="card">
+    <h2>Branch P&amp;L Cross-Check</h2>
+    <p>A simple per-branch turnover total for a chosen period, easy to eyeball directly against Tally's own P&amp;L page. A scoped version of this already shows automatically right after an Extract &amp; Save or Manual Upload — open this for a custom period across every branch instead.</p>
+    <a class="btn" href="{{ url_for('branch_totals_report') }}">Open Branch Totals</a>
   </div>
 </div>
 {% endblock %}

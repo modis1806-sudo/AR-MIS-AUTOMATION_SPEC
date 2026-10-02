@@ -1101,6 +1101,51 @@ resolves former open item 1.
     shipped, so Reports now opts into `main.wide` too, the same as the
     three master registers.
 
+39. **NEW, resolved: TB Reconciliation Cross-Check and Branch P&L
+    Cross-Check (renamed from "Branch Sales + CN + DN Total") reclassified
+    as inline verification steps, not standalone reports - plus a Branch
+    filter on both.** Client's own call, going through the Reports section
+    screen by screen: neither of these two is really a "report" someone
+    opens later - both are a cross-check a Maker needs to see every time
+    data is pulled (Test & Save Extraction) or imported (Manual Upload),
+    the same run that just wrote the data. A new helper,
+    `_inline_cross_check_for_run` (ar_mis.webapp.app), scopes both down to
+    exactly the branch/period that run just saved - reusing the identical
+    `compute_tb_cross_check_summary`-feeding `weekly_snapshot` rows and
+    `compute_branch_sales_cn_dn_totals` the full Reports-section versions
+    already use, never a separate computation. Both `test_extraction.html`
+    and `manual_upload.html` now render this scoped pair right under each
+    run's own result card. The two full-history versions stay in the
+    Reports section too (client: "we can keep both"), just moved to the
+    last two cards instead of the first, since they're the least
+    "report"-like of the nine.
+
+    Live-verification caught a real gap before this shipped: an early
+    test of the inline Branch P&L section against a manual upload showed
+    "No invoices recorded for this run" even though real invoices had
+    just been processed and TB-reconciled. Root cause wasn't a pipeline
+    bug - `build_sales_dn_register_row` requires `voucher.party_ledger_name`
+    (the voucher-level PARTYLEDGERNAME tag), which a real Tally export
+    always carries (confirmed against `fixtures/real_samples/SalesReg.xml`)
+    but the simplified unit-test fixture used for the live check never
+    did. Fixed the test data, not the app; the two inline-cross-check
+    tests were also tightened to assert the real sales figures actually
+    render, not just the section headings, closing the coverage gap that
+    let this slip past the test suite in the first place.
+
+    Client's later ask, same thread: both the full-history TB Cross-Check
+    and Branch P&L Cross-Check screens gained a Branch filter, defaulting
+    to All Branches, where picking one branch actually changes the
+    figures - not merely which rows are visible. For TB Cross-Check this
+    scopes the three KPI tiles too (Total Debtor as per Books included),
+    deliberately different from the existing From/To date range, which by
+    design (item 20) never shrinks those tiles - a branch is a real subset
+    of the business, a date window is not. For Branch P&L Cross-Check,
+    selecting a branch filters the underlying register rows at the source
+    (`Store.all_sales_dn_rows`/`all_credit_note_rows`'s own `branch_id`
+    parameter) and drops the now-redundant "All Branches" aggregate row,
+    rather than showing the same number twice.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

@@ -732,9 +732,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             except TallyConnectionError as exc:
                 flash(f"Run ending {c_end.isoformat()} was saved, but its YTD drift check could not run: {exc}", "error")
 
+            cross_check = _inline_cross_check_for_run(store, branch.branch_id, c_start, c_end)
             chunk_results.append({
                 "start": c_start.isoformat(), "end": c_end.isoformat(), "status": "saved",
                 "outcome": outcome, "drift_findings": drift_findings,
+                "tb_rows": cross_check["tb_rows"], "branch_pl_row": cross_check["branch_pl_row"],
             })
 
         result = {
@@ -833,6 +835,27 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(f"Credit limit for {party_id} set to {format_inr(new_limit)}.", "success")
         return redirect(url_for("customers_list"))
 
+    def _inline_cross_check_for_run(store, branch_id: str, period_start: date, period_end: date) -> dict:
+        """Client's own later call: TB Reconciliation Cross-Check and the
+        Branch P&L Cross-Check "aren't really reports" - they're a
+        verification step the Maker needs to see every time data is
+        pulled or imported, not a separate screen to remember to visit
+        afterward. Scoped to exactly the branch/period this run just
+        saved, reusing the identical computation the full Reports-section
+        versions use (never a separate recomputation) - just filtered
+        down to one run instead of a date range across every branch.
+        """
+        all_snapshot_rows = store.all_weekly_snapshot_rows()
+        tb_rows = [
+            r for r in all_snapshot_rows
+            if r.branch_id == branch_id and period_start <= r.week_ending <= period_end
+        ]
+        sales_dn_rows = store.all_sales_dn_rows(branch_id)
+        cn_rows = store.all_credit_note_rows(branch_id)
+        branch_pl_rows = compute_branch_sales_cn_dn_totals(sales_dn_rows, cn_rows, period_start, period_end)
+        branch_pl_row = next((r for r in branch_pl_rows if r.branch_id == branch_id), None)
+        return {"tb_rows": tb_rows, "branch_pl_row": branch_pl_row}
+
     def _decode_upload(file_storage) -> str:
         """Same UTF-8-then-UTF-16 fallback as TallyClient._post - a
         manually exported Tally file can use either encoding depending
@@ -915,10 +938,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     ytd_voucher_xml=ytd_voucher_xml,
                     from_date=from_date,
                 )
+                cross_check = _inline_cross_check_for_run(store, branch.branch_id, from_date, to_date)
                 result = {
                     "branch": branch, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
                     "refused": False, "outcome": upload_result.outcome, "drift_findings": upload_result.drift_findings,
                     "fy_start": financial_year_start(to_date).isoformat(),
+                    "tb_rows": cross_check["tb_rows"], "branch_pl_row": cross_check["branch_pl_row"],
                 }
             except ManualUploadRefused as exc:
                 result = {
@@ -1974,11 +1999,23 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         narrow display window still owes their last known balance, and
         scoping the running total to the same narrow window would
         silently understate it, not just narrow what's shown.
+
+        Branch filter (client's later ask): unlike the date range above,
+        picking a branch here scopes EVERYTHING on this screen, tiles
+        included - "all three tiles are branch-blind" would defeat the
+        actual point of asking to see just one branch's own numbers.
+        Default is every branch combined, same as before this filter
+        existed.
         """
+        branch_id = request.args.get("branch_id", "").strip()
         store = get_store()
         all_rows = store.all_weekly_snapshot_rows()
+        branches = store.list_branches()
         freshness = _freshness(store.last_extraction_at())
         store.close()
+
+        if branch_id:
+            all_rows = [r for r in all_rows if r.branch_id == branch_id]
 
         today = date.today()
         try:
@@ -1995,6 +2032,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness,
             from_date=from_date.isoformat(), to_date=to_date.isoformat(),
+            branches=branches, selected_branch_id=branch_id,
         )
 
     @app.route("/reports/tb-cross-check/export.xlsx")
@@ -2005,8 +2043,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         chosen from/to date range, reconciled and mismatched alike - so a
         Maker can apply their own filter/pivot in Excel instead of being
         limited to this screen's own search/filter. Uses the exact same
-        from_date/to_date scoping as tb_cross_check_report, so the
-        download always matches what was on screen when it was clicked.
+        from_date/to_date AND branch_id scoping as tb_cross_check_report,
+        so the download always matches what was on screen when it was
+        clicked.
         """
         today = date.today()
         try:
@@ -2017,11 +2056,14 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             to_date = date.fromisoformat(request.args.get("to_date", ""))
         except ValueError:
             to_date = today
+        branch_id = request.args.get("branch_id", "").strip()
 
         store = get_store()
         all_rows = store.all_weekly_snapshot_rows()
         store.close()
 
+        if branch_id:
+            all_rows = [r for r in all_rows if r.branch_id == branch_id]
         rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
         wb = build_tb_cross_check_workbook(rows, from_date, to_date)
         buf = BytesIO()
@@ -2042,17 +2084,22 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         Uses the same as-of-`to_date` latest-per-party state as that
         tile (see compute_unreconciled_parties), never the display-range-
         filtered table - the export must always match the tile's count.
+        Also honors the same branch_id filter as the tile itself, for the
+        same reason.
         """
         today = date.today()
         try:
             to_date = date.fromisoformat(request.args.get("to_date", ""))
         except ValueError:
             to_date = today
+        branch_id = request.args.get("branch_id", "").strip()
 
         store = get_store()
         all_rows = store.all_weekly_snapshot_rows()
         store.close()
 
+        if branch_id:
+            all_rows = [r for r in all_rows if r.branch_id == branch_id]
         mismatched = compute_unreconciled_parties(all_rows, as_of=to_date)
         wb = build_unreconciled_parties_workbook(mismatched, to_date)
         buf = BytesIO()
@@ -2104,6 +2151,15 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         period, simple enough to eyeball directly against Tally's own
         P&L page - see ar_mis.branch_totals for why this is a gross
         (GST-inclusive) figure, not tax-exclusive turnover.
+
+        Branch filter (client's later ask, default All Branches): when a
+        single branch is picked, the underlying rows are pulled already
+        scoped to it (Store.all_sales_dn_rows/all_credit_note_rows both
+        take an optional branch_id), so the figures themselves change,
+        not just which table row is highlighted - and the redundant
+        "All Branches" aggregate row (identical to the one real row left
+        once everything else is filtered out) is dropped rather than
+        shown twice.
         """
         today = date.today()
         default_start = financial_year_start(today)
@@ -2115,17 +2171,22 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             period_end = date.fromisoformat(request.args.get("period_end", "")) if request.args.get("period_end") else today
         except ValueError:
             period_end = today
+        branch_id = request.args.get("branch_id", "").strip()
 
         store = get_store()
-        sales_dn_rows = store.all_sales_dn_rows()
-        cn_rows = store.all_credit_note_rows()
+        sales_dn_rows = store.all_sales_dn_rows(branch_id or None)
+        cn_rows = store.all_credit_note_rows(branch_id or None)
+        branches = store.list_branches()
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
         rows = compute_branch_sales_cn_dn_totals(sales_dn_rows, cn_rows, period_start, period_end)
+        if branch_id:
+            rows = [r for r in rows if r.branch_id == branch_id]
         return render_template(
             "branch_totals.html", rows=rows, freshness=freshness,
             period_start=period_start.isoformat(), period_end=period_end.isoformat(),
+            branches=branches, selected_branch_id=branch_id,
         )
 
     @app.route("/reports/drift-findings")

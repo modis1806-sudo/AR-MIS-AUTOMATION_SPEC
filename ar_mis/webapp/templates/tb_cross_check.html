@@ -9,6 +9,15 @@
 
 <form class="as-of-form" method="get">
   <div>
+    <label for="branch_id">Branch</label>
+    <select id="branch_id" name="branch_id">
+      <option value="" {% if not selected_branch_id %}selected{% endif %}>All Branches</option>
+      {% for b in branches %}
+      <option value="{{ b.branch_id }}" {% if b.branch_id == selected_branch_id %}selected{% endif %}>{{ b.branch_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
     <label for="from_date">From</label>
     <input type="date" id="from_date" name="from_date" value="{{ from_date }}">
   </div>
@@ -31,7 +40,7 @@
     <div class="kpi-caption">
       As of {{ to_date }}
       {% if summary.parties_with_current_difference %}
-      — <a href="{{ url_for('export_unreconciled_parties', to_date=to_date) }}">Export list</a>
+      — <a href="{{ url_for('export_unreconciled_parties', to_date=to_date, branch_id=selected_branch_id) }}">Export list</a>
       {% endif %}
     </div>
   </div>
@@ -41,10 +50,10 @@
     <div class="kpi-caption">As of {{ to_date }}</div>
   </div>
 </div>
-<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. The table below is scoped to {{ from_date }} to {{ to_date }} for browsing; the tiles never shrink just because a narrower range is on screen. Searching or filtering the table only changes which rows you're looking at — it never touches the three tiles above.</p>
+<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. The table below is scoped to {{ from_date }} to {{ to_date }} for browsing; the tiles never shrink just because a narrower range is on screen. Searching or filtering the table itself only changes which rows you're looking at — it never touches the three tiles above. The Branch dropdown above is different: picking a branch there re-scopes the tiles too, down to that branch alone.</p>
 
 {% if rows %}
-<p style="margin-bottom:8px;"><a class="btn secondary" href="{{ url_for('tb_cross_check_export', from_date=from_date, to_date=to_date) }}">Export to Excel</a></p>
+<p style="margin-bottom:8px;"><a class="btn secondary" href="{{ url_for('tb_cross_check_export', from_date=from_date, to_date=to_date, branch_id=selected_branch_id) }}">Export to Excel</a></p>
 <div class="table-tools" data-tt="tbcheck">
   <input type="search" data-tt-search placeholder="Search party, branch...">
   <span data-tt-filters></span>
