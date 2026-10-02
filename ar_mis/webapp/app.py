@@ -66,9 +66,9 @@ from ar_mis.register_export import (
 from ar_mis.registers import (
     AGEING_BUCKET_ORDER,
     build_bill_reference_lookup,
-    compute_ageing_bucket,
     compute_credit_note_display_fields,
     compute_invoice_position,
+    compute_unapplied_ageing_bucket,
     compute_linked_cn_reference_text,
     compute_ptp_kept_rate,
     compute_ptp_outcome,
@@ -1043,17 +1043,25 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                         and row.cn_date <= as_of
                         else None
                     ),
+                    # Age Unapplied Days is kept here purely to derive the
+                    # bucket below - client's own later call: showing both
+                    # the exact count and its bucket as separate columns
+                    # was redundant once the bucket exists, so only the
+                    # bucket is rendered.
                     "age_unapplied_days": age_unapplied_days,
                     # Client's own catch: an unapplied CN sitting for 181
                     # days still read as plain "Current" - nothing told a
                     # reviewer it was just as stale as a 181+ overdue
-                    # invoice. Bucketed through the exact same
-                    # AGEING_BUCKET_ORDER progression Sales & DN uses, so
-                    # "stale" means the same thing everywhere in this app,
-                    # and the column filter gets a handful of buckets
-                    # instead of one option per distinct day count.
+                    # invoice, and "Current" here collided with the
+                    # Classification column's own, unrelated "Current"
+                    # meaning. compute_unapplied_ageing_bucket (a deliberately
+                    # separate scheme from Sales & DN's own
+                    # compute_ageing_bucket - see its docstring) buckets this
+                    # with no "Current" state at all, so "stale" reads
+                    # consistently and the column filter gets a handful of
+                    # buckets instead of one option per distinct day count.
                     "unapplied_bucket": (
-                        compute_ageing_bucket(age_unapplied_days) if age_unapplied_days is not None else None
+                        compute_unapplied_ageing_bucket(age_unapplied_days) if age_unapplied_days is not None else None
                     ),
                     # Linked-invoice traceability (client's own catch: "how
                     # do I know this actually nets off against that

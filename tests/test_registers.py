@@ -995,11 +995,27 @@ def test_receipt_journal_display_fields_for_unapplied_line():
     assert fields.invoice_fin_year is None
     assert fields.age_unapplied_days == 24  # 2026-02-05 to 2026-03-01
     # Client's own catch: a voucher unapplied this long is just as stale as
-    # a 1-30-bucket overdue invoice - bucketed through the exact same
-    # AGEING_BUCKET_ORDER progression, not a bare day count.
-    assert fields.unapplied_bucket == "1-30"
+    # a 0-30-bucket overdue invoice - bucketed through
+    # compute_unapplied_ageing_bucket, a deliberately separate scheme from
+    # Sales & DN's own compute_ageing_bucket (see its docstring: there's
+    # no "Current" state here at all, since it would collide with the
+    # Classification column's own, unrelated "Current" meaning).
+    assert fields.unapplied_bucket == "0-30"
     assert fields.linked_invoice_date is None
     assert fields.linked_invoice_value is None
+
+
+def test_receipt_journal_display_fields_unapplied_bucket_has_no_current_state():
+    # Client's own explicit call: unlike invoice ageing, day 0 unapplied
+    # still buckets as "0-30", never "Current" - there's no "not yet due"
+    # equivalent for something that's already sitting unapplied.
+    row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 3, 1), voucher_type="Receipt",
+        voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no=None,
+    )
+    fields = compute_receipt_journal_display_fields(row, {}, as_of=date(2026, 3, 1))
+    assert fields.age_unapplied_days == 0
+    assert fields.unapplied_bucket == "0-30"
 
 
 def test_receipt_journal_display_fields_unapplied_bucket_follows_the_shared_ageing_scheme():

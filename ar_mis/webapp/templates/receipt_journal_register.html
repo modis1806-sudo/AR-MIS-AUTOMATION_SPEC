@@ -9,7 +9,7 @@
 
 <form class="as-of-form" method="get">
   <div>
-    <label for="as_of">Age Unapplied Days as of</label>
+    <label for="as_of">Show position as of</label>
     <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
   </div>
   <button class="btn secondary" type="submit">Apply</button>
@@ -39,7 +39,7 @@
   <span class="pill class-current">Current</span> — normal in-period item, nothing to review.
   <span class="pill class-pending">Pending Review</span> — this voucher's Target Doc No. didn't match any invoice this system tracks; someone needs to confirm whether it belongs to a Pre-MIS-period invoice or is a data-entry mistake. Use the <strong>Resolve</strong> control on the row to do that.
   <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total.
-  <br>A genuinely on-account Current voucher also gets an <strong>Unapplied Ageing</strong> bucket (same Current/1-30/.../181+ scheme as the Sales &amp; DN Register) once it's sat unapplied a while — a voucher unapplied 181 days is just as stale as an invoice that old, and the bucket says so instead of still reading "Current".
+  <br>A genuinely on-account Current voucher also gets an <strong>Unapplied Ageing</strong> bucket (0-30/31-60/.../181+) once it's sat unapplied a while — a voucher unapplied 181 days is just as stale as an invoice that old, and the bucket says so. Unlike the Sales &amp; DN Register's own ageing bucket, there's no separate "Current" state here — that word already means something else on this page (above), so day 0 onward starts straight at 0-30.
 </div>
 
 {% if display_rows %}
@@ -73,7 +73,7 @@
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th data-tt-filter data-tt-col="voucher_type">Voucher Type</th><th>Voucher No.</th><th>Customer</th>
       <th data-tt-filter data-tt-col="allocation_type">Allocation Type</th><th>Target Doc No.</th><th>Linked Invoice Date</th><th>Linked Invoice Value</th>
       <th>Applied Amount</th><th>Unapplied Balance</th>
-      <th data-tt-filter data-tt-col="classification">Classification</th><th>DPD at Application</th><th>Age Unapplied Days</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th><th>Invoice Fin Year</th>
+      <th data-tt-filter data-tt-col="classification">Classification</th><th>DPD at Application</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th><th>Invoice Fin Year</th>
       <th>Narration</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
@@ -81,7 +81,7 @@
       <th></th><th></th><th></th><th></th><th></th>
       <th></th><th></th><th></th>
       <th data-tt-sum="receiptjournal:applied_amount">0.00</th><th data-tt-sum="receiptjournal:unapplied_balance">0.00</th>
-      <th></th><th></th><th></th><th></th><th></th>
+      <th></th><th></th><th></th><th></th>
       <th></th>
     </tr>
   </thead>
@@ -126,7 +126,6 @@
         {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}
       </td>
       <td>{{ f.dpd_at_application if f.dpd_at_application is not none else '—' }}</td>
-      <td>{{ f.age_unapplied_days if f.age_unapplied_days is not none else '—' }}</td>
       <td data-tt-col="unapplied_bucket">{{ f.unapplied_bucket or '—' }}</td>
       <td>{{ f.invoice_fin_year or '—' }}</td>
       <td>{{ row.narration or '—' }}</td>

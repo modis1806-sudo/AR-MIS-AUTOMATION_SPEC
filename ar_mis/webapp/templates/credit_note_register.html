@@ -39,7 +39,7 @@
   <span class="pill class-current">Current</span> — normal in-period item, nothing to review.
   <span class="pill class-pending">Pending Review</span> — this CN's Bill Allocation Reference didn't match any invoice this system tracks; someone needs to confirm whether it belongs to a Pre-MIS-period invoice or is a data-entry mistake. Use the <strong>Resolve</strong> control on the row to do that.
   <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total.
-  <br>A genuinely on-account Current CN also gets an <strong>Unapplied Ageing</strong> bucket (same Current/1-30/.../181+ scheme as the Sales &amp; DN Register) once it's sat unapplied a while — a CN unapplied 181 days is just as stale as an invoice that old, and the bucket says so instead of still reading "Current".
+  <br>A genuinely on-account Current CN also gets an <strong>Unapplied Ageing</strong> bucket (0-30/31-60/.../181+) once it's sat unapplied a while — a CN unapplied 181 days is just as stale as an invoice that old, and the bucket says so. Unlike the Sales &amp; DN Register's own ageing bucket, there's no separate "Current" state here — that word already means something else on this page (above), so day 0 onward starts straight at 0-30.
 </div>
 
 {% if display_rows %}
@@ -72,13 +72,13 @@
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th>Customer</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
       <th>Linked Invoice Date</th><th>Linked Invoice Value</th>
-      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th>Age Unapplied Days</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th>
+      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
       <th></th><th></th><th></th><th></th><th></th>
       <th></th><th></th>
-      <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th><th></th>
+      <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -118,7 +118,6 @@
           </details>
         {% else %}<span class="pill class-premis">Pre-MIS Adjustment</span>{% endif %}
       </td>
-      <td>{{ d.age_unapplied_days if d.age_unapplied_days is not none else '—' }}</td>
       <td data-tt-col="unapplied_bucket">{{ d.unapplied_bucket or '—' }}</td>
     </tr>
   {% endfor %}

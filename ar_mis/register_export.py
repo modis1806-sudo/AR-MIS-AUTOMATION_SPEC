@@ -98,8 +98,7 @@ def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workboo
 
 _CREDIT_NOTE_HEADERS = [
     "Branch", "Date", "Customer", "CN Number", "Original Invoice/DN Ref", "Linked Invoice Date",
-    "Linked Invoice Value", "CN Amount", "Open/Unapplied CN Amount", "Classification", "Age Unapplied Days",
-    "Unapplied Ageing",
+    "Linked Invoice Value", "CN Amount", "Open/Unapplied CN Amount", "Classification", "Unapplied Ageing",
 ]
 # Linked Invoice Value, CN Amount, Open/Unapplied CN Amount.
 _CREDIT_NOTE_MONEY_COLUMNS = [7, 8, 9]
@@ -123,7 +122,7 @@ def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Work
                 float(fields.linked_invoice_value) if fields.linked_invoice_value is not None else None,
                 float(row.cn_amount),
                 float(d["unapplied_amount"]) if d["unapplied_amount"] is not None else None,
-                row.classification.value, d["age_unapplied_days"], d["unapplied_bucket"] or "",
+                row.classification.value, d["unapplied_bucket"] or "",
             ]
         )
         _apply_inr_format(ws, _CREDIT_NOTE_MONEY_COLUMNS)
@@ -134,7 +133,7 @@ def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Work
 _RECEIPT_JOURNAL_HEADERS = [
     "Branch", "Date", "Voucher Type", "Voucher No.", "Customer", "Allocation Type", "Target Doc No.",
     "Linked Invoice Date", "Linked Invoice Value", "Applied Amount", "Unapplied Balance", "Classification",
-    "DPD at Application", "Age Unapplied Days", "Unapplied Ageing", "Invoice Fin Year", "Narration",
+    "DPD at Application", "Unapplied Ageing", "Invoice Fin Year", "Narration",
 ]
 # Linked Invoice Value, Applied Amount, Unapplied Balance.
 _RECEIPT_JOURNAL_MONEY_COLUMNS = [9, 10, 11]
@@ -223,7 +222,7 @@ def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> 
     wb = Workbook()
     ws = wb.active
     ws.title = "Receipt & Journal Register"
-    ws.append([f"Receipt & Journal Register - Age Unapplied Days as of {as_of}"])
+    ws.append([f"Receipt & Journal Register - as of {as_of}"])
     ws["A1"].font = Font(bold=True, size=12)
     ws.append([])
     _header_row(ws, _RECEIPT_JOURNAL_HEADERS)
@@ -238,7 +237,7 @@ def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> 
                 float(f.linked_invoice_value) if f.linked_invoice_value is not None else None,
                 float(row.amount) if row.target_doc_no else None,
                 float(row.amount) if not row.target_doc_no else None,
-                row.classification.value, f.dpd_at_application, f.age_unapplied_days,
+                row.classification.value, f.dpd_at_application,
                 f.unapplied_bucket or "", f.invoice_fin_year or "",
                 row.narration or "",
             ]

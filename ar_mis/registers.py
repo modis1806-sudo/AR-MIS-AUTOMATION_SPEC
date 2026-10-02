@@ -480,6 +480,41 @@ def compute_ageing_bucket(days_past_due: int) -> str:
     return "181+"
 
 
+# Client's own later call, after seeing this reused for the CN/Receipt
+# registers' "Unapplied Ageing" column: a genuinely unapplied CN or
+# voucher has no "not yet due" state the way an invoice does - it either
+# IS unapplied (from the moment it's dated) or it isn't, so reusing
+# compute_ageing_bucket's own "Current" label there collided with the
+# adjacent Classification column's own, unrelated "Current" meaning
+# (resolved-vs-pending, not ageing) and made the two look like they were
+# saying the same thing. This is a deliberately separate scheme - day 0
+# folds straight into the first real bucket instead of getting its own
+# "Current" label - kept apart from AGEING_BUCKET_ORDER/
+# compute_ageing_bucket, whose own "Current" stays exactly as specified
+# for actual invoice ageing.
+UNAPPLIED_AGEING_BUCKET_ORDER = ["0-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+"]
+
+
+def compute_unapplied_ageing_bucket(days_unapplied: int) -> str:
+    """Same progression as compute_ageing_bucket from 31-60 onward, but
+    with no "Current" bucket at all (see UNAPPLIED_AGEING_BUCKET_ORDER's
+    own docstring for why) - day 0 through 30 is just "0-30".
+    """
+    if days_unapplied <= 30:
+        return "0-30"
+    if days_unapplied <= 60:
+        return "31-60"
+    if days_unapplied <= 90:
+        return "61-90"
+    if days_unapplied <= 120:
+        return "91-120"
+    if days_unapplied <= 150:
+        return "121-150"
+    if days_unapplied <= 180:
+        return "151-180"
+    return "181+"
+
+
 @dataclass
 class InvoicePosition:
     """The as-of-date computed position of one invoice (item 14) - always
@@ -850,7 +885,7 @@ def compute_receipt_journal_display_fields(
             dpd_at_application=None,
             invoice_fin_year=None,
             age_unapplied_days=age_unapplied_days,
-            unapplied_bucket=compute_ageing_bucket(age_unapplied_days),
+            unapplied_bucket=compute_unapplied_ageing_bucket(age_unapplied_days),
         )
     invoice = bill_reference_lookup.get((row.party_id, row.target_doc_no))
     if invoice is None:

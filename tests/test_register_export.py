@@ -117,7 +117,11 @@ def test_credit_note_register_workbook_contains_headers_and_row_values():
     assert 12000.0 in data_row
 
 
-def test_credit_note_register_workbook_includes_age_unapplied_days():
+def test_credit_note_register_workbook_includes_unapplied_ageing_bucket():
+    # Client's own later call: the raw day count is dropped from both the
+    # live register and this export - the bucket alone is what's shown,
+    # since the two columns were otherwise just saying the same thing
+    # twice.
     row = CreditNoteRegisterRow(
         branch_id="MUN", cn_date=date(2026, 7, 20), voucher_number="CN/01", party_id="BIHAR-FC",
         cn_amount=Decimal("5000.00"), bill_allocation_reference=None,
@@ -130,9 +134,10 @@ def test_credit_note_register_workbook_includes_age_unapplied_days():
     wb = build_credit_note_register_workbook(display_rows, as_of=date(2026, 9, 12))
     ws = wb.active
     header_row = [c.value for c in ws[3]]
-    assert "Age Unapplied Days" in header_row
+    assert "Unapplied Ageing" in header_row
+    assert "Age Unapplied Days" not in header_row
     data_row = [c.value for c in ws[4]]
-    assert 54 in data_row
+    assert "31-60" in data_row
 
 
 def test_credit_note_register_workbook_unapplied_amount_blank_when_allocated():
