@@ -543,7 +543,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         branches = store.list_branches()
         result = None
         default_from, default_to = _default_test_range()
-        panel = _standing_cross_check_panel(store)
 
         if request.method == "POST":
             branch_id = request.form.get("branch_id", "")
@@ -553,9 +552,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 store.close()
                 return render_template(
                     "test_extraction.html", branches=branches, result=None,
-                    default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                    **_cross_check_links(None),
                 )
-            panel = _standing_cross_check_panel(store, default_branch_id=branch_id)
 
             # Any range the operator picks - a day, a month, a full
             # financial year for a first-time backfill - is used exactly
@@ -568,14 +567,16 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 store.close()
                 return render_template(
                     "test_extraction.html", branches=branches, result=None,
-                    default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                    **_cross_check_links(None),
                 )
             if from_date > to_date:
                 flash("From Date must be on or before To Date.", "error")
                 store.close()
                 return render_template(
                     "test_extraction.html", branches=branches, result=None,
-                    default_from=from_date.isoformat(), default_to=to_date.isoformat(), **panel,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                    **_cross_check_links(None),
                 )
 
             steps: list[tuple[str, bool, str]] = []
@@ -635,7 +636,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         return render_template(
             "test_extraction.html", branches=branches, result=result,
-            default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+            default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+            **_cross_check_links(result),
         )
 
     @app.route("/test-extraction/save", methods=["POST"])
@@ -671,14 +673,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         branch = store.get_branch(branch_id)
         if branch is None:
             flash("Select a branch first.", "error")
-            panel = _standing_cross_check_panel(store)
             store.close()
             default_from, default_to = _default_test_range()
             return render_template(
                 "test_extraction.html", branches=branches, result=None,
-                default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+                default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                **_cross_check_links(None),
             )
-        panel = _standing_cross_check_panel(store, default_branch_id=branch_id)
 
         try:
             from_date = date.fromisoformat(request.form["from_date"])
@@ -689,7 +690,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             default_from, default_to = _default_test_range()
             return render_template(
                 "test_extraction.html", branches=branches, result=None,
-                default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+                default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                **_cross_check_links(None),
             )
 
         client = TallyClient(branch=branch)
@@ -746,15 +748,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
             "chunk_results": chunk_results,
         }
-        # Recomputed now, after the loop above has written this run's data -
-        # the standing panel must reflect what was just saved, not whatever
-        # was true before this request started.
-        panel = _standing_cross_check_panel(store, default_branch_id=branch_id)
         store.close()
         default_from, default_to = from_date, to_date
         return render_template(
             "test_extraction.html", branches=branches, result=result,
-            default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+            default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+            **_cross_check_links(result),
         )
 
     @app.route("/discover", methods=["GET", "POST"])
@@ -841,68 +840,23 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(f"Credit limit for {party_id} set to {format_inr(new_limit)}.", "success")
         return redirect(url_for("customers_list"))
 
-    def _inline_cross_check_for_run(
-        store, branch_id: str, period_start: date | None, period_end: date | None
-    ) -> dict:
-        """Client's own later call: TB Reconciliation Cross-Check and the
-        Branch P&L Cross-Check "aren't really reports" - they're a
-        verification step the Maker needs to see every time data is
-        pulled or imported, not a separate screen to remember to visit
-        afterward. Reuses the identical computation the full Reports-
-        section versions use (never a separate recomputation), just
-        filtered down to one branch instead of every branch.
-
-        `period_start`/`period_end` are both optional - None on either
-        side means no bound on that side (all recorded history for this
-        branch). The standing panel (_standing_cross_check_panel) relies
-        on this: a Maker saving a deliberately backdated range (a first-
-        time backfill, say) must still see it reflected here, even though
-        it falls outside whatever "today" happens to be.
+    def _cross_check_links(result: dict | None) -> dict:
+        """Client's correction, after seeing the embedded version live: a
+        full copy of the TB Reconciliation Cross-Check / Branch P&L
+        Cross-Check tables on this page had no totals (every KPI tile the
+        real report screens carry), buried the P&L section at the bottom
+        of a potentially long TB table, and duplicated logic that already
+        lived in tb_cross_check_report/branch_totals_report. Simpler and
+        more correct: two links straight to those already-built screens -
+        each already has its own Branch filter (see those routes' own
+        docstrings) - scoped to whichever branch this page's own result
+        belongs to, if any, so landing there shows that branch's figures
+        immediately rather than "All Branches".
         """
-        all_snapshot_rows = store.all_weekly_snapshot_rows()
-        tb_rows = [
-            r for r in all_snapshot_rows
-            if r.branch_id == branch_id
-            and (period_start is None or r.week_ending >= period_start)
-            and (period_end is None or r.week_ending <= period_end)
-        ]
-        sales_dn_rows = store.all_sales_dn_rows(branch_id)
-        cn_rows = store.all_credit_note_rows(branch_id)
-        branch_pl_rows = compute_branch_sales_cn_dn_totals(sales_dn_rows, cn_rows, period_start, period_end)
-        branch_pl_row = next((r for r in branch_pl_rows if r.branch_id == branch_id), None)
-        return {"tb_rows": tb_rows, "branch_pl_row": branch_pl_row}
-
-    def _standing_cross_check_panel(store, default_branch_id: str = "") -> dict:
-        """Client's later call: the inline cross-check above shouldn't only
-        flash up right after a run - it should be a permanent fixture of
-        Test & Save Extraction and Manual Upload, so a Maker can check a
-        branch's current standing any time, whether or not they're about
-        to run anything. Driven by its own `panel_branch_id` query param
-        (a small standalone Branch dropdown + Apply, independent of the
-        main extraction/upload form) rather than the action just taken -
-        `default_branch_id` only pre-selects it, as a convenience, right
-        after that branch was the one just tested/saved/uploaded to.
-
-        Deliberately unbounded (all recorded history for the branch), not
-        financial-year-to-date like the full Reports-section screens
-        default to - this panel's whole point is "does this reflect what
-        I just did", and what was just done might be a deliberately
-        backdated run (a first-time backfill) that a FY-to-date window
-        would silently hide.
-        """
-        panel_branch_id = request.args.get("panel_branch_id", "").strip() or default_branch_id
-        panel_branches = store.list_branches()
-        panel_tb_rows: list = []
-        panel_branch_pl_row = None
-        if panel_branch_id:
-            cross_check = _inline_cross_check_for_run(store, panel_branch_id, None, None)
-            panel_tb_rows = cross_check["tb_rows"]
-            panel_branch_pl_row = cross_check["branch_pl_row"]
+        branch_id = result["branch"].branch_id if result and result.get("branch") else None
         return {
-            "panel_branches": panel_branches,
-            "panel_branch_id": panel_branch_id,
-            "panel_tb_rows": panel_tb_rows,
-            "panel_branch_pl_row": panel_branch_pl_row,
+            "tb_cross_check_url": url_for("tb_cross_check_report", branch_id=branch_id),
+            "branch_totals_url": url_for("branch_totals_report", branch_id=branch_id),
         }
 
     def _decode_upload(file_storage) -> str:
@@ -928,7 +882,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         default_to = date.today()
         default_from = default_to - timedelta(days=7)
         result = None
-        panel = _standing_cross_check_panel(store)
 
         if request.method == "POST":
             branch_id = request.form.get("branch_id", "")
@@ -938,9 +891,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 store.close()
                 return render_template(
                     "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
-                    default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                    **_cross_check_links(None),
                 )
-            panel = _standing_cross_check_panel(store, default_branch_id=branch_id)
 
             try:
                 from_date = date.fromisoformat(request.form["from_date"])
@@ -950,14 +903,16 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 store.close()
                 return render_template(
                     "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
-                    default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+                    default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                    **_cross_check_links(None),
                 )
             if from_date > to_date:
                 flash("From Date must be on or before To Date.", "error")
                 store.close()
                 return render_template(
                     "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
-                    default_from=from_date.isoformat(), default_to=to_date.isoformat(), **panel,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                    **_cross_check_links(None),
                 )
 
             weekly_voucher_xml = {
@@ -971,14 +926,16 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 store.close()
                 return render_template(
                     "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
-                    default_from=from_date.isoformat(), default_to=to_date.isoformat(), **panel,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                    **_cross_check_links(None),
                 )
             if not any(xml.strip() for xml in weekly_voucher_xml.values()):
                 flash("At least one voucher file is required.", "error")
                 store.close()
                 return render_template(
                     "manual_upload.html", branches=branches, result=None, slots=WEEKLY_VOUCHER_SLOTS,
-                    default_from=from_date.isoformat(), default_to=to_date.isoformat(), **panel,
+                    default_from=from_date.isoformat(), default_to=to_date.isoformat(),
+                    **_cross_check_links(None),
                 )
 
             try:
@@ -994,10 +951,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     "refused": False, "outcome": upload_result.outcome, "drift_findings": upload_result.drift_findings,
                     "fy_start": financial_year_start(to_date).isoformat(),
                 }
-                # Recomputed now, after process_manual_upload has written this
-                # run's data - the standing panel must reflect what was just
-                # uploaded, not whatever was true before this request started.
-                panel = _standing_cross_check_panel(store, default_branch_id=branch_id)
             except ManualUploadRefused as exc:
                 result = {
                     "branch": branch, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
@@ -1008,7 +961,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         return render_template(
             "manual_upload.html", branches=branches, result=result, slots=WEEKLY_VOUCHER_SLOTS,
-            default_from=default_from.isoformat(), default_to=default_to.isoformat(), **panel,
+            default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+            **_cross_check_links(result),
         )
 
     def _parse_as_of() -> date:

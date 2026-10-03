@@ -761,10 +761,14 @@ def test_test_extraction_save_writes_data_and_shows_reconciled_clean(client, mon
     store.close()
 
 
-def test_test_extraction_save_shows_inline_tb_and_branch_pl_cross_check(client, monkeypatch):
-    # Client's own call: these "aren't really reports" - a Maker needs to
-    # see them every time data is pulled, so a scoped version of both now
-    # shows automatically right on this result page too.
+def test_test_extraction_save_shows_cross_check_links_scoped_to_branch(client, monkeypatch):
+    # Client's own call, then correction: a rebuilt mini-report of TB
+    # Reconciliation Cross-Check / Branch P&L Cross-Check inline on this
+    # page had no totals and buried the P&L section under a potentially
+    # long TB table - elegant fix was two links straight to the real
+    # report screens (full KPI tiles, search, export, all already built
+    # and tested there), scoped to the branch this run just used so
+    # landing there shows real figures immediately, not "All Branches".
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
     _add_branch(client)
     _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
@@ -773,45 +777,25 @@ def test_test_extraction_save_shows_inline_tb_and_branch_pl_cross_check(client, 
         data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
     )
     assert resp.status_code == 200
-    assert b"Current Cross-Check Status" in resp.data
-    # The standing panel auto-selects the branch just saved to (client's
-    # later call: it should reflect what was just done without the Maker
-    # having to pick the branch again), and shows it unbounded by date -
-    # not just the heading, but the real sales figure from
-    # FakeTallyClientForCommit's own voucher (Rs 1000.00) must actually
-    # appear in the Branch P&L table, closing the gap that let an empty/
-    # broken Branch P&L section slip through with only a heading-presence
-    # check.
-    assert b'<option value="KOL" selected>' in resp.data
-    assert b"1,000.00" in resp.data
+    html = resp.get_data(as_text=True)
+    assert "Open TB Reconciliation Cross-Check" in html
+    assert "Open Branch P&amp;L Cross-Check" in html
+    assert "/reports/tb-cross-check?branch_id=KOL" in html
+    assert "/reports/branch-totals?branch_id=KOL" in html
 
 
-def test_test_extraction_standing_panel_is_a_permanent_fixture_not_tied_to_a_run(client, monkeypatch):
-    # Client's own correction: these two shouldn't just flash up right
-    # after an action - they should be a standing part of this page,
-    # reachable for any branch at any time, whether or not anything is
-    # run in this particular request. Proven here by seeding a branch's
-    # data through one request (an extraction save), then asking for the
-    # panel again through a completely separate, plain GET that runs
-    # nothing itself.
-    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+def test_test_extraction_cross_check_links_are_a_permanent_fixture_not_tied_to_a_run(client):
+    # Client's own correction: these two links shouldn't only appear
+    # right after an action - they're a standing part of this page. A
+    # bare page load, with nothing run in this request, must still show
+    # them (unscoped, since no branch's run belongs to this request).
     _add_branch(client)
-    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
-    client.post(
-        "/test-extraction/save",
-        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
-    )
-
-    # A plain GET, with no extraction run in this request at all, must
-    # still show the panel - and picking the branch via its own dropdown
-    # must surface the earlier run's real figures.
     bare = client.get("/test-extraction")
-    assert b"Current Cross-Check Status" in bare.data
-    assert b"1,000.00" not in bare.data  # no branch picked yet - nothing to show
-
-    picked = client.get("/test-extraction?panel_branch_id=KOL")
-    assert b"1,000.00" in picked.data
-    assert b'<option value="KOL" selected>' in picked.data
+    html = bare.get_data(as_text=True)
+    assert "Open TB Reconciliation Cross-Check" in html
+    assert "Open Branch P&amp;L Cross-Check" in html
+    assert "/reports/tb-cross-check\"" in html
+    assert "/reports/branch-totals\"" in html
 
 
 def test_test_extraction_save_mismatch_still_writes_data(client, monkeypatch):
@@ -1145,12 +1129,12 @@ def test_manual_upload_clean_run_shows_reconciled_clean(client):
     assert b"RECONCILED CLEAN" in resp.data
 
 
-def test_manual_upload_shows_inline_tb_and_branch_pl_cross_check(client):
-    # Client's own call: TB Reconciliation Cross-Check and the Branch
-    # P&L Cross-Check "aren't really reports" - a Maker needs to see them
-    # every time data is pulled or imported, so a scoped version of both
-    # now shows automatically right on the Manual Upload result page,
-    # not only in the separate Reports section.
+def test_manual_upload_shows_cross_check_links_scoped_to_branch_with_real_figures_behind_them(client):
+    # Client's own call, then correction: TB Reconciliation Cross-Check
+    # and Branch P&L Cross-Check belong here as links to the real report
+    # screens, scoped to the branch just uploaded to - not a rebuilt
+    # mini-report inline. Follows the Branch P&L link through to prove
+    # the figure is actually there, not just that the link exists.
     #
     # Deliberately NOT using fixtures/voucher_collection_sales.xml here:
     # that fixture (built for narrower parser/reconciliation tests) has
@@ -1213,39 +1197,29 @@ def test_manual_upload_shows_inline_tb_and_branch_pl_cross_check(client):
         content_type="multipart/form-data",
     )
     assert resp.status_code == 200
-    assert b"Current Cross-Check Status" in resp.data
-    # The standing panel auto-selects the branch just uploaded to.
-    assert b'<option value="KOL" selected>' in resp.data
-    assert b"A &amp; B Transport Pvt Ltd" in resp.data  # the party shows in the scoped TB table
-    # Not just the heading - the real combined sales figure (1,25,000 +
-    # 87,500) must actually appear in the Branch P&L table.
-    assert b"2,12,500.00" in resp.data
-    assert b"No invoices recorded for this branch yet." not in resp.data
+    html = resp.get_data(as_text=True)
+    assert "Open TB Reconciliation Cross-Check" in html
+    assert "Open Branch P&amp;L Cross-Check" in html
+    assert "/reports/tb-cross-check?branch_id=KOL" in html
+    assert "/reports/branch-totals?branch_id=KOL" in html
+
+    # Follow the Branch P&L link through - the real combined sales figure
+    # (1,25,000 + 87,500) must actually be there, not just the link.
+    branch_pl = client.get("/reports/branch-totals?branch_id=KOL&period_start=2026-01-01&period_end=2026-12-31")
+    assert b"2,12,500.00" in branch_pl.data
 
 
-def test_manual_upload_standing_panel_is_a_permanent_fixture_not_tied_to_an_upload(client):
-    # Same correction as Test & Save Extraction: the panel must be
-    # reachable for any branch at any time, not only right after this
-    # exact request uploaded something. Seed a branch's data via one
-    # upload, then confirm a wholly separate, plain GET (nothing uploaded
-    # in that request) still surfaces it through the panel's own dropdown.
-    from ar_mis.models import CustomerMasterRecord
-    from ar_mis.pipeline import process_branch_data
-    from ar_mis.storage import Store
-
+def test_manual_upload_cross_check_links_are_a_permanent_fixture_not_tied_to_an_upload(client):
+    # Same correction as Test & Save Extraction: a bare page load, with
+    # nothing uploaded in this request, must still show the two links
+    # (unscoped, since no branch's upload belongs to this request).
     _add_manual_upload_branch(client)
-    store = Store(client.application.config["DB_PATH"])
-    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
-    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("-1000.00")})
-    store.close()
-
     bare = client.get("/manual-upload")
-    assert b"Current Cross-Check Status" in bare.data
-    assert b"1,000.00" not in bare.data  # no branch picked yet - nothing to show
-
-    picked = client.get("/manual-upload?panel_branch_id=KOL")
-    assert b"1,000.00" in picked.data
-    assert b'<option value="KOL" selected>' in picked.data
+    html = bare.get_data(as_text=True)
+    assert "Open TB Reconciliation Cross-Check" in html
+    assert "Open Branch P&amp;L Cross-Check" in html
+    assert "/reports/tb-cross-check\"" in html
+    assert "/reports/branch-totals\"" in html
 
 
 def test_manual_upload_mismatch_still_writes_data_and_shows_mismatch_badge(client):

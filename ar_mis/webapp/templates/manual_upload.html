@@ -104,60 +104,16 @@
 {% endif %}
 
 <div class="card">
-  <h2 style="margin-top:0;">Current Cross-Check Status</h2>
-  <p class="subtitle" style="margin-top:-4px;">TB Reconciliation Cross-Check and Branch P&amp;L Cross-Check for a branch, across all recorded history — a permanent fixture of this page, not tied to uploading anything above. Pick a branch to see where it stands right now; it already reflects anything you've just uploaded, backdated runs included.</p>
-  <form method="get" action="{{ url_for('manual_upload') }}" class="as-of-form">
-    <div>
-      <label for="panel_branch_id">Branch</label>
-      <select id="panel_branch_id" name="panel_branch_id">
-        <option value="">Select a branch…</option>
-        {% for b in panel_branches %}
-        <option value="{{ b.branch_id }}" {% if b.branch_id == panel_branch_id %}selected{% endif %}>{{ b.branch_name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <button class="btn secondary" type="submit">View</button>
-  </form>
-
-  {% if panel_branch_id %}
-  <p style="font-weight:600; margin:16px 0 8px;">TB Reconciliation Cross-Check</p>
-  {% if panel_tb_rows %}
-  <table>
-    <thead><tr><th>Party</th><th>Closing (Workings)</th><th>Closing (TB/Tally)</th><th>Difference</th><th>Status</th></tr></thead>
-    <tbody>
-    {% for r in panel_tb_rows %}
-      <tr>
-        <td>{{ r.party_id }}</td>
-        <td>{{ r.closing_computed|inr }}</td>
-        <td>{{ r.closing_extracted|inr }}</td>
-        <td>{{ r.difference|inr }}</td>
-        <td>{% if r.reconciled %}<span class="pill ok">Reconciled</span>{% else %}<span class="pill fail">Mismatch</span>{% endif %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <h2 style="margin-top:0;">TB &amp; Branch P&amp;L Cross-Check</h2>
+  {% if result and result.branch %}
+  <p class="subtitle" style="margin-top:-4px;">Already scoped to {{ result.branch.branch_name }} on the real report screens below — nothing rebuilt here, so you get the full totals and filters those screens already have.</p>
   {% else %}
-  <p style="color:#6b7280;">No parties recorded for this branch yet.</p>
+  <p class="subtitle" style="margin-top:-4px;">A permanent pair of links to the real report screens, not tied to uploading anything above — each has its own Branch filter.</p>
   {% endif %}
-  <p style="font-size:12px;color:#6b7280; margin-top:6px;">Full history, every branch, any period: <a href="{{ url_for('tb_cross_check_report') }}">TB Reconciliation Cross-Check</a>.</p>
-
-  <p style="font-weight:600; margin:16px 0 8px;">Branch P&amp;L Cross-Check</p>
-  {% if panel_branch_pl_row %}
-  <table>
-    <thead><tr><th>Sales</th><th>Debit Notes</th><th>Credit Notes</th><th>Net Total</th></tr></thead>
-    <tbody>
-      <tr>
-        <td>{{ panel_branch_pl_row.sales_total|inr }}</td>
-        <td>{{ panel_branch_pl_row.debit_note_total|inr }}</td>
-        <td>{{ panel_branch_pl_row.credit_note_total|inr }}</td>
-        <td>{{ panel_branch_pl_row.net_total|inr }}</td>
-      </tr>
-    </tbody>
-  </table>
-  <p style="font-size:12px;color:#6b7280; margin-top:6px;">Check this against Tally's own P&amp;L page for the same period.</p>
-  {% else %}
-  <p style="color:#6b7280;">No invoices recorded for this branch yet.</p>
-  {% endif %}
-  {% endif %}
+  <p style="margin-top:16px;">
+    <a class="btn secondary" href="{{ tb_cross_check_url }}">Open TB Reconciliation Cross-Check</a>
+    &nbsp;&nbsp;
+    <a class="btn secondary" href="{{ branch_totals_url }}">Open Branch P&amp;L Cross-Check</a>
+  </p>
 </div>
 {% endblock %}

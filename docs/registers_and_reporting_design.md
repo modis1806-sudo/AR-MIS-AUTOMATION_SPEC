@@ -1180,6 +1180,25 @@ resolves former open item 1.
     whatever was most recently touched elsewhere. Confirmed by reading
     `weekly_movement_report`/`weekly_movement_record` rather than guessing.
 
+    Client's second correction, after actually seeing the standing panel
+    live: it had no totals (none of the three KPI tiles the real TB
+    Cross-Check screen carries), and the Branch P&L section sat buried
+    below a potentially long, row-per-week TB table, easy to miss
+    entirely. The client's own fix was better than the original design -
+    two plain links below the extraction/upload form, straight to the
+    real `tb_cross_check_report`/`branch_totals_report` screens (full KPI
+    tiles, search/filter, export - all already built and tested there),
+    rather than re-deriving a stripped-down copy on this page. Replaced
+    `_standing_cross_check_panel` and `_inline_cross_check_for_run`
+    entirely with a small `_cross_check_links(result)` helper that builds
+    two URLs, `branch_id`-scoped to whichever branch `result["branch"]`
+    belongs to (via each report's own branch filter, item 39 above) when
+    a result exists, unscoped ("All Branches") otherwise. No table
+    rendering, no extra store queries, no new report - still a permanent
+    fixture of both pages (the two links always render), just pointing at
+    the reports that already did this correctly instead of rebuilding a
+    worse version of them inline.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day
