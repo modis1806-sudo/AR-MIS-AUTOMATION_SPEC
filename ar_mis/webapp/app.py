@@ -1833,7 +1833,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         rj_rows = store.all_receipt_journal_rows()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         follow_ups = store.all_invoice_follow_ups()
-        latest_closing_total = store.latest_weekly_snapshot_closing_total()
+        tally_closing_by_party = store.latest_weekly_snapshot_closing_by_party(as_of)
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
@@ -1841,7 +1841,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         ptp_rate = compute_ptp_kept_rate(follow_ups, sales_dn_by_identity, cn_rows, rj_rows, as_of)
 
         snapshot = compute_ar_snapshot(
-            sales_dn_rows, cn_rows, rj_rows, customer_masters, ptp_rate, as_of, latest_closing_total
+            sales_dn_rows, cn_rows, rj_rows, customer_masters, ptp_rate, as_of, tally_closing_by_party
         )
         return render_template(
             "ar_snapshot.html", snapshot=snapshot, as_of=as_of.isoformat(), freshness=freshness
@@ -1974,10 +1974,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
+        tally_closing_by_party = store.latest_weekly_snapshot_closing_by_party(week_ending)
 
         snapshot = compute_ar_snapshot(
             sales_dn_rows, cn_rows, rj_rows, customer_masters,
-            ptp_kept_rate=None, as_of=week_ending, latest_weekly_snapshot_closing_total=None,
+            ptp_kept_rate=None, as_of=week_ending, tally_closing_by_party=tally_closing_by_party,
         )
         row = build_weekly_movement_row(snapshot, week_ending, recorded_at=datetime.now())
         store.record_weekly_movement(row)
@@ -2013,11 +2014,21 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         actual point of asking to see just one branch's own numbers.
         Default is every branch combined, same as before this filter
         existed.
+
+        Grouping column (client's later ask): joined from Customer
+        Master's own PartyGrouping classification, not recomputed here -
+        this is now load-bearing, not cosmetic, since AR Snapshot's
+        Related Party AR tile links back to this exact screen and needs
+        the same Grouping a Maker would filter this table by.
         """
         branch_id = request.args.get("branch_id", "").strip()
         store = get_store()
         all_rows = store.all_weekly_snapshot_rows()
         branches = store.list_branches()
+        groupings = {
+            (c.party_id, c.branch_id): (c.grouping.value if c.grouping else "Unclassified")
+            for c in store.all_customer_masters()
+        }
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
@@ -2039,7 +2050,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness,
             from_date=from_date.isoformat(), to_date=to_date.isoformat(),
-            branches=branches, selected_branch_id=branch_id,
+            branches=branches, selected_branch_id=branch_id, groupings=groupings,
         )
 
     @app.route("/reports/tb-cross-check/export.xlsx")

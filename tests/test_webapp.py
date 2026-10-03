@@ -2983,6 +2983,59 @@ def test_ar_snapshot_shows_real_figures_after_an_extraction(client):
     assert b"1,25,000.00" in resp.data  # Total AR from the one seeded invoice, Indian-grouped
 
 
+def test_ar_snapshot_total_ar_is_tally_sourced_not_registers_sourced(client):
+    # Client's explicit call: Total AR must be the books' own number, not
+    # the registers' - proven here with a deliberate mismatch (Tally's
+    # closing balance disagrees with what the one invoice itself says),
+    # so a figure that happens to equal both numbers (a clean
+    # reconciliation) couldn't quietly hide a reversion to the old,
+    # registers-sourced behavior.
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(
+        CustomerMasterRecord("A & B Transport Pvt Ltd", "A & B Transport Pvt Ltd", "KOL", Decimal("0.00"))
+    )
+    voucher = Voucher(
+        voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 6), voucher_number="SB/0142",
+        branch_id="KOL", party_ledger_name="A & B Transport Pvt Ltd",
+        entries=[
+            LedgerEntry(party_ledger_name="A & B Transport Pvt Ltd", amount_as_extracted=Decimal("-125000.00"),
+                        bill_name="SB/0142", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Freight Income", amount_as_extracted=Decimal("125000.00")),
+        ],
+    )
+    # Registers say 1,25,000 is owed; Tally's own YTD pull says 1,30,000 -
+    # a genuine, deliberate mismatch (e.g. an unrecorded voucher).
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], {"A & B Transport Pvt Ltd": Decimal("130000.00")},
+    )
+    store.close()
+
+    resp = client.get("/reports/ar-snapshot?as_of=2026-09-12")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "1,30,000.00" in html  # Total AR: Tally's figure
+    assert "5,000.00" in html  # Reconciliation Check: 130000 - 125000
+    # Overdue AR (a "performance" tile) stays registers-sourced - the
+    # invoice itself, not Tally's mismatched figure.
+    assert "1,25,000.00" in html
+
+
+def test_ar_snapshot_shows_renamed_labels_and_cross_check_links(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ar-snapshot?as_of=2026-09-12")
+    html = resp.get_data(as_text=True)
+    assert "Reporting Period AR" in html
+    assert "Reconciliation Check" in html
+    assert "Sundry Debtor AR" not in html
+    assert "Rounding Difference" not in html
+    assert "/reports/tb-cross-check?to_date=2026-09-12" in html
+    assert "/reports/exceptions?as_of=2026-09-12" in html
+
+
 def test_ar_snapshot_reachable_by_checker_not_by_extraction_routes(roleless_client):
     roleless_client.post("/choose-role", data={"role": "checker"})
     resp = roleless_client.get("/reports/ar-snapshot")
@@ -3228,6 +3281,27 @@ def test_tb_cross_check_has_search_filter_and_selection_scaffolding(client):
     assert b'data-tt-col="closing_tb"' in resp.data
     assert b"data-tt-select-all" in resp.data
     assert b"data-tt-row-select" in resp.data
+
+
+def test_tb_cross_check_shows_grouping_column_from_customer_master(client):
+    # Client's later ask: a Grouping column, joined from Customer
+    # Master's own classification, so Related Party can actually be
+    # separated out here - load-bearing now, since AR Snapshot's Related
+    # Party AR tile links back to this exact screen.
+    from ar_mis.models import CustomerMasterRecord, PartyGrouping
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(
+        CustomerMasterRecord("RELCO", "RelCo", "KOL", Decimal("0.00"), grouping=PartyGrouping.RELATED_PARTY)
+    )
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), [], {"RELCO": Decimal("-1000.00")})
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check")
+    assert b'data-tt-filter data-tt-col="grouping"' in resp.data
+    assert b'data-tt-col="grouping">Related Party</td>' in resp.data
 
 
 def test_tb_cross_check_shows_mismatch_and_summary_counts(client, monkeypatch):

@@ -44,48 +44,52 @@ def _invoice(voucher_number, party_id, branch_id, invoice_date, value, customer=
 # ---- compute_ar_snapshot --------------------------------------------------
 
 
-def test_total_ar_includes_open_invoices_and_pre_mis_outstanding():
+def test_total_ar_is_tally_sourced_not_registers_sourced():
+    # Client's explicit call: Total AR must tie to the books, not to
+    # whatever the invoice-level registers happen to compute - an open
+    # invoice with no matching Tally balance contributes nothing to Total
+    # AR, and a Tally balance with no matching invoice still counts.
     invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
     customers = {
         ("ACME", "B1"): CustomerMasterRecord(
             party_id="ACME", party_name="Acme", branch_id="B1", pre_mis_outstanding=Decimal("500.00")
         )
     }
+    tally_closing_by_party = {("ACME", "B1"): Decimal("1234.56")}
     snap = compute_ar_snapshot([invoice], [], [], customers, ptp_kept_rate=None, as_of=date(2026, 5, 1),
-                                latest_weekly_snapshot_closing_total=None)
-    assert snap.total_ar == Decimal("1500.00")  # 1000 open + 500 pre-MIS
+                                tally_closing_by_party=tally_closing_by_party)
+    assert snap.total_ar == Decimal("1234.56")  # the Tally figure, not 1000 open + 500 pre-MIS
     assert snap.pre_mis_outstanding == Decimal("500.00")
+    assert snap.reporting_period_ar == Decimal("734.56")  # 1234.56 - 500 pre-MIS
+
+
+def test_total_ar_excludes_a_party_with_no_tally_balance_on_record():
+    invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
+    snap = compute_ar_snapshot([invoice], [], [], {}, ptp_kept_rate=None, as_of=date(2026, 5, 1),
+                                tally_closing_by_party={})
+    assert snap.total_ar == Decimal("0.00")  # nothing to sum, not a zero assumed for ACME
 
 
 def test_open_ar_by_fy_groups_correctly():
     inv_fy25 = _invoice("INV001", "ACME", "B1", date(2026, 3, 20), Decimal("1000.00"))
     inv_fy26 = _invoice("INV002", "ACME", "B1", date(2026, 4, 5), Decimal("2000.00"))
     snap = compute_ar_snapshot([inv_fy25, inv_fy26], [], [], {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
-                                latest_weekly_snapshot_closing_total=None)
+                                tally_closing_by_party={})
     assert snap.open_ar_by_fy == {"2025-26": Decimal("1000.00"), "2026-27": Decimal("2000.00")}
 
 
-def test_related_party_ar_split_from_sundry_debtor():
-    inv_related = _invoice(
-        "INV001", "RELCO", "B1", date(2026, 1, 1), Decimal("1000.00"),
-        customer=CustomerMasterRecord(party_id="RELCO", party_name="RelCo", branch_id="B1",
-                                       pre_mis_outstanding=Decimal("0.00"), grouping=PartyGrouping.RELATED_PARTY),
-    )
-    inv_sundry = _invoice(
-        "INV002", "ACME", "B1", date(2026, 1, 1), Decimal("500.00"),
-        customer=CustomerMasterRecord(party_id="ACME", party_name="Acme", branch_id="B1",
-                                       pre_mis_outstanding=Decimal("0.00"), grouping=PartyGrouping.SUNDRY_DEBTOR),
-    )
+def test_related_party_ar_is_a_tally_sourced_slice_within_total_ar():
     customers = {
         ("RELCO", "B1"): CustomerMasterRecord(party_id="RELCO", party_name="RelCo", branch_id="B1",
                                                pre_mis_outstanding=Decimal("0.00"), grouping=PartyGrouping.RELATED_PARTY),
         ("ACME", "B1"): CustomerMasterRecord(party_id="ACME", party_name="Acme", branch_id="B1",
                                               pre_mis_outstanding=Decimal("0.00"), grouping=PartyGrouping.SUNDRY_DEBTOR),
     }
-    snap = compute_ar_snapshot([inv_related, inv_sundry], [], [], customers, ptp_kept_rate=None,
-                                as_of=date(2026, 6, 1), latest_weekly_snapshot_closing_total=None)
+    tally_closing_by_party = {("RELCO", "B1"): Decimal("1000.00"), ("ACME", "B1"): Decimal("500.00")}
+    snap = compute_ar_snapshot([], [], [], customers, ptp_kept_rate=None,
+                                as_of=date(2026, 6, 1), tally_closing_by_party=tally_closing_by_party)
+    assert snap.total_ar == Decimal("1500.00")  # Related Party included, never subtracted
     assert snap.related_party_ar == Decimal("1000.00")
-    assert snap.sundry_debtor_ar == Decimal("500.00")
 
 
 def test_unapplied_cash_and_cn_are_summed_across_all_parties():
@@ -100,43 +104,50 @@ def test_unapplied_cash_and_cn_are_summed_across_all_parties():
                                party_id="ACME", cn_amount=Decimal("50.00"), bill_allocation_reference=None),
     ]
     snap = compute_ar_snapshot([], cn_rows, rj_rows, {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
-                                latest_weekly_snapshot_closing_total=None)
+                                tally_closing_by_party={})
     assert snap.unapplied_cash == Decimal("500.00")
     assert snap.unapplied_cn == Decimal("50.00")
 
 
-def test_overdue_ar_bad_debt_risk_and_notional_interest():
+def test_overdue_ar_bad_debt_risk_and_notional_interest_stay_registers_sourced():
     # Invoice due 2026-01-31 (30-day credit period), fully open, as-of far overdue.
+    # Overdue AR, ageing, and Overdue % are all "performance" figures
+    # (client's own call) - they stay on the registers' own Workings
+    # total, independent of whatever Total AR (now Tally-sourced) is.
     invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("100000.00"))
     as_of = date(2026, 9, 12)  # 224 days past due -> 181+ bucket
     snap = compute_ar_snapshot([invoice], [], [], {}, ptp_kept_rate=None, as_of=as_of,
-                                latest_weekly_snapshot_closing_total=None)
+                                tally_closing_by_party={("ACME", "B1"): Decimal("999999.00")})
     assert snap.overdue_ar == Decimal("100000.00")
     assert snap.bad_debt_risk_180_plus == Decimal("100000.00")
     assert snap.overdue_by_bucket == {"181+": Decimal("100000.00")}
     days_past_due = (as_of - date(2026, 1, 31)).days
     expected_interest = Decimal("100000.00") * NOTIONAL_INTEREST_RATE * Decimal(days_past_due) / Decimal("365")
     assert snap.notional_interest_cost == expected_interest
+    # 100% of the registers' own Workings total (100000), not scaled
+    # against the unrelated Tally figure (999999) passed in above.
     assert snap.overdue_pct == Decimal("100")
 
 
-def test_rounding_difference_is_none_without_a_weekly_snapshot_baseline():
+def test_reconciliation_difference_is_none_without_any_tally_balance_on_record():
     invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
     snap = compute_ar_snapshot([invoice], [], [], {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
-                                latest_weekly_snapshot_closing_total=None)
-    assert snap.rounding_difference is None
+                                tally_closing_by_party={})
+    assert snap.reconciliation_difference is None
 
 
-def test_rounding_difference_compares_against_the_legacy_total():
+def test_reconciliation_difference_compares_tally_total_against_workings_total():
+    # Workings total (registers): 1000.00 open invoice + 0 pre-MIS = 1000.00.
+    # Tally total: 1001.50. Difference is Tally minus Workings.
     invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
     snap = compute_ar_snapshot([invoice], [], [], {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
-                                latest_weekly_snapshot_closing_total=Decimal("998.50"))
-    assert snap.rounding_difference == Decimal("1.50")
+                                tally_closing_by_party={("ACME", "B1"): Decimal("1001.50")})
+    assert snap.reconciliation_difference == Decimal("1.50")
 
 
 def test_ptp_kept_rate_is_passed_through_unchanged():
     snap = compute_ar_snapshot([], [], [], {}, ptp_kept_rate=Decimal("75.00"), as_of=date(2026, 6, 1),
-                                latest_weekly_snapshot_closing_total=None)
+                                tally_closing_by_party={})
     assert snap.ptp_kept_rate == Decimal("75.00")
 
 
@@ -145,7 +156,7 @@ def test_average_collection_period_computed_per_branch():
     inv_b2 = _invoice("INV002", "ACME", "B2", date(2026, 4, 1), Decimal("450000.00"))
     as_of = date(2026, 6, 30)
     snap = compute_ar_snapshot([inv_b1, inv_b2], [], [], {}, ptp_kept_rate=None, as_of=as_of,
-                                latest_weekly_snapshot_closing_total=None)
+                                tally_closing_by_party={})
     assert set(snap.average_collection_period_by_branch) == {"B1", "B2"}
     assert snap.average_collection_period_by_branch["B1"] is not None
     assert snap.average_collection_period_by_branch["B2"] is not None
@@ -153,7 +164,7 @@ def test_average_collection_period_computed_per_branch():
 
 def test_empty_portfolio_produces_no_crash_with_sensible_nones():
     snap = compute_ar_snapshot([], [], [], {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
-                                latest_weekly_snapshot_closing_total=None)
+                                tally_closing_by_party={})
     assert snap.total_ar == Decimal("0.00")
     assert snap.overdue_pct is None
     assert snap.dso is None

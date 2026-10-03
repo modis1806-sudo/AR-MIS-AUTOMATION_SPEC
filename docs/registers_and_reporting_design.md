@@ -1199,6 +1199,76 @@ resolves former open item 1.
     the reports that already did this correctly instead of rebuilding a
     worse version of them inline.
 
+40. **NEW, resolved: AR Snapshot's Total AR, Related Party AR, and
+    Reporting Period AR are now Tally-sourced, not registers-sourced -
+    deliberately keeping two parallel universes on one screen.** Client's
+    explicit standard, reviewing this report from a CEO/CFO's seat: Total
+    AR must never let management ask "my books say X, your report says
+    Y" - so it has to tie exactly to Tally's own Sundry Debtors closing
+    balance, not to whatever the invoice-level registers happen to
+    compute. `compute_ar_snapshot` (ar_mis.dashboard) now takes
+    `tally_closing_by_party` (Store.latest_weekly_snapshot_closing_by_party(as_of)
+    - the same per-party, as-of-date Tally cross-check Ageing Matrix and
+    TB Cross-Check already use correctly) in place of the old
+    `latest_weekly_snapshot_closing_total` (which only ever compared
+    against whichever ONE branch happened to be extracted most recently
+    systemwide - a real, confirmed bug, not just an ambiguous definition,
+    and the actual reason the old "Rounding Difference" figure the client
+    flagged as wrong was in fact wrong).
+
+    Two deliberately separate universes now coexist on this one screen,
+    per the client's own split:
+    - **Position - Tally-sourced**: Total AR (every Sundry Debtor, Related
+      Party included - Option A, client's explicit pick over excluding it:
+      "the one number that can never be second-guessed against the TB"),
+      Related Party AR (a disclosure slice WITHIN Total AR via
+      CustomerMasterRecord.grouping, never subtracted from it), and
+      Reporting Period AR (renamed from the old, meaningless "Sundry
+      Debtor AR" - Total AR minus Pre-MIS Outstanding, i.e. the slice the
+      registers can actually itemize at invoice level since go-live).
+      Pre-MIS Outstanding itself needed no code change - it was always a
+      books-derived static figure, keyed into Customer Master once at
+      go-live, never recomputed.
+    - **Performance - registers-sourced, unchanged**: Open AR by FY,
+      Unapplied Cash/CN, Overdue AR and its ageing buckets, Bad Debt Risk,
+      Notional Interest Cost, DSO, Collection Efficiency, PTP Kept Rate,
+      Average Collection Period by branch - client's own call, since none
+      of these can be Tally-sourced even in principle (ageing needs an
+      invoice-level due date a single ledger closing balance can't
+      carry). Internally renamed the old `total_ar` local variable to
+      `workings_total_ar` and repointed DSO/Overdue %'s AR input at it,
+      so these metrics keep behaving exactly as before this change -
+      Overdue % is now explicitly "% of the registers' own tracked AR",
+      not "% of Total AR", since those two totals can now legitimately
+      differ.
+    - **Reconciliation Check** (renamed from "Rounding Difference",
+      which undersold what it actually catches): the one deliberate
+      bridge between the two universes - Tally-sourced Total AR minus the
+      registers' Workings total, same date. Zero confirms the invoice-
+      level registers account for everything Tally shows; non-zero is a
+      real, worth-investigating gap, not noise. None (not zero) when
+      there's no Tally data on record yet.
+
+    TB Reconciliation Cross-Check gained a **Grouping column** (joined
+    from Customer Master, client's own ask once the Related Party
+    exclusion gap was spotted) - load-bearing now, not cosmetic, since
+    AR Snapshot's Total AR / Related Party AR / Reconciliation Check
+    tiles all link straight to this exact screen (`to_date` pre-scoped)
+    as their "view the figures behind this number" drill-down, per the
+    client's own ask that a KPI tile should open the real report behind
+    it rather than nothing. Pre-MIS Outstanding links to Customer
+    Master; Unapplied Cash/CN link to Exception Register (`as_of` pre-
+    scoped). DSO, Collection Efficiency, PTP Kept Rate, Notional
+    Interest Cost, and Average Collection Period by branch stay
+    deliberately non-clickable (client's own call) - there is no
+    transaction list that "is" a ratio, only the inputs that produced
+    it. AR Snapshot also widened to the 1600px `main.wide` layout, same
+    as every other report screen.
+
+    `Store.latest_weekly_snapshot_closing_total` (the buggy single-
+    latest-week helper) is now unused by anything and was deleted
+    outright, its two tests with it, rather than left as dead code.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

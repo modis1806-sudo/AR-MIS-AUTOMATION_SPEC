@@ -69,7 +69,7 @@
   <thead>
     <tr>
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
-      <th>Party</th><th data-tt-filter data-tt-col="branch">Branch</th><th>Week Ending</th><th>Opening</th><th>Sales</th>
+      <th>Party</th><th data-tt-filter data-tt-col="branch">Branch</th><th data-tt-filter data-tt-col="grouping">Grouping</th><th>Week Ending</th><th>Opening</th><th>Sales</th>
       <th>Credit Notes</th><th>Debit Notes</th><th>Receipts</th><th>Journals</th>
       <th>Closing (Workings)</th><th>Closing (TB/Tally)</th><th>Difference</th>
       <th data-tt-filter data-tt-col="reconciled">Reconciled</th>
@@ -81,6 +81,7 @@
       <td><input type="checkbox" data-tt-row-select value="{{ row.party_id }}|{{ row.branch_id }}|{{ row.week_ending }}"></td>
       <td>{{ row.party_id }}</td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
+      <td data-tt-col="grouping">{{ groupings.get((row.party_id, row.branch_id), "Unclassified") }}</td>
       <td>{{ row.week_ending }}</td>
       <td>{{ row.opening|inr }}</td>
       <td>{{ row.sales|inr }}</td>
@@ -94,7 +95,7 @@
       <td data-tt-col="reconciled">{% if row.reconciled %}<span class="pill ok">Yes</span>{% else %}<span class="pill fail">No</span>{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="14" class="empty">No weeks recorded yet — run an extraction first.</td></tr>
+    <tr><td colspan="15" class="empty">No weeks recorded yet — run an extraction first.</td></tr>
   {% endfor %}
   </tbody>
 </table>

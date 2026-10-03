@@ -1010,18 +1010,6 @@ class Store:
         )
         self.conn.commit()
 
-    def latest_weekly_snapshot_closing_total(self) -> Decimal | None:
-        """Summed closing_computed across every party for the most recent
-        week_ending on record - the AR Snapshot dashboard's Rounding
-        Difference baseline (ar_mis.dashboard). None when no weekly_snapshot
-        rows exist yet, not zero - there's nothing to compare against.
-        """
-        week_endings = self.all_week_endings()
-        if not week_endings:
-            return None
-        latest = week_endings[-1]
-        rows = self.weekly_snapshots_for_week(latest)
-        return sum((Decimal(r["closing_computed"]) for r in rows), Decimal("0.00"))
 
     def latest_weekly_snapshot_closing_by_party(self, as_of: date) -> dict[tuple[str, str], Decimal]:
         """Per (party_id, branch_id), the closing_extracted from that
