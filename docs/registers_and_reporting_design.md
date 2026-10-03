@@ -1146,6 +1146,40 @@ resolves former open item 1.
     parameter) and drops the now-redundant "All Branches" aggregate row,
     rather than showing the same number twice.
 
+    Client's correction, same thread: the inline pair above was first
+    built tied to "the run this exact request just processed" - gone the
+    moment you navigated away, and absent entirely if you hadn't just run
+    or uploaded anything. Client's own clarification: these should be a
+    **permanent fixture** of Test & Save Extraction and Manual Upload, not
+    something that only flashes up post-action. Replaced with
+    `_standing_cross_check_panel` (ar_mis.webapp.app) - a small standalone
+    Branch dropdown + Apply, independent of the main extraction/upload
+    form, always rendered on both pages regardless of whether anything was
+    just run. After a successful test/save/upload, it auto-selects the
+    branch just acted on (convenience only - its own `panel_branch_id`
+    query param always wins if set), so it already reflects what just
+    happened without an extra click.
+
+    Caught and fixed before this shipped: the panel's first draft defaulted
+    to financial-year-to-date, same as the full Reports-section screens -
+    which would have silently hidden a deliberately backdated run (a
+    first-time backfill for a prior period, which this app explicitly
+    supports) the moment "today" moved into a later financial year.
+    `_inline_cross_check_for_run` now takes optional `period_start`/
+    `period_end` (None either side = no bound), and the standing panel
+    calls it fully unbounded - all recorded history for that branch -
+    since its whole job is "does this reflect what was just done,"
+    whatever period that happened to be.
+
+    Also addressed in the same round, not a code change: the client
+    noticed old weeks (from real, prior extraction runs) still showing on
+    the Weekly Movement Register page after testing an unrelated branch on
+    an unrelated date range, and asked why. Not a bug - that register is,
+    by design (item 15's catalog, "append-only history"), a whole-
+    portfolio snapshot across every branch combined, never scoped to
+    whatever was most recently touched elsewhere. Confirmed by reading
+    `weekly_movement_report`/`weekly_movement_record` rather than guessing.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day
