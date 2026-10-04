@@ -449,6 +449,14 @@ AGEING_BUCKET_ORDER = [
     "Current", "1-30", "31-60", "61-90", "91-120", "121-150", "151-180", "181+", "Closed",
 ]
 
+# Client-confirmed flat rate (design doc item 15's AR Snapshot tile),
+# applied over actual days past due - lives here, not dashboard.py, so
+# InvoicePosition.notional_interest (the per-invoice figure the Sales &
+# DN Register's own column shows) and dashboard.py's portfolio-level
+# notional_interest_cost total are always computed off the same single
+# constant, never two copies that could drift apart.
+NOTIONAL_INTEREST_RATE = Decimal("0.10")
+
 
 def compute_ageing_bucket(days_past_due: int) -> str:
     """CONFIRMED scheme (client's own explicit specification, resolving
@@ -529,6 +537,7 @@ class InvoicePosition:
     is_overdue: bool
     days_past_due: int
     ageing_bucket: str
+    notional_interest: Decimal
 
 
 def compute_invoice_position(
@@ -563,6 +572,7 @@ def compute_invoice_position(
             is_overdue=False,
             days_past_due=0,
             ageing_bucket="Current",
+            notional_interest=Decimal("0.00"),
         )
 
     key = (row.party_id, row.bill_allocation_reference)
@@ -609,6 +619,15 @@ def compute_invoice_position(
         ageing_bucket = "Closed"
     else:
         ageing_bucket = compute_ageing_bucket(days_past_due if is_overdue else 0)
+    # AR Snapshot's own Notional Interest Cost tile (dashboard.py) is
+    # just the sum of this same figure across every overdue invoice -
+    # computed once here, per invoice, so the tile and this register's
+    # own column can never show numbers that don't add up to each other.
+    notional_interest = (
+        open_amount * NOTIONAL_INTEREST_RATE * Decimal(days_past_due_display) / Decimal("365")
+        if is_overdue
+        else Decimal("0.00")
+    )
     return InvoicePosition(
         row=row,
         linked_cn_amount=linked_cn_amount,
@@ -617,6 +636,7 @@ def compute_invoice_position(
         is_overdue=is_overdue,
         days_past_due=days_past_due_display,
         ageing_bucket=ageing_bucket,
+        notional_interest=notional_interest,
     )
 
 

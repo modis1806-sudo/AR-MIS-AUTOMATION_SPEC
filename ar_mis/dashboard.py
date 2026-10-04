@@ -69,6 +69,7 @@ from ar_mis.models import (
 )
 from ar_mis.registers import (
     AGEING_BUCKET_ORDER,
+    NOTIONAL_INTEREST_RATE,
     compute_collection_efficiency,
     compute_collections_in_window,
     compute_dso,
@@ -79,11 +80,6 @@ from ar_mis.registers import (
     financial_year_label,
 )
 
-# Design doc item 15, confirmed this session: interest rate assumed flat
-# at 10% for now, applied over the relevant overdue period (days past due
-# / 365, simple interest - no compounding assumption was stated either,
-# so simple interest is the more conservative, defensible default).
-NOTIONAL_INTEREST_RATE = Decimal("0.10")
 _DSO_WINDOW_DAYS = 90
 
 
@@ -218,7 +214,7 @@ def compute_ar_snapshot(
         overdue_by_bucket[pos.ageing_bucket] = overdue_by_bucket.get(pos.ageing_bucket, Decimal("0.00")) + pos.open_amount
         if pos.ageing_bucket == "181+":
             bad_debt_risk_180_plus += pos.open_amount
-        notional_interest_cost += pos.open_amount * NOTIONAL_INTEREST_RATE * Decimal(pos.days_past_due) / Decimal("365")
+        notional_interest_cost += pos.notional_interest
 
     overdue_pct = (overdue_ar / workings_total_ar * Decimal("100")) if workings_total_ar != 0 else None
 

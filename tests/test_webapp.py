@@ -1571,6 +1571,29 @@ def test_sales_dn_register_shows_round_off_column(client):
     assert b"Round Off" in resp.data
 
 
+def test_sales_dn_register_shows_notional_interest_cost_column(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn?as_of=2026-09-12")
+    assert resp.status_code == 200
+    assert b"Notional Interest Cost" in resp.data
+    assert b'data-tt-col="notional_interest"' in resp.data
+    assert b'data-tt-sum="salesdn:notional_interest"' in resp.data
+
+
+def test_sales_dn_register_accepts_a_url_prefilter_for_overdue_and_bucket(client):
+    # AR Snapshot's Overdue AR / Bad Debt Risk tiles link in with these
+    # exact query params - client-side table_tools.js applies them, but
+    # the page itself just needs to render fine and keep the filter
+    # dropdown markup those params target.
+    _run_a_real_extraction(client)
+    resp = client.get("/registers/sales-dn?as_of=2026-09-12&salesdn_filter_overdue=Yes")
+    assert resp.status_code == 200
+    assert b'data-tt-filter data-tt-col="overdue"' in resp.data
+    resp = client.get("/registers/sales-dn?as_of=2026-09-12&salesdn_filter_bucket=181%2B")
+    assert resp.status_code == 200
+    assert b'data-tt-filter data-tt-col="bucket"' in resp.data
+
+
 def test_sales_dn_register_has_search_filter_and_selection_scaffolding(client):
     _run_a_real_extraction(client)
     resp = client.get("/registers/sales-dn")
@@ -3115,6 +3138,14 @@ def test_ar_snapshot_shows_renamed_labels_and_cross_check_links(client):
     assert "Rounding Difference" not in html
     assert "/reports/tb-cross-check?to_date=2026-09-12" in html
     assert "/reports/exceptions?as_of=2026-09-12" in html
+
+
+def test_ar_snapshot_overdue_bad_debt_and_notional_interest_link_to_sales_dn_register(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ar-snapshot?as_of=2026-09-12")
+    html = resp.get_data(as_text=True)
+    assert "/registers/sales-dn?as_of=2026-09-12&amp;salesdn_filter_overdue=Yes" in html
+    assert "/registers/sales-dn?as_of=2026-09-12&amp;salesdn_filter_bucket=181%2B" in html
 
 
 def test_ar_snapshot_reachable_by_checker_not_by_extraction_routes(roleless_client):

@@ -560,6 +560,10 @@ def test_compute_invoice_position_overdue_and_ageing_bucket():
     assert position.is_overdue is True
     assert position.days_past_due == 90
     assert position.ageing_bucket == "61-90"
+    # 1000 * 10% * 90/365 - same flat rate dashboard.py's Notional
+    # Interest Cost tile uses, computed once per invoice right here so
+    # the tile and this per-invoice figure can never drift apart.
+    assert position.notional_interest == Decimal("1000.00") * Decimal("0.10") * Decimal("90") / Decimal("365")
 
 
 def test_compute_invoice_position_fully_paid_is_not_overdue():
@@ -594,6 +598,9 @@ def test_compute_invoice_position_fully_paid_is_not_overdue():
     # real case) instead of 0 - this test never checked the field that was
     # actually wrong, which is exactly how it went unnoticed.
     assert position.days_past_due == 0
+    # A fully-paid invoice costs nothing in notional interest, regardless
+    # of how far past its due date it is - not_overdue short-circuits it.
+    assert position.notional_interest == Decimal("0.00")
 
 
 def test_compute_invoice_position_closed_bucket_distinguishes_from_not_yet_due():

@@ -56,14 +56,15 @@ _SALES_DN_HEADERS = [
     "Branch", "Date", "Type", "Voucher No.", "Bill Allocation Reference", "Job ID", "Customer",
     "Grouping", "Taxable Value", "CGST", "SGST", "IGST", "Round Off", "Invoice Value", "Due Date",
     "Linked CN No.", "Linked CN Amount", "Net Receivable", "Receipts Applied", "Open Amount",
-    "Overdue", "DPD", "Ageing Bucket", "PTP Date", "PTP Amount", "PTP Status", "Next Action",
-    "Expected Collection Date",
+    "Overdue", "DPD", "Ageing Bucket", "Notional Interest Cost", "PTP Date", "PTP Amount",
+    "PTP Status", "Next Action", "Expected Collection Date",
 ]
 
 # 1-indexed column numbers of _SALES_DN_HEADERS that hold a real amount -
 # Taxable Value, CGST, SGST, IGST, Round Off, Invoice Value, Linked CN
-# Amount, Net Receivable, Receipts Applied, Open Amount, PTP Amount.
-_SALES_DN_MONEY_COLUMNS = [9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 25]
+# Amount, Net Receivable, Receipts Applied, Open Amount, Notional Interest
+# Cost, PTP Amount.
+_SALES_DN_MONEY_COLUMNS = [9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 24, 26]
 
 
 def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workbook:
@@ -85,7 +86,7 @@ def build_sales_dn_register_workbook(display_rows: list[dict], as_of) -> Workboo
                 float(row.round_off), float(row.invoice_value), row.due_date, d["linked_cn_no"] or "",
                 float(pos.linked_cn_amount), float(row.invoice_value - pos.linked_cn_amount),
                 float(pos.receipts_applied), float(pos.open_amount), "Yes" if pos.is_overdue else "No",
-                pos.days_past_due, pos.ageing_bucket,
+                pos.days_past_due, pos.ageing_bucket, float(pos.notional_interest),
                 fu.ptp_date if fu else None, float(fu.ptp_amount) if fu and fu.ptp_amount is not None else None,
                 d["ptp_status"] or "", (fu.next_action if fu else "") or "",
                 fu.expected_collection_date if fu else None,

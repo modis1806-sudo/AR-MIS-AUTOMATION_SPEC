@@ -1388,6 +1388,42 @@ resolves former open item 1.
     form a `[data-tt-row-select]` checkbox targets) applies here for
     free, same as it already does for Credit Note Register.
 
+45. **NEW, resolved: Overdue AR, Bad Debt Risk, and Notional Interest
+    Cost tiles now link to Sales & DN Register, pre-filtered.** Client
+    confirmed the proposal before this was built. Overdue AR and Bad
+    Debt Risk (181+) link to Sales & DN Register's existing `overdue`
+    and `bucket` column filters - no new plumbing needed there, both
+    columns already existed with `data-tt-filter`. Notional Interest
+    Cost had nothing to link to: there was no per-invoice figure
+    anywhere, only the single portfolio-level total on the tile. Added
+    `InvoicePosition.notional_interest` (`ar_mis/registers.py`) -
+    `open_amount * NOTIONAL_INTEREST_RATE * days_past_due / 365` when
+    overdue, else zero - computed once per invoice in
+    `compute_invoice_position`, with `NOTIONAL_INTEREST_RATE` itself
+    moved from `dashboard.py` into `registers.py` (re-exported from
+    `dashboard.py` for the existing import) so the per-invoice figure
+    and `ARSnapshot.notional_interest_cost`'s portfolio sum are always
+    the same constant, never two copies that could drift. Shows as a
+    new Sales & DN Register column (also added to its Excel export) and
+    links from the tile the same way the other two do.
+
+    Making the link actually land pre-filtered needed one small, generic
+    addition to `table_tools.js` rather than a one-off for this screen:
+    any filter dropdown or the search box can now be pre-set from the
+    page's own URL, namespaced by the table's own `data-tt` id
+    (`<id>_filter_<col>=value`, `<id>_search=text`) - so
+    `?salesdn_filter_overdue=Yes` opens Sales & DN Register already
+    showing only the overdue invoices, applied before the table's first
+    render so the page doesn't flash unfiltered first. Verified live in
+    an actual browser (Playwright), not just via the rendered-HTML
+    markup a server-side test can see: a two-invoice fixture (one
+    overdue, one not) down to exactly the one expected row for both
+    `salesdn_filter_overdue=Yes` and `salesdn_filter_bucket=181%2B`, and
+    the Notional Interest column's own figure matched the formula by
+    hand (₹1,25,000 open, 224 days overdue → ₹7,671.23). This same
+    mechanism is reusable for any future report that wants to link in
+    pre-filtered rather than to the whole table.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

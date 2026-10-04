@@ -50,6 +50,13 @@
  * own select-all-in-this-view behavior, which the client named
  * explicitly) - filtering first, then selecting, is the whole point.
  *
+ * A link from elsewhere in the app (typically an AR Snapshot KPI tile)
+ * can land on this table already filtered, via URL query params
+ * namespaced by this table's own data-tt id: ?UNIQUE_ID_filter_COL=value
+ * pre-selects that column's filter dropdown, and ?UNIQUE_ID_search=text
+ * pre-fills the search box - e.g. a Sales & DN Register link of
+ * ?salesdn_filter_overdue=Yes opens straight onto the Overdue-only view.
+ *
  * Any <form> that a [data-tt-row-select] checkbox targets (via its own
  * form="..." attribute - the batch-action forms on every register) gets
  * a confirmation step wired on automatically: submitting it first shows
@@ -285,6 +292,31 @@
       if (countEl) countEl.textContent = "Showing " + visible + " of " + rows.length;
       updateSums();
       updateSelectedCount();
+    }
+
+    // AR Snapshot's own ask: a KPI tile (Overdue AR, Bad Debt Risk) links
+    // straight into a specific pre-filtered slice of a register instead
+    // of the unfiltered whole table - the client expects clicking
+    // "Overdue AR" to land on an Overdue-only view, not the full register
+    // with a filter dropdown left for them to set themselves. Every
+    // filter dropdown and the search box can be pre-set from the page's
+    // own URL, namespaced by this table's own id (<id>_filter_<col> and
+    // <id>_search) so two tables on one page never collide. Applied
+    // before the initial applyFilters() call below so the page opens
+    // already filtered, not flashing unfiltered first.
+    var urlParams = new URLSearchParams(window.location.search);
+    selects.forEach(function (select) {
+      var col = select.getAttribute("data-tt-filter-col");
+      var value = urlParams.get(id + "_filter_" + col);
+      if (value === null) return;
+      var hasOption = Array.prototype.some.call(select.options, function (o) {
+        return o.value === value;
+      });
+      if (hasOption) select.value = value;
+    });
+    if (searchInput) {
+      var searchValue = urlParams.get(id + "_search");
+      if (searchValue !== null) searchInput.value = searchValue;
     }
 
     if (searchInput) searchInput.addEventListener("input", applyFilters);

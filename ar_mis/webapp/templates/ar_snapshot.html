@@ -81,16 +81,17 @@
   <div class="kpi-tile {% if snapshot.overdue_pct and snapshot.overdue_pct > 50 %}warn{% endif %}">
     <div class="kpi-label">Overdue AR</div>
     <div class="kpi-value">{{ snapshot.overdue_ar|inr }}</div>
-    <div class="kpi-caption">{% if snapshot.overdue_pct is not none %}{{ "%.1f"|format(snapshot.overdue_pct) }}% of the registers' own tracked AR{% else %}—{% endif %}</div>
+    <div class="kpi-caption">{% if snapshot.overdue_pct is not none %}{{ "%.1f"|format(snapshot.overdue_pct) }}% of the registers' own tracked AR{% else %}—{% endif %} — <a href="{{ url_for('sales_dn_register', as_of=as_of, salesdn_filter_overdue='Yes') }}">view the overdue invoices</a></div>
   </div>
   <div class="kpi-tile critical">
     <div class="kpi-label">Bad Debt Risk (181+ days)</div>
     <div class="kpi-value">{{ snapshot.bad_debt_risk_180_plus|inr }}</div>
+    <div class="kpi-caption"><a href="{{ url_for('sales_dn_register', as_of=as_of, salesdn_filter_bucket='181+') }}">view the 181+ invoices</a></div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Notional Interest Cost</div>
     <div class="kpi-value">{{ snapshot.notional_interest_cost|inr }}</div>
-    <div class="kpi-caption">At 10% p.a. on overdue balances</div>
+    <div class="kpi-caption">At 10% p.a. on overdue balances — <a href="{{ url_for('sales_dn_register', as_of=as_of, salesdn_filter_overdue='Yes') }}">view the per-invoice breakdown</a></div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">DSO</div>
