@@ -329,18 +329,35 @@ def build_receipt_journal_register_rows(
     party" - the reconciled total correctly picked up the debtor's
     movement, but this register showed a row for the creditor's name
     instead, with no row at all for the debtor leg actually driving that
-    total. A voucher touching more than one tracked debtor in one go is
-    flagged for a human rather than guessed at, for the same reason.
+    total.
 
-    Voucher-level classification invariant (item 10): if ANY line in this
-    voucher resolves to PENDING_REVIEW or is later confirmed
-    PRE_MIS_ADJUSTMENT, EVERY line of this same voucher - including its
-    own on-account/unapplied leg, if it has one - must carry that same
-    classification, or the Unapplied Cash netting (item 9) develops a
-    phantom imbalance from a pre-go-live counterpart this system never
-    captured. This function enforces that: it computes each line's own
-    classification first, then promotes every line to the most severe
-    classification found anywhere in the voucher.
+    A voucher touching TWO OR MORE tracked debtors (client's own real
+    example: a debtor-to-debtor reallocation, one party debited and a
+    different one credited the same amount, in one voucher) is no longer
+    excluded wholesale - client's own catch that this used to just drop
+    the whole voucher into Register Exceptions Review with no way for a
+    human to actually get it into the registers. Each entry already
+    states its OWN party_ledger_name; the only thing that was ever
+    ambiguous is attributing the WHOLE VOUCHER to one party (which this
+    function used to do, via a single popped-from-a-set name applied to
+    every row regardless of which entry it came from - that would have
+    been the real guess). Grouping entries by their own party first and
+    running this same per-line logic independently within EACH group
+    removes that guess entirely: every row is built, matched, and
+    classified using only its own entry's own correct party, never
+    another party's name borrowed for it.
+
+    Voucher-level classification invariant (item 10): if ANY line
+    belonging to a given PARTY in this voucher resolves to PENDING_REVIEW
+    or is later confirmed PRE_MIS_ADJUSTMENT, EVERY line of THAT SAME
+    PARTY in this same voucher - including its own on-account/unapplied
+    leg, if it has one - must carry that same classification, or the
+    Unapplied Cash netting (item 9) develops a phantom imbalance from a
+    pre-go-live counterpart this system never captured. Scoped per party,
+    not across the whole voucher, now that one voucher can carry more
+    than one: Party A's own Pending Review doesn't need to drag Party B's
+    own, otherwise-clean lines into review too - their own Unapplied Cash
+    netting is independent of each other.
     """
     if voucher.voucher_type not in (VoucherType.RECEIPT, VoucherType.JOURNAL):
         raise ValueError(f"build_receipt_journal_register_rows called with {voucher.voucher_type}")
@@ -351,59 +368,58 @@ def build_receipt_journal_register_rows(
             (voucher.voucher_number, voucher.party_ledger_name or "", voucher.voucher_type.value, "No leg of this voucher touches a tracked Sundry Debtor")
         )
         return []
-    matched_parties = {e.party_ledger_name for e in matched_entries}
-    if len(matched_parties) > 1:
-        exceptions.unattributable_party.append(
-            (
-                voucher.voucher_number, "", voucher.voucher_type.value,
-                f"Touches multiple tracked debtors ({', '.join(sorted(matched_parties))}) in one voucher - "
-                "needs a human look, not a guess",
-            )
-        )
-        return []
-    party_ledger_name = matched_parties.pop()
 
-    rows: list[ReceiptJournalRegisterRow] = []
+    entries_by_party: dict[str, list[LedgerEntry]] = {}
     for entry in matched_entries:
-        target_doc_no, classification = _resolve_bill_allocation(
-            entry, party_ledger_name, tracked_bill_references
-        )
-        rows.append(
-            ReceiptJournalRegisterRow(
-                branch_id=voucher.branch_id,
-                txn_date=voucher.voucher_date,
-                voucher_type=voucher.voucher_type.value,
-                voucher_number=voucher.voucher_number,
-                party_id=party_ledger_name,
-                # NOT abs() - client-caught real bug. Tally allows a single
-                # Receipt/Journal voucher to carry bill allocations in BOTH
-                # directions against the same party (e.g. applying against
-                # two invoices while also reversing a previous wrong
-                # application against a third, all in one voucher) - the
-                # allocation's own raw AMOUNT already carries the correct
-                # sign for that. Discarding it with abs() made every line
-                # read as a normal positive application, so a reversal got
-                # ADDED instead of SUBTRACTED - directly contradicting
-                # compute_unapplied_cash_exceptions' own documented design
-                # ("a receipt fully offset by its own reversing journal are
-                # excluded" - only possible if amounts net via plain signed
-                # addition). Reproduced live against a real client voucher
-                # (KAY DEE ELECTRIC CO. Receipt No. 9: one Dr allocation of
-                # 7,750 wrongly added instead of subtracted, a 15,500 swing
-                # once resolved to a Pre-MIS Adjustment) before this fix.
-                amount=entry.amount_as_extracted,
-                target_doc_no=target_doc_no,
-                classification=classification,
-            )
-        )
+        entries_by_party.setdefault(entry.party_ledger_name, []).append(entry)
 
-    if any(r.classification == RegisterClassification.PENDING_REVIEW for r in rows):
-        rows = [
-            r if r.classification == RegisterClassification.PENDING_REVIEW
-            else _replace_classification(r, RegisterClassification.PENDING_REVIEW)
-            for r in rows
-        ]
-    return rows
+    all_rows: list[ReceiptJournalRegisterRow] = []
+    for party_ledger_name, party_entries in entries_by_party.items():
+        rows: list[ReceiptJournalRegisterRow] = []
+        for entry in party_entries:
+            target_doc_no, classification = _resolve_bill_allocation(
+                entry, party_ledger_name, tracked_bill_references
+            )
+            rows.append(
+                ReceiptJournalRegisterRow(
+                    branch_id=voucher.branch_id,
+                    txn_date=voucher.voucher_date,
+                    voucher_type=voucher.voucher_type.value,
+                    voucher_number=voucher.voucher_number,
+                    party_id=party_ledger_name,
+                    # NOT abs() - client-caught real bug. Tally allows a
+                    # single Receipt/Journal voucher to carry bill
+                    # allocations in BOTH directions against the same
+                    # party (e.g. applying against two invoices while
+                    # also reversing a previous wrong application
+                    # against a third, all in one voucher) - the
+                    # allocation's own raw AMOUNT already carries the
+                    # correct sign for that. Discarding it with abs()
+                    # made every line read as a normal positive
+                    # application, so a reversal got ADDED instead of
+                    # SUBTRACTED - directly contradicting
+                    # compute_unapplied_cash_exceptions' own documented
+                    # design ("a receipt fully offset by its own
+                    # reversing journal are excluded" - only possible if
+                    # amounts net via plain signed addition). Reproduced
+                    # live against a real client voucher (KAY DEE
+                    # ELECTRIC CO. Receipt No. 9: one Dr allocation of
+                    # 7,750 wrongly added instead of subtracted, a
+                    # 15,500 swing once resolved to a Pre-MIS Adjustment)
+                    # before this fix.
+                    amount=entry.amount_as_extracted,
+                    target_doc_no=target_doc_no,
+                    classification=classification,
+                )
+            )
+        if any(r.classification == RegisterClassification.PENDING_REVIEW for r in rows):
+            rows = [
+                r if r.classification == RegisterClassification.PENDING_REVIEW
+                else _replace_classification(r, RegisterClassification.PENDING_REVIEW)
+                for r in rows
+            ]
+        all_rows.extend(rows)
+    return all_rows
 
 
 def _replace_classification(

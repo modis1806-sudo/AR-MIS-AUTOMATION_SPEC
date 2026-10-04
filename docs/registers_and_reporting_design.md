@@ -1760,6 +1760,53 @@ resolves former open item 1.
       exact call chain, not asserted. A follow-up worth doing: a resolve
       action for the multi-debtor exclusion, if the client wants one.
 
+55. **FIXED, resolved per client's own follow-up ask: Receipt/Journal
+    vouchers touching two or more tracked debtors are no longer excluded
+    wholesale from the register.** Client confirmed wanting item 54's
+    flagged follow-up built. Re-examined `build_receipt_journal_register_
+    rows`'s own "touches multiple tracked debtors... needs a human look,
+    not a guess" exclusion and found the actual guess it was protecting
+    against: the function popped a SINGLE party name from the matched
+    set and stamped every row with it regardless of which entry it
+    actually came from - that would genuinely have been wrong for a
+    voucher like the client's own real example (a debtor-to-debtor
+    reallocation Journal: one party debited, a different one credited
+    the same amount, in one voucher). But each entry already carries its
+    own correct `party_ledger_name` - there was never anything to guess
+    once entries are grouped by their own party first. Rewrote the
+    function to group `matched_entries` by `entry.party_ledger_name` and
+    run the exact same per-line logic (bill-reference matching, sign-
+    preserving amount per item 51, classification) independently within
+    EACH group, concatenating the results - removing the exclusion
+    entirely rather than adding a manual "resolve" action, since once
+    grouped correctly there's no ambiguity left for a human to arbitrate.
+
+    Item 10's "whole voucher, one classification" invariant is now
+    scoped per PARTY within the voucher, not across it: if Party A's own
+    line in a shared voucher is Pending Review, only Party A's own lines
+    (within that voucher) get promoted - Party B's own, otherwise-clean
+    lines are untouched, since their own Unapplied Cash netting has
+    nothing to do with Party A's own unresolved reference.
+
+    Confirmed live, end to end, against the client's own real Joy Ray /
+    Manoj Lal voucher structure: both parties now appear correctly in
+    the Receipt & Journal Register, the voucher no longer sits in
+    Register Exceptions Review, and TB Cross-Check (which never relied
+    on the register for this voucher's own movement - see item 54) is
+    unaffected either way. Added regression tests for both the
+    attribution fix itself and the per-party classification scoping. The
+    existing "no leg touches a tracked debtor at all" and "debtor tagged
+    as the creditor leg" exclusions are untouched - this only removes
+    the "touches 2+ tracked debtors" one, which is the only one that was
+    ever a guess rather than a real data gap.
+
+    The Credit Note Register's own identical-looking exclusion
+    (`build_credit_note_register_row`) was deliberately NOT touched here
+    - that register keeps one row per VOUCHER, not per bill allocation
+    (item 53's own flagged limitation), so the same fix would need
+    restructuring it to one row per allocation first, a bigger, separate
+    change not undertaken without its own concrete example.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

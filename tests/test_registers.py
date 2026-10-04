@@ -490,6 +490,60 @@ def test_receipt_journal_creditor_only_journal_is_flagged_not_recorded():
     assert len(exceptions.unattributable_party) == 1
 
 
+def test_receipt_journal_touching_two_tracked_debtors_attributes_each_line_to_its_own_party():
+    # Client's own real example, found in Register Exceptions Review: a
+    # debtor-to-debtor reallocation Journal - one party debited, a
+    # DIFFERENT party credited the same amount, in one voucher. This used
+    # to drop the whole voucher (both legs) with "touches multiple
+    # tracked debtors... needs a human look, not a guess", leaving no way
+    # to ever get it into the registers. The only real guess that
+    # exclusion was protecting against was attributing the WHOLE voucher
+    # to a single popped-from-a-set party regardless of which entry it
+    # came from - each entry already states its own correct party, so
+    # grouping by that and processing each group independently isn't a
+    # guess at all.
+    voucher = Voucher(
+        voucher_type=VoucherType.JOURNAL,
+        voucher_date=date(2026, 4, 1),
+        voucher_number="JV24",
+        branch_id="B1",
+        party_ledger_name="Joy Ray",
+        entries=[
+            LedgerEntry(party_ledger_name="Joy Ray", amount_as_extracted=Decimal("-2160.00"), bill_name="JV24", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="Manoj Lal", amount_as_extracted=Decimal("2160.00"), bill_name="JV24", bill_type="New Ref"),
+        ],
+    )
+    exceptions = RegisterBuildExceptions()
+    rows = build_receipt_journal_register_rows(voucher, {"Joy Ray", "Manoj Lal"}, {}, exceptions)
+    assert len(exceptions.unattributable_party) == 0  # no longer dropped
+    assert len(rows) == 2
+    by_party = {r.party_id: r.amount for r in rows}
+    assert by_party == {"Joy Ray": Decimal("-2160.00"), "Manoj Lal": Decimal("2160.00")}
+
+
+def test_receipt_journal_two_tracked_debtors_each_get_their_own_classification():
+    # Party A's own reference fails to resolve; Party B's own reference,
+    # in the SAME voucher, resolves cleanly. Only Party A's own lines
+    # should end up Pending Review - Party B's own Unapplied Cash netting
+    # has nothing to do with Party A's own unresolved reference.
+    lookup = _tracked_invoice()  # tracks ACME's own INV001
+    voucher = Voucher(
+        voucher_type=VoucherType.JOURNAL,
+        voucher_date=date(2026, 4, 1),
+        voucher_number="JV30",
+        branch_id="B1",
+        party_ledger_name="ACME",
+        entries=[
+            LedgerEntry(party_ledger_name="OTHERCO", amount_as_extracted=Decimal("-500.00"), bill_name="UNKNOWN-REF", bill_type="Agst Ref"),
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("500.00"), bill_name="INV001", bill_type="Agst Ref"),
+        ],
+    )
+    rows = build_receipt_journal_register_rows(voucher, {"ACME", "OTHERCO"}, lookup, RegisterBuildExceptions())
+    by_party = {r.party_id: r.classification for r in rows}
+    assert by_party["OTHERCO"] == RegisterClassification.PENDING_REVIEW
+    assert by_party["ACME"] == RegisterClassification.CURRENT
+
+
 def test_receipt_journal_rejects_wrong_voucher_type():
     voucher = Voucher(
         voucher_type=VoucherType.SALES, voucher_date=date(2026, 4, 10),
