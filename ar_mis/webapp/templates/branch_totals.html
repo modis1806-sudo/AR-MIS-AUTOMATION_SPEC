@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Branch P&amp;L Cross-Check{% endblock %}
 {% block content %}
+{% include "_back_to_reports.html" %}
 <h1>Branch P&amp;L Cross-Check</h1>
 <p class="subtitle">Sales plus Debit Notes minus Credit Notes, per branch, for the period below — simple enough to check directly against Tally's own P&amp;L page. Gross figures, inclusive of GST (Credit Notes don't carry a tax split, so this can't be shown tax-exclusive) — if your Tally P&amp;L view is net of GST, expect the gap to be exactly the GST portion, not an error here.</p>
 

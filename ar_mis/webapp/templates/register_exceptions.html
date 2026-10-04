@@ -2,6 +2,7 @@
 {% block title %}Register Exceptions Review{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
+{% include "_back_to_reports.html" %}
 <h1>Register Exceptions Review</h1>
 <p class="subtitle">Every voucher that Test &amp; Save Extraction or Manual Upload could not confidently place into a register — kept here permanently instead of vanishing once that run's result page is closed. Two outcomes: "Reviewed, no action" if you've checked Tally and the exclusion is genuinely correct (e.g. a real Sundry Creditor) — zero effect on any figure, just a record that someone looked. "Resolved via catch-up" if the party turned out to be a real Sundry Debtor wrongly excluded — use <a href="{{ url_for('branches_list') }}">Catch Up a Party</a> first to actually fix the data, then come back here and record it.</p>
 

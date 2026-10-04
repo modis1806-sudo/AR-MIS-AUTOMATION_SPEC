@@ -246,3 +246,85 @@ def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> 
         _apply_inr_format(ws, _RECEIPT_JOURNAL_MONEY_COLUMNS)
     _autosize(ws)
     return wb
+
+
+def build_exception_register_workbook(
+    as_of,
+    unapplied_cash: list,
+    unapplied_cn: list,
+    negative_open: list,
+    non_active: list,
+    unresolved: list,
+    top_overdue: list,
+) -> Workbook:
+    """Client's explicit ask: Exception Register had no export at all -
+    every other screen in this app does. One workbook, one sheet per
+    sub-report (same six as the screen, same order), each sheet a second
+    rendering of the exact lists the route already built for its Jinja
+    template - never a separate recomputation, same principle as every
+    other export in this module.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Unapplied Cash"
+    ws.append([f"Unapplied Cash (net per party) - as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Party", "Unapplied Amount"])
+    for row in unapplied_cash:
+        ws.append([row.party_id, float(row.amount)])
+        _apply_inr_format(ws, [2])
+    _autosize(ws)
+
+    ws = wb.create_sheet("Unapplied Credit Notes")
+    ws.append([f"Unapplied Credit Notes (net per party) - as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Party", "Unapplied Amount"])
+    for row in unapplied_cn:
+        ws.append([row.party_id, float(row.amount)])
+        _apply_inr_format(ws, [2])
+    _autosize(ws)
+
+    ws = wb.create_sheet("Negative Open Amount")
+    ws.append([f"Negative Open Amount (overpaid / over-credited invoices) - as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Branch", "Voucher No.", "Customer", "Invoice Value", "Open Amount"])
+    for d in negative_open:
+        ws.append([d.row.branch_id, d.row.voucher_number, d.row.party_id, float(d.row.invoice_value), float(d.open_amount)])
+        _apply_inr_format(ws, [4, 5])
+    _autosize(ws)
+
+    ws = wb.create_sheet("Non-Active Debtors")
+    ws.append([f"Non-Active Debtors (180+ days silent, balance still open) - as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Branch", "Party", "Total Open", "Last Transaction", "Days Silent"])
+    for row in non_active:
+        ws.append([row.branch_id, row.party_id, float(row.total_open), row.last_transaction_date, row.days_since_last_transaction])
+        _apply_inr_format(ws, [3])
+    _autosize(ws)
+
+    ws = wb.create_sheet("Unresolved References")
+    ws.append([f"Unresolved References (Against Ref not matching any tracked invoice) - as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Source", "Branch", "Voucher No.", "Party", "Date", "Amount", "Attempted Reference"])
+    for row in unresolved:
+        ws.append([row.source, row.branch_id, row.voucher_number, row.party_id, row.voucher_date,
+                    float(row.amount), row.attempted_reference or ""])
+        _apply_inr_format(ws, [6])
+    _autosize(ws)
+
+    ws = wb.create_sheet("Top 20 Overdue Customers")
+    ws.append([f"Top 20 Overdue Customers - as of {as_of}"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Branch", "Party", "Overdue Amount"])
+    for row in top_overdue:
+        ws.append([row.branch_id, row.party_id, float(row.overdue_amount)])
+        _apply_inr_format(ws, [3])
+    _autosize(ws)
+
+    return wb

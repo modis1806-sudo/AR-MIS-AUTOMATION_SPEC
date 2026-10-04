@@ -122,6 +122,7 @@ class ARSnapshot:
     related_party_ar: Decimal
     reporting_period_ar: Decimal
     reconciliation_difference: Decimal | None
+    reconciliation_unexplained: Decimal | None
     overdue_ar: Decimal
     overdue_by_bucket: dict[str, Decimal]
     overdue_pct: Decimal | None
@@ -233,6 +234,25 @@ def compute_ar_snapshot(
 
     reconciliation_difference = total_ar - workings_total_ar if tally_closing_by_party else None
 
+    # Client's own later ask: make the Reconciliation Check gap self-
+    # explanatory instead of something a Maker has to come ask about.
+    # Unapplied Cash/CN is counted in the simple party-level roll-forward
+    # Tally's own balance reflects, but NOT in the invoice-level Workings
+    # total above (an unmatched receipt/CN reduces no specific invoice's
+    # open amount) - so in a books that otherwise ties out exactly,
+    # reconciliation_difference should equal -(unapplied_cash +
+    # unapplied_cn). Whatever's left after subtracting that out is
+    # reconciliation_unexplained - a genuine, worth-investigating residual
+    # (a missed voucher, a misclassification) OR a Pending Review item
+    # still sitting unresolved (see ar_mis.exception_register /
+    # Register Exceptions Review) - either way, something a human should
+    # look at, not noise to round away.
+    reconciliation_unexplained = (
+        reconciliation_difference + unapplied_cash + unapplied_cn
+        if reconciliation_difference is not None
+        else None
+    )
+
     branches = {row.branch_id for row in sales_dn_rows}
     average_collection_period_by_branch: dict[str, Decimal | None] = {}
     for branch_id in branches:
@@ -257,6 +277,7 @@ def compute_ar_snapshot(
         related_party_ar=related_party_ar,
         reporting_period_ar=reporting_period_ar,
         reconciliation_difference=reconciliation_difference,
+        reconciliation_unexplained=reconciliation_unexplained,
         overdue_ar=overdue_ar,
         overdue_by_bucket=overdue_by_bucket,
         overdue_pct=overdue_pct,

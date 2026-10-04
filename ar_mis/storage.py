@@ -717,6 +717,29 @@ class Store:
         )
         self.conn.commit()
 
+    def all_pre_mis_adjustments(self) -> list[PreMisAdjustment]:
+        """Client's own later ask: the audited log record_pre_mis_adjustment
+        already writes had nothing reading it back - a Maker could see
+        today's Pre-MIS Outstanding figure but not how it got there.
+        Oldest first, so a per-party running balance can be built up in
+        order by the caller (ar_mis.pre_mis_register).
+        """
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.execute(
+            "SELECT * FROM pre_mis_adjustments ORDER BY adjusted_at ASC, adjustment_id ASC"
+        )
+        return [
+            PreMisAdjustment(
+                party_id=r["party_id"],
+                branch_id=r["branch_id"],
+                amount=Decimal(r["amount"]),
+                reason=r["reason"],
+                adjusted_by=r["adjusted_by"],
+                adjusted_at=date.fromisoformat(r["adjusted_at"]),
+            )
+            for r in cur.fetchall()
+        ]
+
     def customer_master_exists(self, party_id: str, branch_id: str) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM customer_master WHERE party_id=? AND branch_id=?", (party_id, branch_id)

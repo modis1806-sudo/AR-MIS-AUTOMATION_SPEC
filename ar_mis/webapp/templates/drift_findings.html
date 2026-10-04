@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Drift Findings{% endblock %}
 {% block content %}
+{% include "_back_to_reports.html" %}
 <h1>Backdated Entry Findings</h1>
 <p class="subtitle">A voucher found in a fresh, full financial-year Tally pull that no prior weekly extraction ever captured — the sign of a backdated or edited entry. Every finding is kept here permanently, most recent first. Acknowledging is just a note that someone has seen it. Incorporating is the actual fix: it replays the voucher into the registers under a new week you choose (never editing the locked historical week) and needs that party's real Sundry Debtors closing balance from Tally as of that date — the same trust level as every other closing figure in this app, not something you invent.</p>
 

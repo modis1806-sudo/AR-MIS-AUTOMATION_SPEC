@@ -316,6 +316,28 @@ def test_pre_mis_adjustment_is_the_only_way_to_move_baseline(store):
     assert store.get_opening_balance("P1", "KOL") == Decimal("75000.00")
 
 
+def test_all_pre_mis_adjustments_is_empty_when_none_recorded(store):
+    assert store.all_pre_mis_adjustments() == []
+
+
+def test_all_pre_mis_adjustments_returns_everything_oldest_first(store):
+    # Client's own later ask: record_pre_mis_adjustment's own audited log
+    # had nothing reading it back - this is that missing read path.
+    store.upsert_customer_master(CustomerMasterRecord("P1", "Acme", "KOL", Decimal("100000.00")))
+    store.record_pre_mis_adjustment(
+        PreMisAdjustment("P1", "KOL", Decimal("-25000.00"), "CN 1: pre-MIS", "maker", date(2026, 2, 1))
+    )
+    store.record_pre_mis_adjustment(
+        PreMisAdjustment("P1", "KOL", Decimal("-10000.00"), "CN 2: pre-MIS", "maker", date(2026, 1, 5))
+    )
+    adjustments = store.all_pre_mis_adjustments()
+    assert len(adjustments) == 2
+    # Oldest first by adjusted_at, not insertion order.
+    assert [a.reason for a in adjustments] == ["CN 2: pre-MIS", "CN 1: pre-MIS"]
+    assert adjustments[0].amount == Decimal("-10000.00")
+    assert adjustments[0].adjusted_by == "maker"
+
+
 def test_weekly_snapshot_is_append_only(store):
     row = WeeklySnapshotRow(
         party_id="P1",

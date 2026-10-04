@@ -1269,6 +1269,65 @@ resolves former open item 1.
     latest-week helper) is now unused by anything and was deleted
     outright, its two tests with it, rather than left as dead code.
 
+41. **NEW, resolved: a round of client feedback on the live AR Snapshot -
+    a back-navigation link on every report, Exception Register's missing
+    export, Reconciliation Check made self-explanatory, Open AR by FY as
+    tiles, and a new Pre-MIS Adjustment Register.** Client reviewed the
+    live page screen by screen; several items traced back to genuine
+    gaps, confirmed by reading the code rather than guessing:
+
+    - **Back to Reports link**: every report screen (nine of them) now
+      carries a `← Back to Reports` link via a shared `_back_to_reports.html`
+      partial - client's own catch that reaching a report meant going
+      through the Reports index every time, with no way back except
+      re-navigating there.
+    - **Reconciliation Check made self-explanatory**: an unapplied
+      receipt or CN reduces Tally's own balance but not any specific
+      invoice's open amount in the registers (nothing to match it
+      against) - so in an otherwise-clean book, Reconciliation Check's
+      gap should equal exactly -(Unapplied Cash + Unapplied CN). Proved
+      this by reproducing it live (a ₹20,000 unapplied receipt produced
+      exactly a -₹20,000 Reconciliation Check, while TB Cross-Check's own
+      per-row check showed "Reconciled" for the same party - two
+      different "Workings" definitions, both correct, measuring different
+      things). Added `ARSnapshot.reconciliation_unexplained` (=
+      reconciliation_difference + unapplied_cash + unapplied_cn) and
+      changed the tile's caption to show the breakdown directly: green
+      and "fully explained" when the residual is zero, red and naming the
+      residual (pointing at Register Exceptions Review for an unresolved
+      Pending Review item as one candidate cause) when it isn't. Client's
+      explicit choice to keep Reconciliation Check comparing against the
+      invoice-level registers total (not TB Cross-Check's simpler
+      roll-forward total) specifically because it surfaces unapplied cash
+      as a real, actionable signal - the alternative would hide it.
+    - **Open AR by Financial Year**: converted from a table to its own
+      KPI tile row (client's own earlier ask), moved under the
+      Performance heading since it's a registers-sourced figure like
+      everything else there, not a Tally-sourced "Position" one.
+    - **Exception Register**: gained an Export to Excel
+      (`build_exception_register_workbook`, one sheet per sub-report -
+      this screen had none at all, confirmed by checking, unlike every
+      other report in the app) and each of its six sub-reports is now
+      wrapped in its own `.card` for visual separation (client's own
+      catch: inconsistent-looking stacked tables made it hard to find a
+      given sub-report's own data at a glance).
+    - **Pre-MIS Adjustment Register** (`ar_mis/pre_mis_register.py`, new
+      report at `/reports/pre-mis-adjustments`): client asked how Pre-MIS
+      Outstanding actually changes over time, worried it might be
+      silently reduced by ordinary receipts. Confirmed by reading every
+      write path: it never is - the only way to move it is
+      `record_pre_mis_adjustment`, triggered exclusively by a Maker
+      deliberately resolving a Pending Review CN/Receipt as belonging to
+      a pre-MIS-era invoice, logged to a `pre_mis_adjustments` table that
+      already existed but had nothing reading it back. Added
+      `Store.all_pre_mis_adjustments()` and this report: one row per
+      party that ever carried a Pre-MIS balance (Original Seed -
+      reconstructed as current balance minus every adjustment on record,
+      since the stored figure is itself a running balance, not a fixed
+      starting point - Total Adjustments, Current Balance), plus the full
+      adjustment log underneath. AR Snapshot's Pre-MIS Outstanding tile
+      now links here instead of Customer Master.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

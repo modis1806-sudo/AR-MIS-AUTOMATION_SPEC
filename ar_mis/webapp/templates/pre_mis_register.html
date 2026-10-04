@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Pre-MIS Adjustment Register{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+{% include "_back_to_reports.html" %}
+<h1>Pre-MIS Adjustment Register</h1>
+<p class="subtitle">Pre-MIS Outstanding never moves on its own — ordinary receipts and credit notes matching a tracked invoice have zero effect on it. It only changes when a Maker resolves a Pending Review Credit Note or Receipt as belonging to a pre-MIS-era invoice, and every such move is logged here, never silent. "Original Seed" is reconstructed as today's balance minus every adjustment on record, since the stored figure is itself a running balance, not a fixed starting point.</p>
+
+{% include "_freshness.html" %}
+
+<div class="section-heading">By Party</div>
+<div class="table-scroll" style="margin-bottom:20px;">
+<table>
+  <thead><tr><th>Branch</th><th>Party</th><th>Original Seed</th><th>Total Adjustments</th><th>Current Balance</th></tr></thead>
+  <tbody>
+  {% for row in summaries %}
+    <tr>
+      <td>{{ row.branch_id }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{{ row.original_seed|inr }}</td>
+      <td>{{ row.total_adjustments|inr }}</td>
+      <td>{{ row.current_balance|inr }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">No party has ever carried a Pre-MIS balance.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="section-heading">Every Adjustment (most recent first)</div>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Branch</th><th>Party</th><th>Date</th><th>Amount</th><th>Reason</th><th>Adjusted By</th></tr></thead>
+  <tbody>
+  {% for adj in adjustments %}
+    <tr>
+      <td>{{ adj.branch_id }}</td>
+      <td>{{ adj.party_id }}</td>
+      <td>{{ adj.adjusted_at }}</td>
+      <td>{{ adj.amount|inr }}</td>
+      <td>{{ adj.reason }}</td>
+      <td>{{ adj.adjusted_by }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="empty">No adjustments recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

@@ -3049,6 +3049,59 @@ def test_reports_home_links_to_both_new_reports(client):
     assert b"Ageing Matrix" in resp.data
 
 
+# ---- Reports: Pre-MIS Adjustment Register ----------------------------------
+
+
+def test_pre_mis_register_renders_with_no_data(client):
+    resp = client.get("/reports/pre-mis-adjustments")
+    assert resp.status_code == 200
+    assert b"Pre-MIS Adjustment Register" in resp.data
+    assert b"No party has ever carried a Pre-MIS balance." in resp.data
+
+
+def test_pre_mis_register_shows_seed_adjustments_and_current_balance(client):
+    from ar_mis.models import CustomerMasterRecord, PreMisAdjustment
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "Acme Corp", "KOL", Decimal("100000.00")))
+    store.record_pre_mis_adjustment(
+        PreMisAdjustment("ACME", "KOL", Decimal("-25000.00"), "CN 1: pre-MIS", "maker", date(2026, 2, 1))
+    )
+    store.close()
+
+    resp = client.get("/reports/pre-mis-adjustments")
+    html = resp.get_data(as_text=True)
+    # record_pre_mis_adjustment mutates the stored balance in place: the
+    # 100000 seeded at upsert becomes the pre-adjustment figure (reported
+    # back as "Original Seed"), and the stored customer_master row now
+    # holds 100000 - 25000 = 75000 (reported as "Current Balance").
+    assert "1,00,000.00" in html  # original seed
+    assert "-25,000.00" in html  # total adjustments
+    assert "75,000.00" in html  # current balance
+    assert "CN 1: pre-MIS" in html
+    assert "maker" in html
+
+
+def test_ar_snapshot_pre_mis_tile_links_to_the_adjustment_register(client):
+    resp = client.get("/reports/ar-snapshot")
+    assert b"/reports/pre-mis-adjustments" in resp.data
+
+
+def test_every_report_screen_has_a_back_to_reports_link(client):
+    # Client's own ask: going from one report back to Reports shouldn't
+    # mean clicking Reports in the nav and re-picking the screen you were
+    # just on - every report page gets a direct link back.
+    for path in (
+        "/reports/ar-snapshot", "/reports/exceptions", "/reports/ageing-matrix",
+        "/reports/weekly-movement", "/reports/tb-cross-check", "/reports/concentration-risk",
+        "/reports/branch-totals", "/reports/drift-findings", "/reports/register-exceptions",
+    ):
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert b"Back to Reports" in resp.data, f"{path} is missing the back link"
+
+
 # ---- Reports: Exception Register ------------------------------------------
 
 
@@ -3057,6 +3110,28 @@ def test_exception_register_renders_with_no_data(client):
     assert resp.status_code == 200
     assert b"Exception Register" in resp.data
     assert b"Nothing unapplied" in resp.data
+
+
+def test_exception_register_offers_export_to_excel(client):
+    resp = client.get("/reports/exceptions")
+    assert b"Export to Excel" in resp.data
+    assert b"/reports/exceptions/export.xlsx" in resp.data
+
+
+def test_exception_register_export_downloads_a_six_sheet_workbook(client):
+    # Client's explicit ask: this screen had no export at all.
+    from openpyxl import load_workbook
+
+    resp = client.get("/reports/exceptions/export.xlsx?as_of=2026-09-12")
+    assert resp.status_code == 200
+    assert resp.mimetype == _XLSX_MIMETYPE
+    assert "Exception_Register" in resp.headers["Content-Disposition"]
+
+    wb = load_workbook(BytesIO(resp.data))
+    assert wb.sheetnames == [
+        "Unapplied Cash", "Unapplied Credit Notes", "Negative Open Amount",
+        "Non-Active Debtors", "Unresolved References", "Top 20 Overdue Customers",
+    ]
 
 
 def test_exception_register_shows_unapplied_cash_after_a_real_extraction(client):

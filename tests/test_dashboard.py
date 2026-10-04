@@ -145,6 +145,44 @@ def test_reconciliation_difference_compares_tally_total_against_workings_total()
     assert snap.reconciliation_difference == Decimal("1.50")
 
 
+def test_reconciliation_unexplained_is_zero_when_fully_explained_by_unapplied_cash():
+    # Client's own ask: the gap shouldn't be a mystery. An unapplied
+    # receipt reduces Tally's own balance but not any specific invoice's
+    # open amount in the registers (nothing to match it against) - so in
+    # an otherwise-clean book, the Workings total runs high by exactly
+    # the unapplied amount, and subtracting it back out should leave
+    # nothing unexplained.
+    invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("100000.00"))
+    rj_rows = [
+        ReceiptJournalRegisterRow(branch_id="B1", txn_date=date(2026, 1, 10), voucher_type="Receipt",
+                                   voucher_number="R1", party_id="ACME", amount=Decimal("20000.00"), target_doc_no=None),
+    ]
+    # Tally's own balance already reflects the 20000 receipt: 100000 - 20000 = 80000.
+    snap = compute_ar_snapshot([invoice], [], rj_rows, {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
+                                tally_closing_by_party={("ACME", "B1"): Decimal("80000.00")})
+    assert snap.unapplied_cash == Decimal("20000.00")
+    assert snap.reconciliation_difference == Decimal("-20000.00")
+    assert snap.reconciliation_unexplained == Decimal("0.00")
+
+
+def test_reconciliation_unexplained_surfaces_a_genuine_gap():
+    # A difference NOT accounted for by unapplied cash/CN - a real,
+    # worth-investigating mismatch (a missed voucher, say).
+    invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("100000.00"))
+    snap = compute_ar_snapshot([invoice], [], [], {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
+                                tally_closing_by_party={("ACME", "B1"): Decimal("105000.00")})
+    assert snap.unapplied_cash == Decimal("0.00")
+    assert snap.reconciliation_difference == Decimal("5000.00")
+    assert snap.reconciliation_unexplained == Decimal("5000.00")
+
+
+def test_reconciliation_unexplained_is_none_without_any_tally_balance_on_record():
+    invoice = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("1000.00"))
+    snap = compute_ar_snapshot([invoice], [], [], {}, ptp_kept_rate=None, as_of=date(2026, 6, 1),
+                                tally_closing_by_party={})
+    assert snap.reconciliation_unexplained is None
+
+
 def test_ptp_kept_rate_is_passed_through_unchanged():
     snap = compute_ar_snapshot([], [], [], {}, ptp_kept_rate=Decimal("75.00"), as_of=date(2026, 6, 1),
                                 tally_closing_by_party={})

@@ -2,6 +2,7 @@
 {% block title %}Exception Register{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
+{% include "_back_to_reports.html" %}
 <h1>Exception Register</h1>
 <p class="subtitle">Six lists of things worth a human's attention — nothing here is folded silently into any other total.</p>
 
@@ -15,7 +16,10 @@
   <button class="btn secondary" type="submit">Apply</button>
 </form>
 
-<div class="section-heading">Unapplied Cash (net per party)</div>
+<p style="margin-bottom:20px;"><a class="btn secondary" href="{{ url_for('exception_register_export', as_of=as_of) }}">Export to Excel</a></p>
+
+<div class="card">
+<h2 style="margin-top:0;">Unapplied Cash (net per party)</h2>
 {% if unapplied_cash %}
 <div class="table-tools" data-tt="unappliedcash">
   <input type="search" data-tt-search placeholder="Search party...">
@@ -23,7 +27,7 @@
   <span class="tt-count" data-tt-count></span>
 </div>
 {% endif %}
-<div class="table-scroll" style="margin-bottom:20px;">
+<div class="table-scroll">
 <table data-tt-table="unappliedcash">
   <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
   <tbody>
@@ -35,8 +39,10 @@
   </tbody>
 </table>
 </div>
+</div>
 
-<div class="section-heading">Unapplied Credit Notes (net per party)</div>
+<div class="card">
+<h2 style="margin-top:0;">Unapplied Credit Notes (net per party)</h2>
 {% if unapplied_cn %}
 <div class="table-tools" data-tt="unappliedcn">
   <input type="search" data-tt-search placeholder="Search party...">
@@ -44,7 +50,7 @@
   <span class="tt-count" data-tt-count></span>
 </div>
 {% endif %}
-<div class="table-scroll" style="margin-bottom:20px;">
+<div class="table-scroll">
 <table data-tt-table="unappliedcn">
   <thead><tr><th>Party</th><th>Unapplied Amount</th></tr></thead>
   <tbody>
@@ -56,8 +62,10 @@
   </tbody>
 </table>
 </div>
+</div>
 
-<div class="section-heading">Negative Open Amount (overpaid / over-credited invoices)</div>
+<div class="card">
+<h2 style="margin-top:0;">Negative Open Amount (overpaid / over-credited invoices)</h2>
 {% if negative_open %}
 <div class="table-tools" data-tt="negopen">
   <input type="search" data-tt-search placeholder="Search customer, voucher no...">
@@ -66,7 +74,7 @@
   <span class="tt-count" data-tt-count></span>
 </div>
 {% endif %}
-<div class="table-scroll" style="margin-bottom:20px;">
+<div class="table-scroll">
 <table data-tt-table="negopen">
   <thead><tr><th data-tt-filter data-tt-col="branch">Branch</th><th>Voucher No.</th><th>Customer</th><th>Invoice Value</th><th>Open Amount</th></tr></thead>
   <tbody>
@@ -84,8 +92,10 @@
   </tbody>
 </table>
 </div>
+</div>
 
-<div class="section-heading">Non-Active Debtors (180+ days silent, balance still open)</div>
+<div class="card">
+<h2 style="margin-top:0;">Non-Active Debtors (180+ days silent, balance still open)</h2>
 {% if non_active %}
 <div class="table-tools" data-tt="nonactive">
   <input type="search" data-tt-search placeholder="Search party...">
@@ -94,7 +104,7 @@
   <span class="tt-count" data-tt-count></span>
 </div>
 {% endif %}
-<div class="table-scroll" style="margin-bottom:20px;">
+<div class="table-scroll">
 <table data-tt-table="nonactive">
   <thead><tr><th data-tt-filter data-tt-col="branch">Branch</th><th>Party</th><th>Total Open</th><th>Last Transaction</th><th>Days Silent</th></tr></thead>
   <tbody>
@@ -112,8 +122,10 @@
   </tbody>
 </table>
 </div>
+</div>
 
-<div class="section-heading">Unresolved References (Against Ref that didn't match any tracked invoice)</div>
+<div class="card">
+<h2 style="margin-top:0;">Unresolved References (Against Ref that didn't match any tracked invoice)</h2>
 {% if unresolved %}
 <div class="table-tools" data-tt="unresolved">
   <input type="search" data-tt-search placeholder="Search party, voucher no...">
@@ -122,7 +134,7 @@
   <span class="tt-count" data-tt-count></span>
 </div>
 {% endif %}
-<div class="table-scroll" style="margin-bottom:20px;">
+<div class="table-scroll">
 <table data-tt-table="unresolved">
   <thead><tr><th data-tt-filter data-tt-col="source">Source</th><th data-tt-filter data-tt-col="branch">Branch</th><th>Voucher No.</th><th>Party</th><th>Date</th><th>Amount</th><th>Attempted Reference</th></tr></thead>
   <tbody>
@@ -142,8 +154,10 @@
   </tbody>
 </table>
 </div>
+</div>
 
-<div class="section-heading">Top 20 Overdue Customers</div>
+<div class="card">
+<h2 style="margin-top:0;">Top 20 Overdue Customers</h2>
 {% if top_overdue %}
 <div class="table-tools" data-tt="topoverdue">
   <input type="search" data-tt-search placeholder="Search party...">
@@ -163,5 +177,6 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 </div>
 {% endblock %}

@@ -15,6 +15,7 @@ SNAPSHOT = ARSnapshot(
     related_party_ar=Decimal("0.00"),
     reporting_period_ar=Decimal("95000.00"),
     reconciliation_difference=None,
+    reconciliation_unexplained=None,
     overdue_ar=Decimal("30000.00"),
     overdue_by_bucket={"1-30": Decimal("30000.00")},
     overdue_pct=Decimal("30.00"),

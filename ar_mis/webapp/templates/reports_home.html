@@ -61,5 +61,11 @@
     <p>A simple per-branch turnover total for a chosen period, easy to eyeball directly against Tally's own P&amp;L page. A scoped version of this already shows automatically right after an Extract &amp; Save or Manual Upload — open this for a custom period across every branch instead.</p>
     <a class="btn" href="{{ url_for('branch_totals_report') }}">Open Branch Totals</a>
   </div>
+
+  <div class="card">
+    <h2>Pre-MIS Adjustment Register</h2>
+    <p>Every party that ever carried a Pre-MIS balance — original seed, every logged adjustment, current balance. Pre-MIS Outstanding never moves except through a deliberate, audited action; this is that audit trail.</p>
+    <a class="btn" href="{{ url_for('pre_mis_register_report') }}">Open Pre-MIS Adjustment Register</a>
+  </div>
 </div>
 {% endblock %}

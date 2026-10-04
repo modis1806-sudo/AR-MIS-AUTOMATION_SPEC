@@ -2,6 +2,7 @@
 {% block title %}AR Snapshot{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
+{% include "_back_to_reports.html" %}
 <h1>AR Snapshot</h1>
 <p class="subtitle">Every figure below is the position as of the date selected — pick a different date and the whole dashboard recalculates, nothing is a stored total.</p>
 
@@ -31,7 +32,7 @@
   <div class="kpi-tile">
     <div class="kpi-label">Pre-MIS Outstanding</div>
     <div class="kpi-value">{{ snapshot.pre_mis_outstanding|inr }}</div>
-    <div class="kpi-caption">Legacy balance pre-dating go-live, no invoice-level detail — <a href="{{ url_for('customers_list') }}">view by party</a></div>
+    <div class="kpi-caption">Legacy balance pre-dating go-live, no invoice-level detail — <a href="{{ url_for('pre_mis_register_report') }}">view the adjustment register</a></div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Reporting Period AR</div>
@@ -51,25 +52,31 @@
   <div class="kpi-tile">
     <div class="kpi-label">Reconciliation Check</div>
     <div class="kpi-value">{% if snapshot.reconciliation_difference is not none %}{{ snapshot.reconciliation_difference|inr }}{% else %}—{% endif %}</div>
+    {% if snapshot.reconciliation_difference is none %}
     <div class="kpi-caption">Tally Total AR minus the registers' own Workings total — zero confirms the registers tie out. <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">view party-by-party</a></div>
+    {% elif snapshot.reconciliation_unexplained == 0 %}
+    <div class="kpi-caption" style="color:#166534;">Fully explained by Unapplied Cash ({{ snapshot.unapplied_cash|inr }}) + Unapplied CN ({{ snapshot.unapplied_cn|inr }}) — nothing left to investigate. <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">view party-by-party</a></div>
+    {% else %}
+    <div class="kpi-caption" style="color:#b91c1c; font-weight:600;">After Unapplied Cash ({{ snapshot.unapplied_cash|inr }}) + Unapplied CN ({{ snapshot.unapplied_cn|inr }}), {{ snapshot.reconciliation_unexplained|inr }} is still unexplained — worth investigating (a missed voucher, a misclassification) or check <a href="{{ url_for('register_exceptions_review') }}">Register Exceptions Review</a> for a Pending Review item not yet resolved. <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">View party-by-party</a></div>
+    {% endif %}
   </div>
-</div>
-
-<div class="table-scroll" style="margin-bottom:20px;">
-<table>
-  <thead><tr><th>Open AR by Financial Year</th><th>Amount</th></tr></thead>
-  <tbody>
-  {% for fy, amount in snapshot.open_ar_by_fy.items() | sort %}
-    <tr><td>{{ fy }}</td><td>{{ amount|inr }}</td></tr>
-  {% else %}
-    <tr><td colspan="2" class="empty">No open invoices on record.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
 </div>
 
 <div class="section-heading">Performance</div>
 <p class="subtitle" style="margin-top:-8px;">Sourced from the invoice-level registers, not Tally — ageing and collection metrics need a due date per invoice, which a books closing balance can't carry. Non-clickable: there's no single transaction list that "is" a ratio like DSO or Collection Efficiency.</p>
+
+<div class="section-heading" style="font-size:14px;">Open AR by Financial Year</div>
+<div class="kpi-grid" style="margin-bottom:20px;">
+  {% for fy, amount in snapshot.open_ar_by_fy.items() | sort %}
+  <div class="kpi-tile">
+    <div class="kpi-label">{{ fy }}</div>
+    <div class="kpi-value">{{ amount|inr }}</div>
+  </div>
+  {% else %}
+  <div class="kpi-tile"><div class="kpi-caption">No open invoices on record.</div></div>
+  {% endfor %}
+</div>
+
 <div class="kpi-grid">
   <div class="kpi-tile {% if snapshot.overdue_pct and snapshot.overdue_pct > 50 %}warn{% endif %}">
     <div class="kpi-label">Overdue AR</div>

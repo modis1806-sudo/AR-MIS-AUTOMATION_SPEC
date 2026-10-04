@@ -49,6 +49,7 @@ from ar_mis.drift_correction import (
     incorporate_drift_finding,
 )
 from ar_mis.pipeline import process_branch_data
+from ar_mis.pre_mis_register import compute_pre_mis_register
 from ar_mis.reconciliation import isolate_drift
 from ar_mis.reconciliation_report import (
     compute_concentration_risk,
@@ -58,6 +59,7 @@ from ar_mis.reconciliation_report import (
 from ar_mis.seed import BRANCH_SCOPED_CSV_TEMPLATE, parse_seed_rows_for_branch, seed as seed_pre_mis
 from ar_mis.register_export import (
     build_credit_note_register_workbook,
+    build_exception_register_workbook,
     build_receipt_journal_register_workbook,
     build_sales_dn_register_workbook,
     build_tb_cross_check_workbook,
@@ -1847,6 +1849,31 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "ar_snapshot.html", snapshot=snapshot, as_of=as_of.isoformat(), freshness=freshness
         )
 
+    @app.route("/reports/pre-mis-adjustments")
+    def pre_mis_register_report():
+        """Client's own later ask, after asking how Pre-MIS Outstanding
+        actually changes over time: the audited log record_pre_mis_
+        adjustment already writes had nothing reading it back - a Maker
+        could see today's figure in Customer Master but not how it got
+        there. One row per party that ever carried a Pre-MIS balance
+        (original seed, every adjustment, current balance), plus the full
+        adjustment log underneath. Never a separate recomputation -
+        customer_master.pre_mis_outstanding and pre_mis_adjustments are
+        the same data the AR Snapshot dashboard's own Pre-MIS Outstanding
+        tile already sums.
+        """
+        store = get_store()
+        customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
+        adjustments = store.all_pre_mis_adjustments()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        summaries = compute_pre_mis_register(customer_masters, adjustments)
+        return render_template(
+            "pre_mis_register.html", summaries=summaries, adjustments=list(reversed(adjustments)),
+            freshness=freshness,
+        )
+
     @app.route("/reports/exceptions")
     def exception_register_report():
         """Design doc item 15's six sub-reports in one screen - the
@@ -1880,6 +1907,37 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             non_active=non_active,
             unresolved=unresolved,
             top_overdue=top_overdue,
+        )
+
+    @app.route("/reports/exceptions/export.xlsx")
+    def exception_register_export():
+        """Client's explicit ask: this screen had no export at all - every
+        other report in this app does. Same six sub-reports, same as_of,
+        one workbook, one sheet each - never a separate recomputation
+        from what's on screen.
+        """
+        as_of = _parse_as_of()
+        store = get_store()
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        store.close()
+
+        wb = build_exception_register_workbook(
+            as_of,
+            unapplied_cash=compute_unapplied_cash_exceptions(rj_rows),
+            unapplied_cn=compute_unapplied_cn_exceptions(cn_rows),
+            negative_open=compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of),
+            non_active=compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of),
+            unresolved=compute_unresolved_references(cn_rows, rj_rows),
+            top_overdue=compute_top_overdue_customers(sales_dn_rows, cn_rows, rj_rows, as_of),
+        )
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True, download_name=f"Exception_Register_{as_of.isoformat()}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     @app.route("/reports/ageing-matrix")
