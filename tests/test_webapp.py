@@ -2837,6 +2837,87 @@ def test_receipt_journal_reclassify_batch_resolves_all_selected_pending_review_v
     assert customer.pre_mis_outstanding == Decimal("600.00")  # 1000 - 400
 
 
+def test_register_exceptions_review_batch_resolves_all_selected_open_rows(client):
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_register_build_exceptions(
+        "KOL", date(2026, 4, 7),
+        [
+            ("JV/1", "Some Creditor Pvt Ltd", "Journal", "reason 1"),
+            ("JV/2", "Another Creditor", "Journal", "reason 2"),
+        ],
+        datetime(2026, 4, 7, 9, 0, 0),
+    )
+    ids = [r.id for r in store.all_register_build_exceptions()]
+    # One already reviewed, selected alongside the open ones - must be
+    # skipped, not re-reviewed or double-counted.
+    store.review_register_build_exception(ids[0], "reviewed_no_action", "Earlier Reviewer", datetime.now(), "")
+    store.close()
+
+    resp = client.post(
+        "/reports/register-exceptions/review/batch",
+        data={
+            "selected": [str(i) for i in ids],
+            "status": "resolved_via_catchup",
+            "reviewed_by": "Priya",
+            "reviewed_note": "Both onboarded via catch-up",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Reviewed 1 of 2 selected as resolved via catchup" in resp.data
+    assert b"1 skipped (not open)" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    records = {r.id: r for r in store2.all_register_build_exceptions()}
+    store2.close()
+    assert records[ids[0]].status == "reviewed_no_action"  # untouched
+    assert records[ids[0]].reviewed_by == "Earlier Reviewer"
+    assert records[ids[1]].status == "resolved_via_catchup"
+    assert records[ids[1]].reviewed_by == "Priya"
+
+
+def test_register_exceptions_review_batch_requires_a_selection(client):
+    resp = client.post(
+        "/reports/register-exceptions/review/batch",
+        data={"status": "reviewed_no_action", "reviewed_by": "Priya"},
+        follow_redirects=True,
+    )
+    assert b"Select at least one row" in resp.data
+
+
+def test_checker_cannot_submit_a_register_exceptions_batch_review(roleless_client):
+    from ar_mis.storage import Store
+
+    store = Store(roleless_client.application.config["DB_PATH"])
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "Journal", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    exception_id = store.all_register_build_exceptions()[0].id
+    store.close()
+
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.post(
+        "/reports/register-exceptions/review/batch",
+        data={"selected": [str(exception_id)], "status": "reviewed_no_action", "reviewed_by": "Priya"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"available for your role" in resp.data
+
+
+def test_register_exceptions_review_offers_a_batch_form_for_maker(client):
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_register_build_exceptions("KOL", date(2026, 4, 7), [("JV/1", "P1", "Journal", "reason")], datetime(2026, 4, 7, 9, 0, 0))
+    store.close()
+
+    resp = client.get("/reports/register-exceptions")
+    assert b'id="regexceptions-batch-form"' in resp.data
+    assert b'action="/reports/register-exceptions/review/batch"' in resp.data
+    assert b'data-tt-row-label' in resp.data
+
+
 # ---- Applied-item traceability: linked invoice + drill-down -----------
 
 
@@ -3096,10 +3177,24 @@ def test_every_report_screen_has_a_back_to_reports_link(client):
         "/reports/ar-snapshot", "/reports/exceptions", "/reports/ageing-matrix",
         "/reports/weekly-movement", "/reports/tb-cross-check", "/reports/concentration-risk",
         "/reports/branch-totals", "/reports/drift-findings", "/reports/register-exceptions",
+        "/reports/pre-mis-adjustments",
     ):
         resp = client.get(path)
         assert resp.status_code == 200
         assert b"Back to Reports" in resp.data, f"{path} is missing the back link"
+
+
+def test_back_to_reports_link_goes_one_step_back_not_always_home(client):
+    # Client's own catch: the link always jumped to Reports home, even
+    # when the user had drilled one report deep from another (AR
+    # Snapshot -> TB Cross-Check) and expected one step back to land on
+    # AR Snapshot. history.back() is same-origin-referrer-gated so a
+    # bookmarked/direct hit still falls back to its plain href (Reports
+    # home) instead of leaving the app.
+    resp = client.get("/reports/tb-cross-check")
+    html = resp.get_data(as_text=True)
+    assert "window.history.back()" in html
+    assert 'href="/reports"' in html  # fallback for no-history/no-referrer
 
 
 # ---- Reports: Exception Register ------------------------------------------

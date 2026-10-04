@@ -1,1 +1,1 @@
-<p style="margin-bottom:8px;"><a href="{{ url_for('reports_home') }}">&larr; Back to Reports</a></p>
+<p style="margin-bottom:8px;"><a href="{{ url_for('reports_home') }}" onclick="if (window.history.length > 1 && document.referrer && document.referrer.indexOf(window.location.origin) === 0) { window.history.back(); return false; }">&larr; Back to Reports</a></p>

@@ -29,8 +29,33 @@ class PreMisPartySummary:
     party_id: str
     branch_id: str
     original_seed: Decimal
-    total_adjustments: Decimal
+    receipt_adjustments: Decimal
+    cn_adjustments: Decimal
     current_balance: Decimal
+
+    @property
+    def total_adjustments(self) -> Decimal:
+        return self.receipt_adjustments + self.cn_adjustments
+
+
+def _is_receipt_sourced(reason: str) -> bool:
+    """Both writer routes (credit_note_reclassify, receipt_journal_
+    reclassify in webapp/app.py) and their revert-to-pending-review
+    counterparts build `reason` starting with the voucher type that
+    triggered the adjustment: "CN ...", "Receipt ...", "Journal ...",
+    or "Reversal of CN/Receipt/Journal ...". That token is the only
+    reliable signal of where an adjustment came from - there's no
+    separate source field on PreMisAdjustment - so it's parsed here
+    rather than adding a schema migration for a display-only split.
+
+    A Journal entry is grouped with Credit Notes, not Receipts: unlike
+    a Receipt, it is not actual cash collected (registers.py calls
+    Journal "Tally's most generic voucher type - loan adjustments,
+    creditor entries, depreciation, anything"), so it belongs with the
+    other non-cash, written-off bucket for this report's purpose.
+    """
+    token = reason.removeprefix("Reversal of ").split(" ", 1)[0]
+    return token == "Receipt"
 
 
 def compute_pre_mis_register(
@@ -43,14 +68,18 @@ def compute_pre_mis_register(
     have nothing to show here, and listing every customer with two zero
     columns would just be noise.
     """
-    adjustments_by_party: dict[tuple[str, str], Decimal] = {}
+    receipt_adjustments_by_party: dict[tuple[str, str], Decimal] = {}
+    cn_adjustments_by_party: dict[tuple[str, str], Decimal] = {}
     for adj in adjustments:
         key = (adj.party_id, adj.branch_id)
-        adjustments_by_party[key] = adjustments_by_party.get(key, Decimal("0.00")) + adj.amount
+        bucket = receipt_adjustments_by_party if _is_receipt_sourced(adj.reason) else cn_adjustments_by_party
+        bucket[key] = bucket.get(key, Decimal("0.00")) + adj.amount
 
     rows: list[PreMisPartySummary] = []
     for (party_id, branch_id), customer in customer_masters.items():
-        total_adjustments = adjustments_by_party.get((party_id, branch_id), Decimal("0.00"))
+        receipt_adjustments = receipt_adjustments_by_party.get((party_id, branch_id), Decimal("0.00"))
+        cn_adjustments = cn_adjustments_by_party.get((party_id, branch_id), Decimal("0.00"))
+        total_adjustments = receipt_adjustments + cn_adjustments
         if customer.pre_mis_outstanding == 0 and total_adjustments == 0:
             continue
         rows.append(
@@ -58,7 +87,8 @@ def compute_pre_mis_register(
                 party_id=party_id,
                 branch_id=branch_id,
                 original_seed=customer.pre_mis_outstanding - total_adjustments,
-                total_adjustments=total_adjustments,
+                receipt_adjustments=receipt_adjustments,
+                cn_adjustments=cn_adjustments,
                 current_balance=customer.pre_mis_outstanding,
             )
         )

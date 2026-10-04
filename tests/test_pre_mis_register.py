@@ -19,6 +19,8 @@ def test_original_seed_is_reconstructed_from_current_balance_minus_adjustments()
     assert len(rows) == 1
     assert rows[0].original_seed == Decimal("5000.00")  # 3000 current + 2000 reversed back out
     assert rows[0].total_adjustments == Decimal("-2000.00")
+    assert rows[0].cn_adjustments == Decimal("-2000.00")
+    assert rows[0].receipt_adjustments == Decimal("0.00")
     assert rows[0].current_balance == Decimal("3000.00")
 
 
@@ -62,4 +64,44 @@ def test_multiple_adjustments_for_the_same_party_are_summed():
     ]
     rows = compute_pre_mis_register(customers, adjustments)
     assert rows[0].total_adjustments == Decimal("-3000.00")
+    assert rows[0].cn_adjustments == Decimal("-3000.00")
     assert rows[0].original_seed == Decimal("4000.00")  # 1000 + 3000
+
+
+def test_receipt_and_cn_sourced_adjustments_are_split_into_separate_totals():
+    customers = {
+        ("ACME", "B1"): CustomerMasterRecord(
+            party_id="ACME", party_name="Acme", branch_id="B1", pre_mis_outstanding=Decimal("7000.00")
+        ),
+    }
+    adjustments = [
+        PreMisAdjustment(party_id="ACME", branch_id="B1", amount=Decimal("-2000.00"),
+                          reason="CN 1: pre-MIS", adjusted_by="maker", adjusted_at=date(2026, 5, 1)),
+        PreMisAdjustment(party_id="ACME", branch_id="B1", amount=Decimal("-500.00"),
+                          reason="Receipt 2: pre-MIS", adjusted_by="maker", adjusted_at=date(2026, 5, 2)),
+        PreMisAdjustment(party_id="ACME", branch_id="B1", amount=Decimal("-300.00"),
+                          reason="Journal 3: pre-MIS", adjusted_by="maker", adjusted_at=date(2026, 5, 3)),
+    ]
+    rows = compute_pre_mis_register(customers, adjustments)
+    assert len(rows) == 1
+    assert rows[0].receipt_adjustments == Decimal("-500.00")
+    assert rows[0].cn_adjustments == Decimal("-2300.00")  # CN + Journal, neither is actual cash
+    assert rows[0].total_adjustments == Decimal("-2800.00")
+
+
+def test_a_reversal_is_bucketed_by_the_voucher_type_it_reverses():
+    customers = {
+        ("ACME", "B1"): CustomerMasterRecord(
+            party_id="ACME", party_name="Acme", branch_id="B1", pre_mis_outstanding=Decimal("500.00")
+        ),
+    }
+    adjustments = [
+        PreMisAdjustment(party_id="ACME", branch_id="B1", amount=Decimal("-500.00"),
+                          reason="Receipt 1: pre-MIS", adjusted_by="maker", adjusted_at=date(2026, 5, 1)),
+        PreMisAdjustment(party_id="ACME", branch_id="B1", amount=Decimal("500.00"),
+                          reason="Reversal of Receipt 1 Pre-MIS Adjustment (reverted to Pending Review)",
+                          adjusted_by="maker", adjusted_at=date(2026, 5, 2)),
+    ]
+    rows = compute_pre_mis_register(customers, adjustments)
+    assert rows[0].receipt_adjustments == Decimal("0.00")
+    assert rows[0].cn_adjustments == Decimal("0.00")

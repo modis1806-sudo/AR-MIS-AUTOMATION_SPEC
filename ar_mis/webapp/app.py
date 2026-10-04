@@ -2408,6 +2408,56 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash("Exception reviewed.", "success")
         return redirect(url_for("register_exceptions_review"))
 
+    @app.route("/reports/register-exceptions/review/batch", methods=["POST"])
+    @requires_role("maker")
+    def register_exceptions_review_batch():
+        """Batch counterpart to register_exception_review_submit - same
+        rationale as credit_note_reclassify_batch: review every selected
+        exception with one outcome at once instead of one row at a time.
+        Silently skips any selected row that isn't currently open, since
+        this control only ever means "review", never "re-review".
+        """
+        selected = request.form.getlist("selected")
+        status = request.form.get("status", "")
+        reviewed_by = request.form.get("reviewed_by", "").strip()
+        reviewed_note = request.form.get("reviewed_note", "").strip()
+
+        if not selected:
+            flash("Select at least one row to review.", "error")
+            return redirect(url_for("register_exceptions_review"))
+        if status not in ("reviewed_no_action", "resolved_via_catchup"):
+            flash("Choose a valid review outcome.", "error")
+            return redirect(url_for("register_exceptions_review"))
+        if not reviewed_by:
+            flash("Enter your name to review an exception.", "error")
+            return redirect(url_for("register_exceptions_review"))
+
+        store = get_store()
+        records_by_id = {r.id: r for r in store.all_register_build_exceptions()}
+
+        reviewed_count = 0
+        skipped_count = 0
+        reviewed_at = datetime.now()
+        for raw_id in selected:
+            try:
+                exception_id = int(raw_id)
+            except ValueError:
+                continue
+            record = records_by_id.get(exception_id)
+            if record is None or record.status != "open":
+                skipped_count += 1
+                continue
+            store.review_register_build_exception(exception_id, status, reviewed_by, reviewed_at, reviewed_note)
+            reviewed_count += 1
+        store.close()
+
+        total_selected = reviewed_count + skipped_count
+        message = f"Reviewed {reviewed_count} of {total_selected} selected as {status.replace('_', ' ')}."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not open)."
+        flash(message, "success")
+        return redirect(url_for("register_exceptions_review"))
+
     return app
 
 

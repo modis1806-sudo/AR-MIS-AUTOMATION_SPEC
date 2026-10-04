@@ -11,18 +11,19 @@
 <div class="section-heading">By Party</div>
 <div class="table-scroll" style="margin-bottom:20px;">
 <table>
-  <thead><tr><th>Branch</th><th>Party</th><th>Original Seed</th><th>Total Adjustments</th><th>Current Balance</th></tr></thead>
+  <thead><tr><th>Branch</th><th>Party</th><th>Original Seed</th><th>Receipts Applied</th><th>CN / Journal Written Off</th><th>Current Balance</th></tr></thead>
   <tbody>
   {% for row in summaries %}
     <tr>
       <td>{{ row.branch_id }}</td>
       <td>{{ row.party_id }}</td>
       <td>{{ row.original_seed|inr }}</td>
-      <td>{{ row.total_adjustments|inr }}</td>
+      <td>{{ row.receipt_adjustments|inr }}</td>
+      <td>{{ row.cn_adjustments|inr }}</td>
       <td>{{ row.current_balance|inr }}</td>
     </tr>
   {% else %}
-    <tr><td colspan="5" class="empty">No party has ever carried a Pre-MIS balance.</td></tr>
+    <tr><td colspan="6" class="empty">No party has ever carried a Pre-MIS balance.</td></tr>
   {% endfor %}
   </tbody>
 </table>

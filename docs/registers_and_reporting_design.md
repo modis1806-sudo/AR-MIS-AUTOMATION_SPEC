@@ -1328,6 +1328,66 @@ resolves former open item 1.
       adjustment log underneath. AR Snapshot's Pre-MIS Outstanding tile
       now links here instead of Customer Master.
 
+42. **NEW, resolved: Pre-MIS Adjustment Register's "Total Adjustments"
+    column split into "Receipts Applied" and "CN / Journal Written
+    Off".** Client's own ask, framed as a management-visibility need:
+    knowing how much of a Pre-MIS balance's movement was actual cash
+    collected versus written off matters, and a single combined column
+    couldn't show that. `PreMisAdjustment` has no explicit source field
+    and adding one would need a schema migration for a purely display-
+    only split, so `compute_pre_mis_register` instead parses the
+    leading token of each adjustment's already-stored `reason` string -
+    both writer routes (`credit_note_reclassify`,
+    `receipt_journal_reclassify`, and their revert-to-pending-review
+    counterparts in webapp/app.py) reliably start it with "CN ...",
+    "Receipt ...", "Journal ...", or "Reversal of <one of those> ..."
+    - no new column needed. A Journal-sourced adjustment is bucketed
+    with Credit Notes, not Receipts: it is not actual cash (registers.py
+    calls Journal "Tally's most generic voucher type - loan
+    adjustments, creditor entries, depreciation, anything"), so it
+    belongs in the non-cash/written-off column for this report's
+    purpose - a judgment call, worth revisiting if it turns out Journal-
+    sourced Pre-MIS adjustments are common enough in practice to deserve
+    their own column.
+
+43. **NEW, resolved: "Back to Reports" now goes back one step, not
+    always to Reports home.** Client's own bug report with an exact
+    reproduction: AR Snapshot → Total AR tile → TB Cross-Check →
+    "Back to Reports" landed on Reports home, skipping past AR
+    Snapshot - a 2-step jump when the client expected 1. The link is a
+    single shared `_back_to_reports.html` partial included on every
+    report screen with no per-page knowledge of where it was reached
+    from, so a backend `return_to`-parameter approach would mean
+    threading a new query parameter through every cross-report
+    drill-down link app-wide. Used the browser's own history instead:
+    the link's `onclick` calls `window.history.back()` when there's a
+    prior same-origin entry in this tab's history (checked via
+    `document.referrer`), and falls through to its plain `href` (Reports
+    home) otherwise - a bookmarked or freshly-typed URL still lands
+    somewhere sensible, while any drill-down navigation now genuinely
+    goes back exactly one step, whatever that step is, without needing
+    to special-case each report pair.
+
+44. **NEW, resolved: batch processing added to Register Exceptions
+    Review.** Client's own catch, after Exception Register's export and
+    card-tiling landed: Register Exceptions Review had the same
+    checkbox/select-all/search scaffolding (`table_tools.js`) as Credit
+    Note Register and Receipt & Journal Register, but no batch action to
+    go with it - every exception still had to be reviewed one row at a
+    time. Added `register_exceptions_review_batch`
+    (`/reports/register-exceptions/review/batch`, maker-only), the same
+    pattern as `credit_note_reclassify_batch`: takes a set of selected
+    exception ids, one review outcome, one reviewer name and an optional
+    shared note, applies it to every selected row that is still `open`,
+    and silently skips anything already reviewed (selected alongside the
+    open ones, never re-reviewed or double-counted) - reported back as
+    "Reviewed N of M selected... K skipped (not open)." The row
+    checkboxes already existed for `table_tools.js`'s own selection
+    count; they now also carry `form="regexceptions-batch-form"` so
+    `table_tools.js`'s existing confirm-before-apply safety net (any
+    form a `[data-tt-row-select]` checkbox targets) applies here for
+    free, same as it already does for Credit Note Register.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day
