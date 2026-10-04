@@ -404,7 +404,48 @@ def test_receipt_journal_debtor_creditor_journal_attributes_to_the_debtor_leg():
     rows = build_receipt_journal_register_rows(voucher, {"ACME"}, {}, RegisterBuildExceptions())
     assert len(rows) == 1
     assert rows[0].party_id == "ACME"
-    assert rows[0].amount == Decimal("30000.00")
+    # ACME's own leg is a DEBIT (raw -30000, increasing what they owe) -
+    # the register keeps that sign, not its magnitude (see
+    # build_receipt_journal_register_rows' own docstring on why abs()
+    # is never applied here: a debit entry, within one voucher or across
+    # a later reversing one, must net correctly via plain signed addition).
+    assert rows[0].amount == Decimal("-30000.00")
+
+
+def test_receipt_journal_mixed_direction_bill_allocations_net_to_the_true_voucher_total():
+    # Client-caught real bug, reproduced against the exact real voucher:
+    # a single Receipt can carry bill allocations in BOTH directions -
+    # here, crediting two invoices while reversing a wrong application
+    # against a third, all in one voucher (Tally: Receipt No. 9, KAY DEE
+    # ELECTRIC CO. - Agst Ref 5662 Dr 7,750.00, Agst Ref CIPL/5284/25-26
+    # Cr 5,750.00, Agst Ref CIPL/6233/25-26 Cr 6,835.00, net 4,835.00
+    # against the bank leg). abs() on each allocation's amount made every
+    # line read as a normal positive application, summing to 20,335.00
+    # instead of the true 4,835.00 - a 15,500.00 overstatement that, once
+    # this voucher was resolved as a Pre-MIS Adjustment, moved exactly
+    # that much too little out of Pre-MIS Outstanding, surfacing as an
+    # unexplained Reconciliation Check residual with no Pending Review
+    # item or Unapplied Cash/CN to blame.
+    voucher = Voucher(
+        voucher_type=VoucherType.RECEIPT, voucher_date=date(2026, 4, 3), voucher_number="9",
+        branch_id="B1", party_ledger_name="KAY DEE ELECTRIC CO.",
+        entries=[
+            LedgerEntry(party_ledger_name="KAY DEE ELECTRIC CO.", amount_as_extracted=Decimal("-7750.00"),
+                        bill_name="5662", bill_type="Agst Ref"),
+            LedgerEntry(party_ledger_name="KAY DEE ELECTRIC CO.", amount_as_extracted=Decimal("5750.00"),
+                        bill_name="CIPL/5284/25-26", bill_type="Agst Ref"),
+            LedgerEntry(party_ledger_name="KAY DEE ELECTRIC CO.", amount_as_extracted=Decimal("6835.00"),
+                        bill_name="CIPL/6233/25-26", bill_type="Agst Ref"),
+            LedgerEntry(party_ledger_name="Icici Bank Ltd", amount_as_extracted=Decimal("4835.00")),
+        ],
+    )
+    rows = build_receipt_journal_register_rows(voucher, {"KAY DEE ELECTRIC CO."}, {}, RegisterBuildExceptions())
+    assert len(rows) == 3
+    by_ref = {r.target_doc_no: r.amount for r in rows}
+    assert by_ref["5662"] == Decimal("-7750.00")
+    assert by_ref["CIPL/5284/25-26"] == Decimal("5750.00")
+    assert by_ref["CIPL/6233/25-26"] == Decimal("6835.00")
+    assert sum(by_ref.values(), Decimal("0.00")) == Decimal("4835.00")  # the true net voucher amount
 
 
 def test_receipt_journal_creditor_only_journal_is_flagged_not_recorded():

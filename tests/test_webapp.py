@@ -2246,6 +2246,45 @@ def test_receipt_journal_register_has_search_filter_and_selection_scaffolding(cl
     assert b'data-tt="receiptjournal"' in resp.data
     assert b"data-tt-search" in resp.data
     assert b'data-tt-filter data-tt-col="branch"' in resp.data
+
+
+def test_receipt_journal_register_totals_row_cell_count_matches_header(client):
+    # Client-caught real bug: the totals row was missing one empty cell
+    # (for "Linked Invoice Value", which has no sum), which shifted the
+    # Applied Amount/Unapplied Balance sums one column to the left -
+    # landing under "Linked Invoice Value"/"Applied Amount" instead of
+    # their own headers. Checking the sum tag lands under its own named
+    # header is a stronger guard against this silently recurring than
+    # just checking a rendered number appears somewhere in the row.
+    import re
+
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt", voucher_number="RCPT/1",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV/1",
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals")
+    html = resp.get_data(as_text=True)
+    thead = html.split("<thead>")[1].split("</thead>")[0]
+    rows = re.findall(r"<tr.*?</tr>", thead, re.S)
+    header_th_tags = re.findall(r"<th[^>]*>.*?</th>", rows[0], re.S)
+    totals_th_tags = re.findall(r"<th[^>]*>.*?</th>", rows[1], re.S)
+    assert len(header_th_tags) == len(totals_th_tags)
+
+    applied_index = next(i for i, t in enumerate(header_th_tags) if ">Applied Amount<" in t)
+    unapplied_index = next(i for i, t in enumerate(header_th_tags) if ">Unapplied Balance<" in t)
+    assert 'data-tt-sum="receiptjournal:applied_amount"' in totals_th_tags[applied_index]
+    assert 'data-tt-sum="receiptjournal:unapplied_balance"' in totals_th_tags[unapplied_index]
     assert b'data-tt-filter data-tt-col="voucher_type"' in resp.data
     assert b'data-tt-sum="receiptjournal:applied_amount"' in resp.data
     assert b'data-tt-sum="receiptjournal:unapplied_balance"' in resp.data
@@ -2611,6 +2650,59 @@ def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(cli
     store2.close()
     assert customer.pre_mis_outstanding == Decimal("550.00")  # 1000 - 300 - 150
     assert all(r.classification == RegisterClassification.PRE_MIS_ADJUSTMENT for r in rows)
+
+
+def test_receipt_journal_reclassify_as_pre_mis_uses_the_true_net_when_a_line_reverses_another(client):
+    # Client-caught real bug, reproduced end-to-end against the exact real
+    # voucher: KAY DEE ELECTRIC CO. Receipt No. 9 carried one reversing
+    # (negative) allocation alongside two normal (positive) ones. Summing
+    # their absolute values (20,335.00) instead of their true signed net
+    # (4,835.00) moved 15,500.00 too much out of Pre-MIS Outstanding when
+    # this voucher was resolved - exactly the unexplained Reconciliation
+    # Check residual with no Pending Review item or Unapplied Cash/CN to
+    # explain it.
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("KAY DEE ELECTRIC CO.", "KAY DEE ELECTRIC CO.", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+                party_id="KAY DEE ELECTRIC CO.", amount=Decimal("-7750.00"), target_doc_no="5662",
+                classification=RegisterClassification.PENDING_REVIEW,
+            ),
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+                party_id="KAY DEE ELECTRIC CO.", amount=Decimal("5750.00"), target_doc_no="CIPL/5284/25-26",
+                classification=RegisterClassification.PENDING_REVIEW,
+            ),
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+                party_id="KAY DEE ELECTRIC CO.", amount=Decimal("6835.00"), target_doc_no="CIPL/6233/25-26",
+                classification=RegisterClassification.PENDING_REVIEW,
+            ),
+        ]
+    )
+    store.close()
+
+    resp = client.post(
+        "/registers/receipts-journals/reclassify",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "9", "party_id": "KAY DEE ELECTRIC CO.",
+            "target_classification": "pre_mis", "reason": "Relates to pre-MIS invoices",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("KAY DEE ELECTRIC CO.", "KOL")
+    store2.close()
+    # -(-7750 + 5750 + 6835) = -4835.00 - the true net voucher amount,
+    # not -20335.00 (what abs()-summed lines would have wrongly produced).
+    assert customer.pre_mis_outstanding == Decimal("-4835.00")
 
 
 def test_receipt_journal_revert_to_pending_review_reverses_the_pre_mis_adjustment(client):

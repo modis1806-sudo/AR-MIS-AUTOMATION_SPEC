@@ -360,7 +360,23 @@ def build_receipt_journal_register_rows(
                 voucher_type=voucher.voucher_type.value,
                 voucher_number=voucher.voucher_number,
                 party_id=party_ledger_name,
-                amount=abs(entry.amount_as_extracted),
+                # NOT abs() - client-caught real bug. Tally allows a single
+                # Receipt/Journal voucher to carry bill allocations in BOTH
+                # directions against the same party (e.g. applying against
+                # two invoices while also reversing a previous wrong
+                # application against a third, all in one voucher) - the
+                # allocation's own raw AMOUNT already carries the correct
+                # sign for that. Discarding it with abs() made every line
+                # read as a normal positive application, so a reversal got
+                # ADDED instead of SUBTRACTED - directly contradicting
+                # compute_unapplied_cash_exceptions' own documented design
+                # ("a receipt fully offset by its own reversing journal are
+                # excluded" - only possible if amounts net via plain signed
+                # addition). Reproduced live against a real client voucher
+                # (KAY DEE ELECTRIC CO. Receipt No. 9: one Dr allocation of
+                # 7,750 wrongly added instead of subtracted, a 15,500 swing
+                # once resolved to a Pre-MIS Adjustment) before this fix.
+                amount=entry.amount_as_extracted,
                 target_doc_no=target_doc_no,
                 classification=classification,
             )

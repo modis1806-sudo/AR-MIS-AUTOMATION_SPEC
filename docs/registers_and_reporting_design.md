@@ -1569,6 +1569,62 @@ resolves former open item 1.
     "Matched"/"Unapplied Cash"/"Unapplied CN" as their own distinct
     values, not lumped under one), and both Excel exports.
 
+51. **FIXED, client-found real bug: the actual ₹15,500 - a mixed-direction
+    Receipt voucher's bill allocations summed by magnitude instead of by
+    sign.** Client found and pulled up the exact live Tally voucher behind
+    it: Receipt No. 9 against KAY DEE ELECTRIC CO. carries THREE bill
+    allocations in one voucher - Agst Ref 5662 is a DEBIT of ₹7,750.00
+    (reversing a previous wrong application against it), Agst Ref
+    CIPL/5284/25-26 and CIPL/6233/25-26 are normal CREDITS of ₹5,750.00
+    and ₹6,835.00 - netting to the voucher's true ₹4,835.00 against its
+    bank leg. `build_receipt_journal_register_rows` stored `amount=abs(
+    entry.amount_as_extracted)` for every bill allocation line, discarding
+    which direction each one actually was - summing the three lines'
+    magnitudes gives ₹20,335.00, not the true ₹4,835.00, an overstatement
+    of exactly ₹15,500.00. This whole voucher (Pending Review, since
+    "5662" doesn't match any tracked invoice - the voucher-level
+    invariant then drags the other two, otherwise-matchable lines into
+    Pending Review too) had been resolved by a Maker as a Pre-MIS
+    Adjustment, moving `-sum(line amounts)` into Pre-MIS Outstanding -
+    `-20,335.00` instead of the true `-4,835.00`, understating workings_
+    total_ar by exactly ₹15,500.00 and surfacing as an unexplained
+    Reconciliation Check residual with no Pending Review item or
+    Unapplied Cash/CN left to blame (exactly the client's own challenge
+    in item 49's discussion - this is the concrete transaction behind it,
+    found by the client, not guessed at).
+
+    This bug was already contradicted by `compute_unapplied_cash_
+    exceptions`'s own documented design ("a receipt fully offset by its
+    own reversing journal are excluded" - only possible if amounts net
+    via plain signed addition, which `abs()` makes impossible) -
+    confirming it as a real defect, not a deliberate choice, before
+    touching anything. Fixed by storing the bill allocation's own raw
+    signed amount instead of its magnitude. Verified end to end against
+    the exact real voucher (live reproduction) before and after the fix,
+    and added a permanent regression test (`tests/test_registers.py`)
+    plus a second one for the Pre-MIS Adjustment path specifically
+    (`tests/test_webapp.py`) proving the resolved amount is now the true
+    net ₹4,835.00. One pre-existing test's own fixture (`test_receipt_
+    journal_debtor_creditor_journal_attributes_to_the_debtor_leg`) had
+    baked in the old, wrong assumption that a debit entry's magnitude
+    should always display positive - corrected to assert the true signed
+    value, which doesn't touch what that test actually exists to verify
+    (party attribution, not sign).
+
+52. **FIXED, client-caught real bug: Receipt & Journal Register's totals
+    row was missing one cell, shifting every sum one column left.**
+    Client's own screenshot: the Applied Amount/Unapplied Balance sums
+    were rendering under "Linked Invoice Value"/"Applied Amount" instead
+    of their own headers. The totals `<tr>` had 17 `<th>` cells against
+    the header row's 18 - missing the empty cell for "Linked Invoice
+    Value" (which has no sum) before the two sum cells. Sales & DN
+    Register's and Credit Note Register's own totals rows were checked
+    too and are correctly aligned (31/31, 13/13) - this was specific to
+    Receipt & Journal Register. Fixed by adding the missing empty `<th>`;
+    added a regression test that checks cell counts match and that each
+    sum tag lands inside its own named header's cell, not just that a
+    number appears somewhere in the row.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day
