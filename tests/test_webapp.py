@@ -3195,6 +3195,48 @@ def test_pre_mis_register_shows_seed_adjustments_and_current_balance(client):
     assert "maker" in html
 
 
+def test_pre_mis_register_offers_export_to_excel(client):
+    resp = client.get("/reports/pre-mis-adjustments")
+    assert b"Export to Excel" in resp.data
+    assert b"/reports/pre-mis-adjustments/export.xlsx" in resp.data
+
+
+def test_pre_mis_register_export_downloads_a_two_sheet_workbook(client):
+    from openpyxl import load_workbook
+
+    from ar_mis.models import CustomerMasterRecord, PreMisAdjustment
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "Acme Corp", "KOL", Decimal("100000.00")))
+    store.record_pre_mis_adjustment(
+        PreMisAdjustment("ACME", "KOL", Decimal("-25000.00"), "CN 1: pre-MIS", "maker", date(2026, 2, 1))
+    )
+    store.record_pre_mis_adjustment(
+        PreMisAdjustment("ACME", "KOL", Decimal("-5000.00"), "Receipt 2: pre-MIS", "maker", date(2026, 2, 5))
+    )
+    store.close()
+
+    resp = client.get("/reports/pre-mis-adjustments/export.xlsx")
+    assert resp.status_code == 200
+    assert resp.mimetype == _XLSX_MIMETYPE
+    assert "Pre_MIS_Adjustment_Register" in resp.headers["Content-Disposition"]
+
+    wb = load_workbook(BytesIO(resp.data))
+    assert wb.sheetnames == ["By Party", "Every Adjustment"]
+
+    by_party = wb["By Party"]
+    header_row = [c.value for c in by_party[3]]
+    assert header_row == ["Branch", "Party", "Original Seed", "Receipts Applied", "CN / Journal Written Off", "Current Balance"]
+    data_row = [c.value for c in by_party[4]]
+    assert data_row == ["KOL", "ACME", 100000.0, -5000.0, -25000.0, 70000.0]
+
+    adjustments_sheet = wb["Every Adjustment"]
+    # Most recent first, matching the on-screen order.
+    assert adjustments_sheet.cell(row=4, column=5).value == "Receipt 2: pre-MIS"
+    assert adjustments_sheet.cell(row=5, column=5).value == "CN 1: pre-MIS"
+
+
 def test_ar_snapshot_pre_mis_tile_links_to_the_adjustment_register(client):
     resp = client.get("/reports/ar-snapshot")
     assert b"/reports/pre-mis-adjustments" in resp.data

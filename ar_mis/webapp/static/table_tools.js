@@ -312,7 +312,24 @@
       var hasOption = Array.prototype.some.call(select.options, function (o) {
         return o.value === value;
       });
-      if (hasOption) select.value = value;
+      // Live-caught real bug: a tile linking in with, say,
+      // ?salesdn_filter_bucket=181+ when the current data genuinely has
+      // ZERO invoices in that bucket means this dropdown's own option
+      // list (built only from values actually present in the rendered
+      // rows, above) never had "181+" to begin with - silently skipping
+      // the filter in that case meant the table fell back to showing
+      // EVERY row instead of the correctly-empty filtered view the tile
+      // promised ("Bad Debt Risk should read Nil here"). The requested
+      // value is added as an option if missing so the filter still
+      // applies and genuinely matches nothing, rather than matching
+      // everything.
+      if (!hasOption) {
+        var opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = value;
+        select.appendChild(opt);
+      }
+      select.value = value;
     });
     if (searchInput) {
       var searchValue = urlParams.get(id + "_search");

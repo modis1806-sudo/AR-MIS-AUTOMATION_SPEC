@@ -60,6 +60,7 @@ from ar_mis.seed import BRANCH_SCOPED_CSV_TEMPLATE, parse_seed_rows_for_branch, 
 from ar_mis.register_export import (
     build_credit_note_register_workbook,
     build_exception_register_workbook,
+    build_pre_mis_register_workbook,
     build_receipt_journal_register_workbook,
     build_sales_dn_register_workbook,
     build_tb_cross_check_workbook,
@@ -1872,6 +1873,27 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "pre_mis_register.html", summaries=summaries, adjustments=list(reversed(adjustments)),
             freshness=freshness,
+        )
+
+    @app.route("/reports/pre-mis-adjustments/export.xlsx")
+    def pre_mis_register_export():
+        """Client's explicit ask: this screen had no export at all - every
+        other report in this app does. Same two sections, same order,
+        never a separate recomputation from what's on screen.
+        """
+        store = get_store()
+        customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
+        adjustments = store.all_pre_mis_adjustments()
+        store.close()
+
+        summaries = compute_pre_mis_register(customer_masters, adjustments)
+        wb = build_pre_mis_register_workbook(summaries, list(reversed(adjustments)))
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf, as_attachment=True, download_name="Pre_MIS_Adjustment_Register.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     @app.route("/reports/exceptions")

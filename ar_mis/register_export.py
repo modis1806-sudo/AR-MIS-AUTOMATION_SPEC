@@ -329,3 +329,42 @@ def build_exception_register_workbook(
     _autosize(ws)
 
     return wb
+
+
+def build_pre_mis_register_workbook(summaries: list, adjustments: list) -> Workbook:
+    """Client's explicit ask: Pre-MIS Adjustment Register had no export,
+    unlike every other report in this app. Two sheets, same shape and
+    same order as the screen (ar_mis.pre_mis_register.compute_pre_mis_
+    register's own by-party summaries, then the full adjustment log) - a
+    second rendering of the exact same data, never a separate
+    recomputation. `adjustments` is expected already in the order the
+    screen shows it (most recent first - the route reverses Store.all_
+    pre_mis_adjustments()'s oldest-first order before either the template
+    or this function ever sees it), not reversed again here.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "By Party"
+    ws.append(["Pre-MIS Adjustment Register - by party"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Branch", "Party", "Original Seed", "Receipts Applied", "CN / Journal Written Off", "Current Balance"])
+    for row in summaries:
+        ws.append([
+            row.branch_id, row.party_id, float(row.original_seed),
+            float(row.receipt_adjustments), float(row.cn_adjustments), float(row.current_balance),
+        ])
+        _apply_inr_format(ws, [3, 4, 5, 6])
+    _autosize(ws)
+
+    ws = wb.create_sheet("Every Adjustment")
+    ws.append(["Pre-MIS Adjustment Register - every adjustment, most recent first"])
+    ws["A1"].font = Font(bold=True, size=12)
+    ws.append([])
+    _header_row(ws, ["Branch", "Party", "Date", "Amount", "Reason", "Adjusted By"])
+    for adj in adjustments:
+        ws.append([adj.branch_id, adj.party_id, adj.adjusted_at, float(adj.amount), adj.reason, adj.adjusted_by])
+        _apply_inr_format(ws, [4])
+    _autosize(ws)
+
+    return wb

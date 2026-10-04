@@ -1424,6 +1424,40 @@ resolves former open item 1.
     mechanism is reusable for any future report that wants to link in
     pre-filtered rather than to the whole table.
 
+46. **FIXED, client-caught real bug: a tile's URL pre-filter silently
+    fell back to "show everything" when the target value had zero
+    matching rows.** Confirmed live the morning after item 45 shipped:
+    clicking Bad Debt Risk (181+) should show a genuinely empty register
+    (their real data had nothing in that bucket - the tile itself read
+    close to Nil) but instead showed every open invoice, DPD nowhere
+    near 180. Root cause, found by reading `table_tools.js`'s own filter-
+    dropdown code: each dropdown's options are built ONLY from values
+    actually present in the currently-rendered rows (`item 45`'s own
+    scan of what's on screen) - so when a tile links in with a value
+    that doesn't occur in the data at all (exactly the "should be Nil"
+    case), that option never existed in the dropdown to begin with. The
+    URL pre-filter code's own `hasOption` guard, meant to protect against
+    an invalid value, was silently skipping the filter entirely in this
+    exact case instead - leaving the dropdown at "All", which shows
+    every row. Fixed by adding the requested value as a dropdown option
+    when it's missing, then selecting it regardless - the filter now
+    always applies, and in the "nothing matches" case it correctly
+    empties the table instead of showing everything. Overdue AR's own
+    link never hit this because "Yes" is (almost) always present in real
+    data; Bad Debt Risk and any future near-Nil tile link would hit it
+    every time without this fix. Re-verified live (Playwright) with a
+    fixture that has zero 181+ invoices: the drill-down now correctly
+    shows "Showing 0 of 1", not "Showing 1 of 1".
+
+47. **NEW, resolved: Pre-MIS Adjustment Register gained an Export to
+    Excel.** Client's own catch: every other report screen has one,
+    this didn't. `build_pre_mis_register_workbook`
+    (`ar_mis/register_export.py`) - two sheets, same shape and order as
+    the screen (By Party, then Every Adjustment most recent first) - a
+    second rendering of the same data `compute_pre_mis_register` and
+    `Store.all_pre_mis_adjustments()` already produce for the template,
+    never a separate recomputation.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day
