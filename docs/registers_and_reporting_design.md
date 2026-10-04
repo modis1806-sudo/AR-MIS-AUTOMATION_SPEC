@@ -1625,6 +1625,76 @@ resolves former open item 1.
     sum tag lands inside its own named header's cell, not just that a
     number appears somewhere in the row.
 
+53. **Audited every other `abs()` in `ar_mis/` after item 51, per client's
+    own ask** ("this is something which can always be there in data where
+    a debtor is increased by way of journal entries instead of
+    decreased"). Six call sites total, checked one at a time rather than
+    assumed safe by pattern-matching:
+
+    - `ar_mis/webapp/formatting.py` (`format_inr`) - **correct, no
+      change.** Captures the sign (`"-" if amount < 0`) before `abs()`,
+      re-prepends it to the final formatted string. Pure display
+      technique; never touches the underlying signed value.
+    - `ar_mis/reconciliation_report.py` (`total_current_absolute_
+      difference`, TB Cross-Check's own summary tile) - **correct, no
+      change.** Deliberately sums magnitudes across different PARTIES -
+      the spec's own Section 4.1 is explicit that a total-level check
+      done any other way is "structurally blind to offsetting errors"
+      (Party A overstated ₹10,000, Party B understated ₹10,000 nets to a
+      false "all clear" at ₹0 if signed). Using `abs()` here is the
+      point, not a bug.
+    - `ar_mis/reconciliation_report.py` (`mismatched.sort(key=lambda r:
+      abs(r.difference), ...)`) - **correct, no change.** Only a sort
+      key for "show the most material mismatches first" - the row's own
+      `difference` field keeps its real sign; nothing about the
+      underlying data is touched.
+    - `ar_mis/registers.py` `build_sales_dn_register_row`'s own
+      `magnitude = abs(entry.amount_as_extracted)` (CGST/SGST/IGST/
+      taxable value) - **left as-is, lower-risk but not zero-risk.**
+      Unlike a Receipt/Journal/CN's bill allocations (which can
+      legitimately point at different invoices in opposite directions
+      within one voucher), these are the tax/revenue side of a SINGLE
+      Sales/Debit Note voucher - by ordinary accounting practice a
+      single invoice's own tax lines don't offset each other inside the
+      same document the way a correction-bearing Receipt or CN's
+      allocations do. No concrete failing voucher found for this one
+      (unlike the two fixed below) and not touched without one, but
+      flagged here as the next place to look if a Sales/DN-side
+      discrepancy is ever found the same way the Receipt/Journal one
+      was - a real client voucher, not a hunch.
+    - `ar_mis/registers.py` `build_receipt_journal_register_rows`'s
+      `amount` field - **the bug item 51 already fixed.**
+    - `ar_mis/registers.py` `build_credit_note_register_row`'s
+      `cn_amount += abs(entry.amount_as_extracted)` - **FIXED, same bug
+      class, client's own instinct confirmed correct.** A single Credit
+      Note voucher can carry bill allocations in both directions too
+      (crediting one invoice while reversing a wrong application
+      against another, in the same voucher) - `abs()` would overstate or
+      understate `cn_amount` exactly the way it did for Receipt/Journal.
+      Fixed the same way: keep the allocation's own signed amount. No
+      existing test exercised a multi-allocation or negative-amount CN
+      voucher (same gap that let the Receipt/Journal bug go unnoticed);
+      added a regression test with a mixed +500.00/-300.00 CN voucher
+      netting to the true 200.00, not an `abs()`-summed 800.00.
+
+      **Not fixed, flagged as a separate, larger question rather than
+      silently bundled in**: `CreditNoteRegisterRow` keeps one row per
+      VOUCHER, not per bill allocation (its own docstring says so
+      explicitly) - a CN voucher touching more than one invoice already
+      collapses to one blended `cn_amount` and only the LAST reference
+      found, regardless of sign handling. The sign fix corrects that
+      single row's own total (useful for Unapplied CN netting and a
+      Pre-MIS Adjustment resolution's total, the same two places the
+      Receipt/Journal fix mattered), but a multi-reference CN voucher's
+      per-invoice matching (`compute_invoice_position`) still can't
+      correctly credit more than one of the invoices it actually
+      touches - that would need restructuring this register to one row
+      per bill allocation, mirroring Receipt/Journal's own design. Worth
+      doing if a concrete multi-reference CN voucher turns up the same
+      way the Receipt one did, but a bigger, separate change (schema,
+      storage, export, matching logic, template) not undertaken here
+      without a real example and explicit sign-off first.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

@@ -271,7 +271,22 @@ def build_credit_note_register_row(
     for entry in voucher.entries:
         if entry.party_ledger_name != party_ledger_name:
             continue
-        cn_amount += abs(entry.amount_as_extracted)
+        # NOT abs() - same real bug as Receipt/Journal's own amount field
+        # (see build_receipt_journal_register_rows), same fix: a Credit
+        # Note voucher can carry bill allocations in both directions too
+        # (issuing a new credit against one invoice while reversing a
+        # wrong application against another, in one voucher), and the
+        # allocation's own raw amount already carries the correct sign
+        # for that - discarding it here would understate or overstate
+        # this voucher's own net cn_amount the same way. This does NOT
+        # fix the separate, deeper limitation that this register keeps
+        # only one row per VOUCHER (see CreditNoteRegisterRow's own
+        # docstring) - a multi-reference CN voucher's cn_amount is still
+        # one blended net figure against whichever reference was found
+        # last, not a correctly-matched amount per invoice touched. That
+        # would need one row per bill allocation, like Receipt/Journal
+        # already has, and is a separate, larger change.
+        cn_amount += entry.amount_as_extracted
         ref, cls = _resolve_bill_allocation(entry, party_ledger_name, tracked_bill_references)
         if ref is not None:
             reference = ref

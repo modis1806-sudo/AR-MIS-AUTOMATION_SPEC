@@ -287,6 +287,27 @@ def test_credit_note_new_ref_is_unapplied_and_current():
     assert row.bill_allocation_reference is None
 
 
+def test_credit_note_mixed_direction_bill_allocations_net_by_sign_not_magnitude():
+    # Same real bug class as Receipt/Journal's own amount field (see
+    # test_receipt_journal_mixed_direction_bill_allocations_net_to_the_
+    # true_voucher_total) - a Credit Note voucher can also carry bill
+    # allocations in both directions. abs() would have summed 300.00 +
+    # 500.00 = 800.00 instead of the true net 200.00.
+    voucher = Voucher(
+        voucher_type=VoucherType.CREDIT_NOTE,
+        voucher_date=date(2026, 4, 15),
+        voucher_number="CN006",
+        branch_id="B1",
+        party_ledger_name="ACME",
+        entries=[
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-300.00"), bill_name="INV001", bill_type="Agst Ref"),
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("500.00"), bill_name="INV002", bill_type="Agst Ref"),
+        ],
+    )
+    row = build_credit_note_register_row(voucher, {"ACME"}, {}, RegisterBuildExceptions())
+    assert row.cn_amount == Decimal("200.00")
+
+
 def test_credit_note_missing_party_is_flagged():
     voucher = Voucher(
         voucher_type=VoucherType.CREDIT_NOTE,
