@@ -2114,7 +2114,7 @@ def test_credit_note_register_shows_customer_grouping_column(client):
     assert b'data-tt-col="grouping">Related Party<' in row_html
 
 
-def test_receipt_journal_register_applied_row_keeps_plain_current_pill(client):
+def test_receipt_journal_register_applied_row_shows_matched_pill(client):
     from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
     from ar_mis.storage import Store
 
@@ -2134,7 +2134,49 @@ def test_receipt_journal_register_applied_row_keeps_plain_current_pill(client):
     assert resp.status_code == 200
     row_html = resp.data.split(b"RCPT/APPLIED", 1)[1].split(b"</tr>")[0]
     assert b"Unapplied" not in row_html
-    assert b">Current<" in row_html
+    assert b">Matched<" in row_html
+
+
+def test_receipt_journal_register_on_account_row_shows_unapplied_cash_pill(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 1), voucher_type="Receipt", voucher_number="RCPT/ONACCOUNT",
+                party_id="ACME", amount=Decimal("500.00"), target_doc_no=None,
+            )
+        ]
+    )
+    store.close()
+
+    resp = client.get("/registers/receipts-journals?as_of=2026-04-15")
+    row_html = resp.data.split(b"RCPT/ONACCOUNT", 1)[1].split(b"</tr>")[0]
+    assert b">Unapplied Cash<" in row_html
+    assert b">Matched<" not in row_html
+
+
+def test_credit_note_register_on_account_row_shows_unapplied_cn_pill(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 4, 1), voucher_number="CN/ONACCOUNT", party_id="ACME",
+            cn_amount=Decimal("300.00"), bill_allocation_reference=None,
+        )
+    )
+    store.close()
+
+    resp = client.get("/registers/credit-notes?as_of=2026-04-15")
+    row_html = resp.data.split(b"CN/ONACCOUNT", 1)[1].split(b"</tr>")[0]
+    assert b">Unapplied CN<" in row_html
+    assert b">Matched<" not in row_html
 
 
 def test_receipt_journal_register_shows_customer_grouping_column(client):

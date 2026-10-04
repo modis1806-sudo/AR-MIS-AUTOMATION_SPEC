@@ -36,10 +36,11 @@
 
 <div class="card" style="font-size:13px; color:#4b5563; margin-bottom:16px;">
   <strong>What Classification means:</strong><br>
-  <span class="pill class-current">Current</span> — normal in-period item, nothing to review.
+  <span class="pill class-matched">Matched</span> — this voucher's Target Doc No. correctly points to an invoice this system tracks. Nothing to review.
+  <span class="pill class-unapplied">Unapplied Cash</span> — genuinely on-account, no reference attempted at all; the same amount this register's own Unapplied Balance total sums up.
   <span class="pill class-pending">Pending Review</span> — this voucher's Target Doc No. didn't match any invoice this system tracks; someone needs to confirm whether it belongs to a Pre-MIS-period invoice or is a data-entry mistake. Use the <strong>Resolve</strong> control on the row to do that.
   <span class="pill class-premis">Pre-MIS Adjustment</span> — confirmed as relating to the Pre-MIS Outstanding balance; already netted against that party's Pre-MIS Outstanding and excluded from this register's own Unapplied total. Use <strong>Revert</strong> if this was confirmed by mistake — it reverses the exact balance move with its own logged entry and sends the row back to Pending Review.
-  <br>A genuinely on-account Current voucher also gets an <strong>Unapplied Ageing</strong> bucket (0-30/31-60/.../181+) once it's sat unapplied a while — a voucher unapplied 181 days is just as stale as an invoice that old, and the bucket says so. Unlike the Sales &amp; DN Register's own ageing bucket, there's no separate "Current" state here — that word already means something else on this page (above), so day 0 onward starts straight at 0-30.
+  <br>An <span class="pill class-unapplied">Unapplied Cash</span> voucher also gets an <strong>Unapplied Ageing</strong> bucket (0-30/31-60/.../181+) once it's sat unapplied a while — a voucher unapplied 181 days is just as stale as an invoice that old, and the bucket says so.
 </div>
 
 {% if display_rows %}
@@ -60,7 +61,7 @@
       <label style="display:block; font-size:12px; font-weight:600;">Resolve as</label>
       <select name="target_classification" required>
         <option value="pre_mis">Pre-MIS Adjustment (reduces Pre-MIS Outstanding)</option>
-        <option value="current">Current (data-entry correction)</option>
+        <option value="current">Matched (data-entry correction)</option>
       </select>
     </div>
     <button class="btn" type="submit">Apply to selected</button>
@@ -109,8 +110,10 @@
       <td>{{ f.linked_invoice_value|inr if f.linked_invoice_value is not none else '—' }}</td>
       <td data-tt-col="applied_amount"{% if row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
       <td data-tt-col="unapplied_balance"{% if not row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
-      <td data-tt-col="classification" data-tt-filter-value="{{ row.classification.value }}">
-        {% if row.classification.value == 'Current' %}<span class="pill class-current">Current</span>
+      <td data-tt-col="classification" data-tt-filter-value="{{ row|rj_classification_label }}">
+        {% if row.classification.value == 'Current' %}
+          {% if row.target_doc_no is none %}<span class="pill class-unapplied">Unapplied Cash</span>
+          {% else %}<span class="pill class-matched">Matched</span>{% endif %}
         {% elif row.classification.value == 'Pending Review' %}
           <span class="pill class-pending">Pending Review</span>
           <details>
@@ -122,7 +125,7 @@
               <input type="hidden" name="party_id" value="{{ row.party_id }}">
               <select name="target_classification" required>
                 <option value="pre_mis">Pre-MIS Adjustment (reduces Pre-MIS Outstanding)</option>
-                <option value="current">Current (data-entry correction)</option>
+                <option value="current">Matched (data-entry correction)</option>
               </select>
               <button class="btn" type="submit" style="padding:4px 10px;">Save</button>
             </form>

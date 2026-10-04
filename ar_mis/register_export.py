@@ -13,6 +13,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
+from ar_mis.registers import credit_note_classification_label, receipt_journal_classification_label
+
 _HEADER_FILL = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
 _HEADER_FONT = Font(bold=True, color="FFFFFF")
 
@@ -123,7 +125,7 @@ def build_credit_note_register_workbook(display_rows: list[dict], as_of) -> Work
                 float(fields.linked_invoice_value) if fields.linked_invoice_value is not None else None,
                 float(row.cn_amount),
                 float(d["unapplied_amount"]) if d["unapplied_amount"] is not None else None,
-                row.classification.value, d["unapplied_bucket"] or "",
+                credit_note_classification_label(row), d["unapplied_bucket"] or "",
             ]
         )
         _apply_inr_format(ws, _CREDIT_NOTE_MONEY_COLUMNS)
@@ -239,7 +241,7 @@ def build_receipt_journal_register_workbook(display_rows: list[dict], as_of) -> 
                 float(f.linked_invoice_value) if f.linked_invoice_value is not None else None,
                 float(row.amount) if row.target_doc_no else None,
                 float(row.amount) if not row.target_doc_no else None,
-                row.classification.value, f.dpd_at_application,
+                receipt_journal_classification_label(row), f.dpd_at_application,
                 f.unapplied_bucket or "", f.invoice_fin_year or "",
                 row.narration or "",
             ]

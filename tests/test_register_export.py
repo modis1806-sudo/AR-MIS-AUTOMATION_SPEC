@@ -114,7 +114,7 @@ def test_credit_note_register_workbook_contains_headers_and_row_values():
     assert "CN/01" in data_row
     assert "INV/002" in data_row
     assert 5000.0 in data_row
-    assert "Current" in data_row
+    assert "Matched" in data_row  # classification "Current" with a reference that matched an invoice
     assert date(2026, 6, 1) in data_row
     assert 12000.0 in data_row
 

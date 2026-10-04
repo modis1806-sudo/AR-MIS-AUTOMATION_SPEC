@@ -39,6 +39,8 @@ from ar_mis.registers import (
     compute_unapplied_cn_by_party,
     is_round_off_ledger,
     RegisterBuildExceptions,
+    credit_note_classification_label,
+    receipt_journal_classification_label,
 )
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "real_samples"
@@ -690,6 +692,97 @@ def test_compute_invoice_position_before_invoice_date_contributes_nothing():
     # The day it's actually raised, it appears normally.
     position_on_date = compute_invoice_position(invoice, [], [], as_of=date(2026, 6, 15))
     assert position_on_date.open_amount == Decimal("1000.00")
+
+
+def test_compute_invoice_position_does_not_apply_a_receipt_from_a_different_branch():
+    # Live-caught real bug: the match key was (party_id, bill_allocation_
+    # reference) with no branch_id, and every branch runs its own
+    # independent books/voucher numbering - two branches commonly reuse
+    # the exact same reference string for two completely different
+    # invoices of the same party. A receipt genuinely meant for one
+    # branch's invoice was silently "paying off" a same-named invoice at
+    # a different branch too, understating the portfolio's Workings
+    # total by the stolen amount (visible as an unexplained Reconciliation
+    # Check residual) while TB Cross-Check - which never does this
+    # invoice-level matching - stayed perfectly clean for both branches.
+    from ar_mis.models import ReceiptJournalRegisterRow, Voucher, VoucherType
+
+    invoice_kol = build_sales_dn_register_row(
+        Voucher(
+            voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 1), voucher_number="SB/0001",
+            branch_id="KOL", party_ledger_name="ACME",
+            entries=[
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-10000.00"), bill_name="SB/0001", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales Revenue", amount_as_extracted=Decimal("10000.00")),
+            ],
+        ),
+        CUSTOMER,
+        RegisterBuildExceptions(),
+    )
+    # A receipt genuinely raised at a DIFFERENT branch, which happens to
+    # carry the exact same reference string ("SB/0001") since each
+    # branch numbers its own vouchers independently.
+    receipt_at_a_different_branch = ReceiptJournalRegisterRow(
+        branch_id="MUM", txn_date=date(2026, 1, 15), voucher_type="Receipt",
+        voucher_number="R/1", party_id="ACME", amount=Decimal("10000.00"), target_doc_no="SB/0001",
+    )
+    position = compute_invoice_position(invoice_kol, [], [receipt_at_a_different_branch], as_of=date(2026, 6, 1))
+    assert position.receipts_applied == Decimal("0.00")
+    assert position.open_amount == Decimal("10000.00")
+
+
+# ---- CN/Receipt classification display labels ---------------------------
+# Client's own catch: "Current" as a displayed label explained nothing and
+# bundled two different cases (genuinely on-account vs. correctly matched
+# to an invoice) under one word. The stored RegisterClassification.CURRENT
+# value is unchanged; only the label a human reads is split.
+
+
+def test_credit_note_classification_label_on_account_is_unapplied_cn():
+    row = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 1, 1), voucher_number="CN/1", party_id="ACME",
+        cn_amount=Decimal("100.00"), bill_allocation_reference=None,
+    )
+    assert credit_note_classification_label(row) == "Unapplied CN"
+
+
+def test_credit_note_classification_label_matched_to_an_invoice():
+    row = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 1, 1), voucher_number="CN/1", party_id="ACME",
+        cn_amount=Decimal("100.00"), bill_allocation_reference="INV/1",
+    )
+    assert credit_note_classification_label(row) == "Matched"
+
+
+def test_credit_note_classification_label_pending_review_and_pre_mis_unchanged():
+    pending = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 1, 1), voucher_number="CN/1", party_id="ACME",
+        cn_amount=Decimal("100.00"), bill_allocation_reference="BAD/REF",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    pre_mis = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 1, 1), voucher_number="CN/2", party_id="ACME",
+        cn_amount=Decimal("100.00"), bill_allocation_reference="OLD/REF",
+        classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+    )
+    assert credit_note_classification_label(pending) == "Pending Review"
+    assert credit_note_classification_label(pre_mis) == "Pre-MIS Adjustment"
+
+
+def test_receipt_journal_classification_label_on_account_is_unapplied_cash():
+    row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 1, 1), voucher_type="Receipt",
+        voucher_number="R/1", party_id="ACME", amount=Decimal("100.00"), target_doc_no=None,
+    )
+    assert receipt_journal_classification_label(row) == "Unapplied Cash"
+
+
+def test_receipt_journal_classification_label_matched_to_an_invoice():
+    row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 1, 1), voucher_type="Receipt",
+        voucher_number="R/1", party_id="ACME", amount=Decimal("100.00"), target_doc_no="INV/1",
+    )
+    assert receipt_journal_classification_label(row) == "Matched"
 
 
 # ---- End-to-end against real client-exported sample XML ------------------

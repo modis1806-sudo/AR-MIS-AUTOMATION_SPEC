@@ -435,6 +435,38 @@ def compute_unapplied_cn_by_party(rows: list[CreditNoteRegisterRow]) -> dict[str
     return totals
 
 
+def credit_note_classification_label(row: CreditNoteRegisterRow) -> str:
+    """Client's own catch: "Current" as a displayed label told a reader
+    nothing about what it actually meant, and silently bundled two very
+    different cases under one word - a CN genuinely sitting on-account
+    (no reference at all; exactly what compute_unapplied_cn_by_party
+    totals as Unapplied CN elsewhere in the app) and a CN whose reference
+    correctly matched a tracked invoice. The stored
+    RegisterClassification.CURRENT value itself is unchanged (still the
+    one thing compute_invoice_position/compute_unapplied_cn_by_party key
+    their own filtering on) - only the label a human reads is split here,
+    purely for display.
+    """
+    if row.classification == RegisterClassification.PENDING_REVIEW:
+        return "Pending Review"
+    if row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT:
+        return "Pre-MIS Adjustment"
+    return "Unapplied CN" if row.bill_allocation_reference is None else "Matched"
+
+
+def receipt_journal_classification_label(row: ReceiptJournalRegisterRow) -> str:
+    """Same split as credit_note_classification_label, for a Receipt or
+    Journal line - on-account (target_doc_no is None, exactly what
+    compute_unapplied_cash_by_party totals as Unapplied Cash) versus
+    correctly matched to a tracked invoice.
+    """
+    if row.classification == RegisterClassification.PENDING_REVIEW:
+        return "Pending Review"
+    if row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT:
+        return "Pre-MIS Adjustment"
+    return "Unapplied Cash" if row.target_doc_no is None else "Matched"
+
+
 # CONFIRMED scheme (client's own explicit specification): the full
 # ageing-bucket vocabulary used everywhere a bucket is listed or totaled
 # (Sales & DN Register, Branch-wise Ageing Schedule, Ageing Matrix) - the
@@ -575,14 +607,27 @@ def compute_invoice_position(
             notional_interest=Decimal("0.00"),
         )
 
-    key = (row.party_id, row.bill_allocation_reference)
+    # branch_id is part of the key, not just party_id + reference: every
+    # branch runs its own independent set of books (its own Tally company,
+    # its own voucher numbering series) - a receipt extracted under one
+    # branch must never settle an invoice booked under a different one,
+    # even for the exact same party, and two branches commonly reuse the
+    # same voucher-number string in their own separate sequences (e.g.
+    # both starting at "SB/0001"). Found live: a cross-branch reference
+    # collision let one branch's receipt silently "pay off" a same-named
+    # invoice at a different branch, understating the portfolio's own
+    # Workings total by the stolen amount while TB Cross-Check (which
+    # never does this invoice-level matching) stayed perfectly clean for
+    # both branches - exactly the kind of gap Reconciliation Check then
+    # surfaced as "unexplained" with no Pending Review item to blame.
+    key = (row.party_id, row.branch_id, row.bill_allocation_reference)
     linked_cn_amount = sum(
         (
             cn.cn_amount
             for cn in credit_note_rows
             if cn.cn_date <= as_of
             and cn.classification == RegisterClassification.CURRENT
-            and (cn.party_id, cn.bill_allocation_reference) == key
+            and (cn.party_id, cn.branch_id, cn.bill_allocation_reference) == key
         ),
         Decimal("0.00"),
     )
@@ -592,7 +637,7 @@ def compute_invoice_position(
             for rj in receipt_journal_rows
             if rj.txn_date <= as_of
             and rj.classification == RegisterClassification.CURRENT
-            and (rj.party_id, rj.target_doc_no) == key
+            and (rj.party_id, rj.branch_id, rj.target_doc_no) == key
         ),
         Decimal("0.00"),
     )

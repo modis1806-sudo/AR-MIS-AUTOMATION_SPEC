@@ -76,7 +76,9 @@ from ar_mis.registers import (
     compute_ptp_kept_rate,
     compute_ptp_outcome,
     compute_receipt_journal_display_fields,
+    credit_note_classification_label,
     financial_year_label,
+    receipt_journal_classification_label,
 )
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
@@ -123,6 +125,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     # 3-digit grouping "%.2f" or a bare Decimal would otherwise produce,
     # which forces a reader to count digits to tell a lakh from a crore.
     app.jinja_env.filters["inr"] = format_inr
+    app.jinja_env.filters["cn_classification_label"] = credit_note_classification_label
+    app.jinja_env.filters["rj_classification_label"] = receipt_journal_classification_label
 
     def get_store() -> Store:
         return Store(app.config["DB_PATH"])

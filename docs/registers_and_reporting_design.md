@@ -1507,6 +1507,68 @@ resolves former open item 1.
     filtering it by the arriving tile's own column is a small, separate
     addition if wanted next.
 
+49. **FIXED, client-caught real bug: cross-branch reference collision in
+    `compute_invoice_position`'s own matching.** Client's own challenge,
+    after being told Pending Review was the likely cause of their real
+    ₹15,500 Reconciliation Check residual, then checking and finding
+    zero Pending Review items in either register: pushed back, correctly,
+    that the explanation didn't hold for their actual data. Re-
+    investigated rather than re-guessing. Found: `compute_invoice_
+    position`'s matching key was `(party_id, bill_allocation_reference)`
+    - no `branch_id` - while every caller (AR Snapshot, Ageing Matrix,
+    Exception Register, Sales & DN Register's own display, PTP batch
+    defaults) passes it CN/Receipt lists spanning every branch
+    (`Store.all_credit_note_rows()`/`all_receipt_journal_rows()` with no
+    branch filter). Every branch runs its own independent books and its
+    own voucher numbering series, so two branches commonly reuse the same
+    reference string for two entirely different invoices of the same
+    party - and a receipt genuinely meant for one branch's invoice could
+    silently "pay off" a same-named invoice at a different branch too,
+    understating the portfolio's own Workings total by the stolen amount.
+    Reproduced live in isolation before touching anything (a KOL invoice
+    wrongly absorbing a MUM receipt's full amount, going negative-open in
+    the process) - confirmed real, not theoretical. TB Cross-Check never
+    does this invoice-level matching at all, so it stayed perfectly clean
+    for both branches the whole time, which is exactly why the client's
+    own challenge in item 48's discussion ("if TB Cross-Check already
+    proves everything was captured, why is there still a gap neither
+    Pending Review nor Unapplied Cash/CN explains") was the right
+    question to keep pushing on. Fixed by adding `branch_id` into the
+    match key and into both comparison tuples inside `compute_invoice_
+    position` itself - a single, centralized fix that every call site
+    inherits automatically, rather than patching each of them separately.
+    All 592 existing tests still passed unchanged (nothing relied on the
+    old cross-branch behavior); added a dedicated regression test
+    reproducing the exact scenario. This is very likely the client's own
+    real ₹15,500, or a meaningful part of it, if the same party transacts
+    at more than one of their branches - worth re-checking Reconciliation
+    Check after pulling this fix.
+
+50. **NEW, resolved: CN/Receipt classification's "Current" label replaced
+    with two self-explanatory ones.** Client's own catch: "Current"
+    explained nothing about what it meant, and silently bundled two
+    different cases under one word - a CN/Receipt genuinely sitting
+    on-account with no reference at all (exactly what `compute_unapplied_
+    cash_by_party`/`compute_unapplied_cn_by_party` already total
+    elsewhere as Unapplied Cash/CN) and one whose reference correctly
+    matched a tracked invoice. Client's own explicit naming: the
+    on-account case must read as "Unapplied Cash"/"Unapplied CN" (the
+    same words already used for its own total, not a generic "nothing to
+    review" label that hides what it actually is), and the matched case
+    as "Matched". The stored `RegisterClassification.CURRENT` enum value
+    is unchanged - still the one thing `compute_invoice_position` and the
+    unapplied-total functions key their own filtering on - only the label
+    a human reads is split, via new `credit_note_classification_label`/
+    `receipt_journal_classification_label` helpers (`ar_mis/registers.py`)
+    registered as Jinja filters. Applied everywhere the word showed:
+    both registers' pills and their "What Classification means"
+    explainer cards, the Resolve dropdown's "Current (data-entry
+    correction)" option (now "Matched (data-entry correction)" - the
+    underlying `target_classification=current` wire value is untouched),
+    the Classification column's own filter dropdown (now filters on
+    "Matched"/"Unapplied Cash"/"Unapplied CN" as their own distinct
+    values, not lumped under one), and both Excel exports.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day
