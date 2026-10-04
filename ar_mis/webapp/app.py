@@ -53,6 +53,7 @@ from ar_mis.pre_mis_register import compute_pre_mis_register
 from ar_mis.reconciliation import isolate_drift
 from ar_mis.reconciliation_report import (
     compute_concentration_risk,
+    compute_latest_per_party,
     compute_tb_cross_check_summary,
     compute_unreconciled_parties,
 )
@@ -2150,25 +2151,40 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         except ValueError:
             to_date = today
 
-        rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
+        # Client's own later ask: the table defaulted to listing every
+        # week ever recorded for every party (1,930+ rows once a few
+        # months of history pile up) when most of the time a Maker or
+        # Checker just wants each party's current position - exactly what
+        # the three tiles above already show. Default view is that same
+        # reduction (compute_latest_per_party, as of to_date) rather than
+        # the full from_date..to_date range; `view=history` switches back
+        # to the full range, unchanged from before this ask. Kept as a
+        # display-only choice - weekly_snapshot itself is untouched,
+        # still one row per party per branch per week, kept forever.
+        view = request.args.get("view", "latest")
+        if view == "history":
+            rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
+        else:
+            view = "latest"
+            rows = compute_latest_per_party(all_rows, as_of=to_date)
         summary = compute_tb_cross_check_summary(all_rows, as_of=to_date)
         return render_template(
             "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness,
             from_date=from_date.isoformat(), to_date=to_date.isoformat(),
-            branches=branches, selected_branch_id=branch_id, groupings=groupings,
+            branches=branches, selected_branch_id=branch_id, groupings=groupings, view=view,
         )
 
     @app.route("/reports/tb-cross-check/export.xlsx")
     def tb_cross_check_export():
         """Client's explicit ask: not just the narrow unreconciled-parties
         list (export_unreconciled_parties below), but the complete TB
-        Cross-Check table as displayed on screen - every row in the
-        chosen from/to date range, reconciled and mismatched alike - so a
-        Maker can apply their own filter/pivot in Excel instead of being
-        limited to this screen's own search/filter. Uses the exact same
-        from_date/to_date AND branch_id scoping as tb_cross_check_report,
-        so the download always matches what was on screen when it was
-        clicked.
+        Cross-Check table as displayed on screen, so a Maker can apply
+        their own filter/pivot in Excel instead of being limited to this
+        screen's own search/filter. Uses the exact same from_date/to_date,
+        branch_id, AND view scoping as tb_cross_check_report, so the
+        download always matches what was on screen when it was clicked -
+        `view=latest` (the default) exports each party's current row
+        only, `view=history` exports the full from/to range.
         """
         today = date.today()
         try:
@@ -2180,6 +2196,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         except ValueError:
             to_date = today
         branch_id = request.args.get("branch_id", "").strip()
+        view = request.args.get("view", "latest")
 
         store = get_store()
         all_rows = store.all_weekly_snapshot_rows()
@@ -2187,7 +2204,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         if branch_id:
             all_rows = [r for r in all_rows if r.branch_id == branch_id]
-        rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
+        if view == "history":
+            rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
+        else:
+            view = "latest"
+            rows = compute_latest_per_party(all_rows, as_of=to_date)
         wb = build_tb_cross_check_workbook(rows, from_date, to_date)
         buf = BytesIO()
         wb.save(buf)

@@ -45,12 +45,18 @@ class ConcentrationRiskSummary:
     top_n_percent: Decimal
 
 
-def _latest_per_party(rows: list[WeeklySnapshotRow], as_of: date | None) -> list[WeeklySnapshotRow]:
-    """Shared reduction behind both compute_tb_cross_check_summary and
-    compute_unreconciled_parties - only each party's most recently
-    recorded week (on or before `as_of`, when given) reflects their
-    CURRENT state; earlier weeks for the same party are history, not
-    still-open exceptions.
+def compute_latest_per_party(rows: list[WeeklySnapshotRow], as_of: date | None = None) -> list[WeeklySnapshotRow]:
+    """Shared reduction behind compute_tb_cross_check_summary and
+    compute_unreconciled_parties, and TB Cross-Check's own default table
+    view (client's own later ask: the table should default to each
+    party's current state, same as its own tiles already show, rather
+    than always listing every week ever recorded) - only each party's
+    most recently recorded week (on or before `as_of`, when given)
+    reflects their CURRENT state; earlier weeks for the same party are
+    history, not still-open exceptions. Public (not the underscore-
+    prefixed `_latest_per_party` this was before) specifically so the
+    webapp route can reuse the exact same reduction the tiles already
+    use, rather than a second, differently-written one that could drift.
     """
     eligible = rows if as_of is None else [r for r in rows if r.week_ending <= as_of]
     latest_by_party: dict[tuple[str, str], WeeklySnapshotRow] = {}
@@ -88,7 +94,7 @@ def compute_tb_cross_check_summary(
     immediately compare against Tally's own Sundry Debtors total for the
     same date to confirm the pull is complete and correct.
     """
-    latest = _latest_per_party(rows, as_of)
+    latest = compute_latest_per_party(rows, as_of)
     mismatched = [r for r in latest if not r.reconciled]
     return TBCrossCheckSummary(
         parties_with_current_difference=len(mismatched),
@@ -110,7 +116,7 @@ def compute_unreconciled_parties(
     human's attention lead the file, not whatever order the database
     happens to return.
     """
-    latest = _latest_per_party(rows, as_of)
+    latest = compute_latest_per_party(rows, as_of)
     mismatched = [r for r in latest if not r.reconciled]
     mismatched.sort(key=lambda r: abs(r.difference), reverse=True)
     return mismatched
@@ -140,7 +146,7 @@ def compute_concentration_risk(
     the absolute-amount ranking, so the percentage always reflects
     reality, never just the visible top_n slice.
     """
-    latest = _latest_per_party(rows, as_of)
+    latest = compute_latest_per_party(rows, as_of)
     total_ar = sum((r.closing_extracted for r in latest), Decimal("0.00"))
     ranked = sorted(latest, key=lambda r: r.closing_extracted, reverse=True)[:top_n]
 

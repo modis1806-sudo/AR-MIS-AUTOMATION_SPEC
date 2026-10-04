@@ -3777,12 +3777,46 @@ def test_tb_cross_check_date_range_scopes_the_table_but_never_shrinks_the_runnin
     store.close()
 
     # A narrow later range that doesn't include week ending 2026-01-05 -
-    # the row must not appear in the table, but the party's last known
-    # balance must still count toward Total Debtor as per Books.
-    resp = client.get("/reports/tb-cross-check?from_date=2026-06-01&to_date=2026-06-30")
+    # the row must not appear in Full History view, but the party's last
+    # known balance must still count toward Total Debtor as per Books.
+    resp = client.get("/reports/tb-cross-check?from_date=2026-06-01&to_date=2026-06-30&view=history")
     assert resp.status_code == 200
     assert b"2026-01-05" not in resp.data
     assert b"1,000.00" in resp.data  # still in the Total Debtor tile
+
+
+def test_tb_cross_check_defaults_to_latest_only_one_row_per_party(client):
+    # Client's own ask: the table defaulted to listing every week ever
+    # recorded (1,930+ rows once history piles up) - now defaults to each
+    # party's current position, same reduction the tiles already use,
+    # with the full history still one click away, never discarded.
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.pipeline import process_branch_data
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 5), [], {"P1": Decimal("-1000.00")})
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 12), [], {"P1": Decimal("-1000.00")})
+    store.close()
+
+    resp = client.get("/reports/tb-cross-check")
+    assert resp.status_code == 200
+    assert b"2026-04-05" not in resp.data  # superseded week, not shown by default
+    assert b"2026-04-12" in resp.data  # the latest week, shown
+    assert b">Latest only<" in resp.data
+    assert b">Full history<" in resp.data
+
+    history = client.get("/reports/tb-cross-check?view=history")
+    assert b"2026-04-05" in history.data
+    assert b"2026-04-12" in history.data
+
+
+def test_tb_cross_check_view_choice_survives_the_date_range_form(client):
+    # The date-range form must carry the current view forward - submitting
+    # Apply from Full History must not silently snap back to Latest only.
+    resp = client.get("/reports/tb-cross-check?view=history")
+    assert b'<input type="hidden" name="view" value="history">' in resp.data
 
 
 def test_tb_cross_check_branch_filter_scopes_table_and_tiles(client):

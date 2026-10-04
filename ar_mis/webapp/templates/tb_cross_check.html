@@ -9,6 +9,7 @@
 {% include "_freshness.html" %}
 
 <form class="as-of-form" method="get">
+  <input type="hidden" name="view" value="{{ view }}">
   <div>
     <label for="branch_id">Branch</label>
     <select id="branch_id" name="branch_id">
@@ -19,7 +20,7 @@
     </select>
   </div>
   <div>
-    <label for="from_date">From</label>
+    <label for="from_date">From{% if view == 'latest' %} <span style="font-weight:400; color:#6b7280;">(Full history view only)</span>{% endif %}</label>
     <input type="date" id="from_date" name="from_date" value="{{ from_date }}">
   </div>
   <div>
@@ -51,10 +52,19 @@
     <div class="kpi-caption">As of {{ to_date }}</div>
   </div>
 </div>
-<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. The table below is scoped to {{ from_date }} to {{ to_date }} for browsing; the tiles never shrink just because a narrower range is on screen. Searching or filtering the table itself only changes which rows you're looking at — it never touches the three tiles above. The Branch dropdown above is different: picking a branch there re-scopes the tiles too, down to that branch alone.</p>
+<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. Searching or filtering the table itself only changes which rows you're looking at — it never touches the three tiles above. The Branch dropdown above is different: picking a branch there re-scopes the tiles too, down to that branch alone.</p>
+
+<div style="margin-bottom:16px;">
+  <a class="btn {{ 'secondary' if view != 'latest' else '' }}" href="{{ url_for('tb_cross_check_report', from_date=from_date, to_date=to_date, branch_id=selected_branch_id, view='latest') }}">Latest only</a>
+  <a class="btn {{ 'secondary' if view != 'history' else '' }}" href="{{ url_for('tb_cross_check_report', from_date=from_date, to_date=to_date, branch_id=selected_branch_id, view='history') }}">Full history</a>
+  <span class="subtitle" style="margin:0 0 0 8px;">
+    {% if view == 'latest' %}Each party's most recent week on or before {{ to_date }} — the same position the tiles above show, one row per party. The underlying weekly data is untouched and kept forever; this is just what's listed by default.
+    {% else %}Every week from {{ from_date }} to {{ to_date }} for every party — the full audit trail, mismatches included.{% endif %}
+  </span>
+</div>
 
 {% if rows %}
-<p style="margin-bottom:8px;"><a class="btn secondary" href="{{ url_for('tb_cross_check_export', from_date=from_date, to_date=to_date, branch_id=selected_branch_id) }}">Export to Excel</a></p>
+<p style="margin-bottom:8px;"><a class="btn secondary" href="{{ url_for('tb_cross_check_export', from_date=from_date, to_date=to_date, branch_id=selected_branch_id, view=view) }}">Export to Excel</a></p>
 <div class="table-tools" data-tt="tbcheck">
   <input type="search" data-tt-search placeholder="Search party, branch...">
   <span data-tt-filters></span>

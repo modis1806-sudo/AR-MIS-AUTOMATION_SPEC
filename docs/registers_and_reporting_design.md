@@ -1695,6 +1695,71 @@ resolves former open item 1.
       storage, export, matching logic, template) not undertaken here
       without a real example and explicit sign-off first.
 
+54. **NEW, resolved: TB Cross-Check's table now defaults to one row per
+    party (current position), not every week ever recorded.** Client's
+    own catch, from live data: the table listed 1,930+ rows once several
+    months of weekly extraction had piled up, one per party per week
+    forever. Client's first instinct was to replace the underlying
+    weekly incremental engine itself with a single go-live-to-today
+    cumulative check instead. Traced why that wouldn't actually help
+    before building it: `resolve_opening_balances` already chains each
+    week's Opening from the PRIOR week's own stored `closing_computed`,
+    recursively, all the way back to the original Pre-MIS seed - so
+    today's latest `closing_computed` is already mathematically
+    identical to "go-live balance + every movement since," just computed
+    incrementally. A real switch to an explicit cumulative recomputation
+    would (a) produce the exact same number, given the same vouchers and
+    matching rules - it fixes nothing numerically; (b) cost real,
+    growing performance every single run, forever, since it would need
+    to re-fetch and reprocess the ENTIRE voucher history from Tally each
+    time instead of just that week's own slice (this codebase already
+    has one past bug fix for exactly "large date-range fetch freezes" -
+    reintroducing that shape of problem on a schedule that only gets
+    slower as the business ages); and (c) permanently lose the one real
+    benefit weekly rows give: when something's wrong, knowing which
+    week's handful of vouchers to go looking in, instead of "somewhere
+    in the last 18 months." Laid this out for the client plainly rather
+    than build what was first asked for; client agreed to the
+    alternative instead.
+
+    Implemented: `compute_latest_per_party` (`ar_mis/reconciliation_
+    report.py`, public - was the private `_latest_per_party` already
+    backing the three KPI tiles' own "current state" figures, exposed so
+    the table can reuse the identical reduction rather than a second one
+    that could drift) is now the table's default (`?view=latest`,
+    reusing `to_date` the same way the tiles already do - from_date
+    doesn't apply in this view). `?view=history` switches back to the
+    exact prior behavior (the full from_date..to_date range, every week,
+    unchanged). Nothing about `weekly_snapshot` itself changed - still
+    one row per party per branch per week, written and kept forever; this
+    is a display-only default. The view choice threads through the
+    date-range form (a hidden field, so clicking Apply from Full History
+    doesn't silently snap back to Latest) and the Excel export (so the
+    download always matches what's on screen, exactly as that export's
+    own docstring already promised before this change).
+
+    Two other client findings from the same live-data review, surfaced
+    but not yet acted on:
+    - **Journal vouchers where both legs are tracked Sundry Debtors** are
+      excluded from the Receipt & Journal Register by the existing
+      "touches multiple tracked debtors... needs a human look, not a
+      guess" rule (confirmed, via the exact Reason text client checked,
+      to be this case and not the separate "no leg touches a tracked
+      debtor" one) - working as designed, but there is currently no
+      action a human can take to resolve one into the registers (unlike
+      Pending Review's own Resolve flow). Confirmed this does NOT affect
+      TB Cross-Check's own correctness: `aggregate_party_movements` (TB
+      Cross-Check's own roll-forward) has no such exclusion at all - it
+      sums every voucher entry per party unconditionally, so a voucher
+      excluded from the register for this reason is still counted
+      correctly in TB Cross-Check's own independent total. That's also
+      the answer to the client's own "is TB checking against itself"
+      question from the same review: `closing_extracted` comes from a
+      live, independent `client.fetch_ytd_sundry_debtors()` pull, never
+      from anything this app itself computes - confirmed by tracing the
+      exact call chain, not asserted. A follow-up worth doing: a resolve
+      action for the multi-debtor exclusion, if the client wants one.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day
