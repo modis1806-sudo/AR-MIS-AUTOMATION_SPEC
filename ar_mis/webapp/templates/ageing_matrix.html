@@ -9,6 +9,7 @@
 {% include "_freshness.html" %}
 
 <form class="as-of-form" method="get">
+  <input type="hidden" name="tile" value="{{ tile }}">
   <div>
     <label for="as_of">Show position as of</label>
     <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
@@ -24,6 +25,14 @@
   </div>
   <button class="btn secondary" type="submit">Apply</button>
 </form>
+
+{% if tile %}
+<p class="subtitle" style="margin-top:-8px;">
+  Arrived from the
+  {% if tile == "bad_debt" %}Bad Debt Risk (181+){% elif tile == "overdue" %}Overdue AR{% elif tile == "notional_interest" %}Notional Interest Cost{% else %}{{ tile }}{% endif %}
+  tile — each party's "View invoices" link below stays scoped to that same criterion.
+</p>
+{% endif %}
 
 <div class="section-heading">Branch Summary</div>
 <div class="table-scroll" style="margin-bottom:24px;">
@@ -56,6 +65,8 @@
   <span class="tt-count" data-tt-count></span>
   <span class="tt-selected" data-tt-selected-count>0 selected</span>
   <span class="tt-count">Total Open of these rows: <strong data-tt-sum="ageingcust:total_open">0.00</strong></span>
+  <span class="tt-count">Overdue Total: <strong data-tt-sum="ageingcust:overdue_total">0.00</strong></span>
+  <span class="tt-count">Notional Interest Cost: <strong data-tt-sum="ageingcust:notional_interest_cost">0.00</strong></span>
 </div>
 {% endif %}
 <div class="table-scroll">
@@ -68,8 +79,11 @@
       <th data-tt-filter data-tt-col="grouping">Grouping</th>
       {% for bucket in bucket_order %}<th>{{ bucket }}</th>{% endfor %}
       <th>Total Open</th>
+      <th>Overdue Total</th>
+      <th>Notional Interest Cost</th>
       <th>Tally Closing Balance</th>
       <th>Difference</th>
+      <th>Detail</th>
     </tr>
   </thead>
   <tbody>
@@ -81,13 +95,16 @@
       <td data-tt-col="grouping">{{ row.grouping or '—' }}</td>
       {% for bucket in bucket_order %}<td>{{ row.buckets[bucket]|inr }}</td>{% endfor %}
       <td data-tt-col="total_open" data-value="{{ row.total_open }}">{{ row.total_open|inr }}</td>
+      <td data-tt-col="overdue_total" data-value="{{ row.overdue_total }}">{{ row.overdue_total|inr }}</td>
+      <td data-tt-col="notional_interest_cost" data-value="{{ row.notional_interest_cost }}">{{ row.notional_interest_cost|inr }}</td>
       <td>{{ row.tally_closing_balance|inr if row.tally_closing_balance is not none else 'No Tally figure on record' }}</td>
       <td {% if row.difference is not none and row.difference != 0 %}style="color:#b91c1c; font-weight:600;"{% endif %}>
         {{ row.difference|inr if row.difference is not none else '—' }}
       </td>
+      <td><a href="{{ url_for('sales_dn_register', as_of=as_of, salesdn_search=row.party_id, **drill_filter_params) }}">View invoices</a></td>
     </tr>
   {% else %}
-    <tr><td colspan="{{ 7 + bucket_order|length }}" class="empty">No parties found.</td></tr>
+    <tr><td colspan="{{ 9 + bucket_order|length }}" class="empty">No parties found.</td></tr>
   {% endfor %}
   </tbody>
 </table>

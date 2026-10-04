@@ -115,3 +115,30 @@ def test_same_party_multiple_invoices_summed_per_bucket():
     rows = compute_ageing_matrix([inv1, inv2], [], [], {}, {}, as_of=date(2026, 1, 2))
     assert len(rows) == 1
     assert rows[0].total_open == Decimal("1500.00")
+
+
+def test_overdue_total_excludes_current_and_closed_buckets():
+    # One not-yet-due invoice (Current, excluded) and one far overdue
+    # (181+, included) - overdue_total must count only the latter, same
+    # population as AR Snapshot's own Overdue AR tile.
+    not_yet_due = _invoice("INV001", "ACME", "B1", date(2026, 9, 1), Decimal("1000.00"))
+    overdue = _invoice("INV002", "ACME", "B1", date(2025, 1, 1), Decimal("2000.00"))
+    rows = compute_ageing_matrix([not_yet_due, overdue], [], [], {}, {}, as_of=date(2026, 9, 12))
+    assert len(rows) == 1
+    assert rows[0].total_open == Decimal("3000.00")
+    assert rows[0].overdue_total == Decimal("2000.00")
+
+
+def test_notional_interest_cost_summed_per_party_matches_per_invoice_formula():
+    inv = _invoice("INV001", "ACME", "B1", date(2026, 1, 1), Decimal("100000.00"))
+    as_of = date(2026, 9, 12)
+    rows = compute_ageing_matrix([inv], [], [], {}, {}, as_of=as_of)
+    days_past_due = (as_of - date(2026, 1, 31)).days
+    expected = Decimal("100000.00") * Decimal("0.10") * Decimal(days_past_due) / Decimal("365")
+    assert rows[0].notional_interest_cost == expected
+
+
+def test_notional_interest_cost_is_zero_for_a_not_yet_due_invoice():
+    inv = _invoice("INV001", "ACME", "B1", date(2026, 9, 1), Decimal("1000.00"))
+    rows = compute_ageing_matrix([inv], [], [], {}, {}, as_of=date(2026, 9, 12))
+    assert rows[0].notional_interest_cost == Decimal("0.00")

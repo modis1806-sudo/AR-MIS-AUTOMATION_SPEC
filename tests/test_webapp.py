@@ -3140,12 +3140,15 @@ def test_ar_snapshot_shows_renamed_labels_and_cross_check_links(client):
     assert "/reports/exceptions?as_of=2026-09-12" in html
 
 
-def test_ar_snapshot_overdue_bad_debt_and_notional_interest_link_to_sales_dn_register(client):
+def test_ar_snapshot_overdue_bad_debt_and_notional_interest_link_to_ageing_matrix_by_party(client):
+    # Client's own confirmed proposal: these 3 tiles link to a party-wise
+    # summary first (Ageing Matrix), not straight to invoice-level detail.
     _run_a_real_extraction(client)
     resp = client.get("/reports/ar-snapshot?as_of=2026-09-12")
     html = resp.get_data(as_text=True)
-    assert "/registers/sales-dn?as_of=2026-09-12&amp;salesdn_filter_overdue=Yes" in html
-    assert "/registers/sales-dn?as_of=2026-09-12&amp;salesdn_filter_bucket=181%2B" in html
+    assert "/reports/ageing-matrix?as_of=2026-09-12&amp;tile=overdue" in html
+    assert "/reports/ageing-matrix?as_of=2026-09-12&amp;tile=bad_debt" in html
+    assert "/reports/ageing-matrix?as_of=2026-09-12&amp;tile=notional_interest" in html
 
 
 def test_ar_snapshot_reachable_by_checker_not_by_extraction_routes(roleless_client):
@@ -3424,6 +3427,45 @@ def test_ageing_matrix_fy_filter_narrows_customer_rows(client):
     resp_fy27 = client.get("/reports/ageing-matrix?as_of=2026-09-12&fy=2026-27")
     assert resp_fy27.status_code == 200
     assert b"BETA" not in resp_fy27.data
+
+
+def test_ageing_matrix_shows_overdue_total_and_notional_interest_columns(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12")
+    assert b"Overdue Total" in resp.data
+    assert b"Notional Interest Cost" in resp.data
+    assert b'data-tt-col="overdue_total"' in resp.data
+    assert b'data-tt-col="notional_interest_cost"' in resp.data
+    assert b'data-tt-sum="ageingcust:overdue_total"' in resp.data
+    assert b'data-tt-sum="ageingcust:notional_interest_cost"' in resp.data
+
+
+def test_ageing_matrix_row_links_to_sales_dn_register_scoped_to_that_party(client):
+    _run_a_real_extraction(client)
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12")
+    html = resp.get_data(as_text=True)
+    assert "View invoices" in html
+    assert "/registers/sales-dn?as_of=2026-09-12&amp;salesdn_search=A+%26+B+Transport+Pvt+Ltd" in html
+
+
+def test_ageing_matrix_tile_param_scopes_the_drill_through_to_the_same_ageing_filter(client):
+    _run_a_real_extraction(client)
+
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12&tile=bad_debt")
+    html = resp.get_data(as_text=True)
+    assert "Bad Debt Risk (181+)" in html
+    assert "salesdn_filter_bucket=181%2B" in html
+
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12&tile=overdue")
+    html = resp.get_data(as_text=True)
+    assert "Overdue AR" in html
+    assert "salesdn_filter_overdue=Yes" in html
+
+    # No tile param (a direct visit from Reports) - no ageing filter at all.
+    resp = client.get("/reports/ageing-matrix?as_of=2026-09-12")
+    html = resp.get_data(as_text=True)
+    assert "salesdn_filter_bucket" not in html
+    assert "salesdn_filter_overdue" not in html
 
 
 def test_ageing_matrix_reachable_by_checker(roleless_client):

@@ -48,6 +48,8 @@ class AgeingMatrixRow:
     grouping: str | None
     buckets: dict[str, Decimal]
     total_open: Decimal
+    overdue_total: Decimal
+    notional_interest_cost: Decimal
     tally_closing_balance: Decimal | None
     difference: Decimal | None
 
@@ -76,12 +78,24 @@ def compute_ageing_matrix(
 
     for party_id, branch_id in parties:
         buckets: dict[str, Decimal] = {b: Decimal("0.00") for b in _AGEING_BUCKET_ORDER}
+        notional_interest_cost = Decimal("0.00")
         for row in sales_dn_rows:
             if row.party_id != party_id or row.branch_id != branch_id:
                 continue
             position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of)
             buckets[position.ageing_bucket] += position.open_amount
+            notional_interest_cost += position.notional_interest
         total_open = sum(buckets.values(), Decimal("0.00"))
+        # Matches AR Snapshot's own Overdue AR tile exactly: every bucket
+        # except "Current" (not yet due) and "Closed" (nothing left to
+        # chase, always ~0 here anyway) - same AGEING_BUCKET_ORDER this
+        # whole app shares, so a future bucket added there is included
+        # here automatically rather than needing a second list kept in
+        # sync by hand.
+        overdue_total = sum(
+            (amount for bucket, amount in buckets.items() if bucket not in ("Current", "Closed")),
+            Decimal("0.00"),
+        )
 
         customer = customer_masters.get((party_id, branch_id))
         grouping = customer.grouping.value if customer is not None and customer.grouping is not None else None
@@ -96,6 +110,8 @@ def compute_ageing_matrix(
                 grouping=grouping,
                 buckets=buckets,
                 total_open=total_open,
+                overdue_total=overdue_total,
+                notional_interest_cost=notional_interest_cost,
                 tally_closing_balance=tally_balance,
                 difference=difference,
             )

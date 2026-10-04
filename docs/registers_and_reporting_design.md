@@ -1458,6 +1458,55 @@ resolves former open item 1.
     `Store.all_pre_mis_adjustments()` already produce for the template,
     never a separate recomputation.
 
+48. **NEW, resolved: Overdue AR / Bad Debt Risk / Notional Interest Cost
+    now drill through a party-wise summary before invoice-level
+    detail.** Client's own explicit structure (confirmed via two targeted
+    questions rather than guessed): these 3 tiles should land on a
+    management-facing "how much per party" summary first, not straight
+    on the AR team's invoice-level register - the two audiences read
+    different things off the same numbers. Reused Ageing Matrix's
+    existing Customer Detail table as that summary layer rather than
+    building a separate report: it already had exactly the right shape
+    (one row per party per branch, every ageing bucket including 181+,
+    Total Open, Tally cross-check) - it only needed two more columns:
+
+    - `AgeingMatrixRow.overdue_total` (`ar_mis/ageing_matrix.py`) - every
+      bucket except Current and Closed, summed directly from
+      `AGEING_BUCKET_ORDER` so a bucket added there later is picked up
+      automatically rather than needing a second hardcoded list.
+    - `AgeingMatrixRow.notional_interest_cost` - that party's
+      `InvoicePosition.notional_interest` (item 45) summed across their
+      open invoices.
+
+    The 3 AR Snapshot tiles now link to `/reports/ageing-matrix?tile=...`
+    instead of straight to Sales & DN Register. Each customer row there
+    carries its own "View invoices" link into Sales & DN Register,
+    scoped to exactly that party (`salesdn_search=<party_id>`, reusing
+    item 45's own URL-prefilter mechanism) AND the same ageing criterion
+    the tile represents (`tile=bad_debt` → `salesdn_filter_bucket=181+`;
+    `tile=overdue` or `tile=notional_interest` → `salesdn_filter_overdue=
+    Yes`, since Notional Interest is computed only over the overdue
+    population) - client's own explicit call on the second question: the
+    detail view for one party should stay scoped to what the summary row
+    means, not open into that party's whole invoice history. A direct
+    visit to Ageing Matrix (no `tile` param) carries no extra ageing
+    filter on its own per-party links. Verified live (Playwright) end to
+    end: AR Snapshot's Bad Debt Risk tile → Ageing Matrix (tile=bad_debt)
+    → that party's own "View invoices" link → Sales & DN Register,
+    landing on a genuinely empty, correctly-filtered table for a fixture
+    with nothing in the 181+ bucket; the same party's Overdue AR path
+    correctly shows their one actually-overdue invoice.
+
+    Not done, left as a flagged follow-up rather than silently decided:
+    no row-level filtering was added to Ageing Matrix itself (e.g.
+    "hide every party with zero 181+ exposure") - its filter dropdowns
+    only support exact-value matching, and a "nonzero in this bucket"
+    filter is a different kind of filter that wasn't part of what was
+    confirmed. Today the view there is always every party, every bucket
+    visible side by side (a cross-tab's whole point); sorting or
+    filtering it by the arriving tile's own column is a small, separate
+    addition if wanted next.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

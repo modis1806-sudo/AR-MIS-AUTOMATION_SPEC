@@ -1997,6 +1997,25 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         )
         bucket_order = AGEING_BUCKET_ORDER
 
+        # AR Snapshot's Overdue AR / Bad Debt Risk / Notional Interest
+        # Cost tiles link here with ?tile=... so each party row's own
+        # "View invoices" link can carry the SAME ageing criterion the
+        # tile represents through to Sales & DN Register (client's own
+        # call: the detail view for one party should stay scoped to
+        # exactly what the summary row it came from means, not open up
+        # into that party's entire invoice history). No tile param (a
+        # direct visit from Reports) means no extra ageing filter, just
+        # that party's invoices.
+        tile = request.args.get("tile", "")
+        drill_filter_params = {
+            "bad_debt": {"salesdn_filter_bucket": "181+"},
+            "overdue": {"salesdn_filter_overdue": "Yes"},
+            # Notional Interest Cost is computed only over overdue
+            # invoices (registers.py's own compute_invoice_position),
+            # same population Overdue AR's own link uses.
+            "notional_interest": {"salesdn_filter_overdue": "Yes"},
+        }.get(tile, {})
+
         return render_template(
             "ageing_matrix.html",
             as_of=as_of.isoformat(),
@@ -2006,6 +2025,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             branch_rows=branch_rows,
             customer_rows=customer_rows,
             bucket_order=bucket_order,
+            tile=tile,
+            drill_filter_params=drill_filter_params,
         )
 
     @app.route("/reports/weekly-movement")
