@@ -2016,14 +2016,55 @@ resolves former open item 1.
     clean, hiding the fact that the CN never made it into any register.
     Full suite green (640 tests) at this point.
 
-    **Still to come, per the agreed build order**: the guided workflow
-    chaining extraction → combined cross-check pop-up → branch-total
-    confirmation → inline snapshot recording or correction routing, and
-    the audited correction actions (exclude/add/correct a voucher,
-    extending the existing Pre-MIS adjustment and drift-incorporation
-    patterns - client explicitly rejected silent edit/delete of original
-    voucher data, since that is the exact failure class this whole system
-    was built to prevent).
+    **Phase 4/5 built and tested: the guided post-extraction workflow.**
+    Decision on "new page vs extend the existing one" was the client's own
+    call, left to ease-of-use: extended the existing Extract & Save /
+    Manual Upload pages rather than building a separate wizard screen, so
+    there's nothing new to learn - the pages a Maker already uses just do
+    more automatically after they click the button.
+
+    `test_extraction_save` now pulls Section 4.2's Sundry-Debtors-scoped
+    voucher list live, per chunk, the same way the existing YTD drift
+    check already does an extra pull per chunk - this was the real trigger
+    this check needed, closing the gap flagged at the end of Phase 2
+    without a separate manual button. Persisted, then compared against the
+    branch's accumulated registers (`compute_ytd_vs_register_comparison`)
+    right there in the same request.
+
+    One combined banner - "Cross-Check: ALL CLEAR" or "DISCREPANCY
+    FOUND" - covers both checks together, per the client's own explicit
+    point: since both ultimately depend on the Registers, a real gap shows
+    up in both at once, so there is one status to look at, not two to
+    reconcile against each other. Below it, a "Before you move on" prompt
+    links to Branch P&L Cross-Check and offers Yes/No: Yes posts straight
+    to the existing Weekly Movement Register's own recording action
+    (inline, no navigating away); No links to Register Exceptions Review
+    as where to go look right now, pending the real correction actions
+    (Phase 6, not yet built). Manual Upload gets the same combined banner
+    and Yes/No block, but never claims a Check 1 result, since there is no
+    live Tally to pull Section 4.2's voucher list from in that path -
+    stated as an honest absence, not a silent 0 or a false "clear."
+
+    A third instance of the exact same sign-convention bug (items 51/52's
+    `abs()` bug, Phase 3's `invoice_value` bug, now this one) was caught by
+    the test suite before being trusted: `compute_ytd_vs_register_
+    comparison` compared `YtdDebtorVoucherRow.amount` (the party's own RAW
+    entry) directly against `SalesDNRegisterRow.invoice_value` (a derived,
+    already-positive gross total) with no sign reconciliation - every
+    genuinely matching Sales/Debit Note voucher showed as a false mismatch
+    until `flip_sign` was applied to the YTD side for just those two
+    categories. The three-times-repeated shape of this exact mistake (two
+    different "amount" fields on two different row types, assumed to share
+    a convention because they're both called amounts) is itself worth
+    remembering for any future work that compares across these registers.
+
+    Full suite green (645 tests) at this point.
+
+    **Still to come, per the agreed build order**: the audited correction
+    actions (exclude/add/correct a voucher, extending the existing Pre-MIS
+    adjustment and drift-incorporation patterns - client explicitly
+    rejected silent edit/delete of original voucher data, since that is
+    the exact failure class this whole system was built to prevent).
 
 ## Deferred to a later version (not rejected, not in scope now)
 

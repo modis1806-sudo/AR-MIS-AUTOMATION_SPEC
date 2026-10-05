@@ -37,6 +37,19 @@ reuse the same voucher numbering independently in Tally (the exact
 cross-branch collision item 49 already had to fix in
 compute_invoice_position). The matching key here includes branch_id for
 the identical reason.
+
+Same sign-convention trap as aggregate_party_movements_from_registers
+(rollforward.py), caught the same way - by a test failing, not assumed
+safe because the fields are both called "amount": YtdDebtorVoucherRow.amount
+is the party's own ledger entry's RAW amount_as_extracted (Tally's at-
+source convention - a normal Sale's party leg is Dr negative), matching
+CreditNoteRegisterRow.cn_amount and ReceiptJournalRegisterRow.amount
+directly. But SalesDNRegisterRow.invoice_value is a DERIVED, already-
+positive gross total (built from abs() of the voucher's OTHER entries),
+the opposite sign of the same real sale's YTD-pull amount. Comparing them
+raw would show every genuinely matching Sales/Debit Note voucher as a
+false "Amount Mismatch" - flip_sign is applied to the YTD side for just
+those two categories before comparison, nowhere else.
 """
 from __future__ import annotations
 
@@ -52,6 +65,7 @@ from ar_mis.models import (
     YtdDebtorVoucherRow,
 )
 from ar_mis.money import is_match
+from ar_mis.sign import flip_sign
 
 MATCH = "Match"
 AMOUNT_MISMATCH = "Amount Mismatch"
@@ -150,7 +164,11 @@ def compute_ytd_vs_register_comparison(
     for row in ytd_rows:
         by_key = ytd_amounts_by_type.setdefault(row.voucher_type, {})
         key = (row.branch_id, row.voucher_number, row.party_id)
-        by_key[key] = by_key.get(key, Decimal("0.00")) + row.amount
+        # Sales/Debit Note: flip to match invoice_value's own already-
+        # positive convention (see this module's own docstring) - Credit
+        # Note/Receipt/Journal already share the raw convention as-is.
+        amount = flip_sign(row.amount) if row.voucher_type in _SALES_DN_TYPES else row.amount
+        by_key[key] = by_key.get(key, Decimal("0.00")) + amount
         ytd_row_by_type_key.setdefault((row.voucher_type, key), row)
 
     rows: list[YtdVsRegisterRow] = []

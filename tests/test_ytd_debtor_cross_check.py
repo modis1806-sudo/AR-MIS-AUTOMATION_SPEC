@@ -35,12 +35,19 @@ def _ytd_row(voucher_type: str, voucher_number: str, party_id: str, amount: Deci
 
 
 def test_matching_sales_voucher_shows_as_match():
-    ytd = [_ytd_row("Sales", "1", "ACME", Decimal("1000.00"))]
+    # YtdDebtorVoucherRow.amount is the party's own RAW entry (Tally's
+    # at-source convention - a normal Sale's party leg is Dr negative),
+    # while SalesDNRegisterRow.invoice_value is a derived, already-
+    # positive gross total - opposite signs for the same real sale. The
+    # comparison itself must flip one to match the other (see this
+    # module's own docstring) - a real bug caught by this exact test
+    # before the fix, when both sides were positive only by coincidence.
+    ytd = [_ytd_row("Sales", "1", "ACME", Decimal("-1000.00"))]
     sales_dn = [_sales_dn_row("1", "ACME", Decimal("1000.00"))]
     rows = compute_ytd_vs_register_comparison(ytd, sales_dn, [], [])
     assert len(rows) == 1
     assert rows[0].status == MATCH
-    assert rows[0].ytd_amount == Decimal("1000.00")
+    assert rows[0].ytd_amount == Decimal("1000.00")  # shown normalized, same convention as register_amount
     assert rows[0].register_amount == Decimal("1000.00")
 
 
@@ -51,7 +58,7 @@ def test_sales_note_type_label_normalizes_to_match_the_ytd_sides_own_label():
     # normalizing one to the other, every genuinely matching Sales voucher
     # would wrongly show as "Extra in Registers" because the two sides'
     # type labels never compared equal.
-    ytd = [_ytd_row("Sales", "1", "ACME", Decimal("500.00"))]
+    ytd = [_ytd_row("Sales", "1", "ACME", Decimal("-500.00"))]
     sales_dn = [_sales_dn_row("1", "ACME", Decimal("500.00"))]
     rows = compute_ytd_vs_register_comparison(ytd, sales_dn, [], [])
     assert len(rows) == 1
@@ -76,7 +83,7 @@ def test_voucher_in_registers_but_not_in_ytd_pull_shows_as_extra():
 
 
 def test_amount_differs_between_the_two_sides_is_its_own_status():
-    ytd = [_ytd_row("Sales", "1", "ACME", Decimal("1000.00"))]
+    ytd = [_ytd_row("Sales", "1", "ACME", Decimal("-1000.00"))]
     sales_dn = [_sales_dn_row("1", "ACME", Decimal("900.00"))]
     rows = compute_ytd_vs_register_comparison(ytd, sales_dn, [], [])
     assert len(rows) == 1
@@ -88,7 +95,7 @@ def test_same_voucher_number_across_different_types_never_cross_contaminate():
     # "1" for the same party are unrelated. Comparing them as if they were
     # the same voucher would silently blend two real, separate things.
     ytd = [
-        _ytd_row("Sales", "1", "ACME", Decimal("1000.00")),
+        _ytd_row("Sales", "1", "ACME", Decimal("-1000.00")),
         _ytd_row("Receipt", "1", "ACME", Decimal("1000.00")),
     ]
     sales_dn = [_sales_dn_row("1", "ACME", Decimal("1000.00"))]

@@ -1,0 +1,35 @@
+{% if result and result.overall_reconciled is defined and result.overall_reconciled is not none %}
+<div class="card" style="{{ 'background:#f0fdf4;border-color:#bbf7d0;' if result.overall_reconciled else 'background:#fef2f2;border-color:#fecaca;' }}">
+  <h2 style="margin-top:0;">
+    {% if result.overall_reconciled %}
+    <span class="pill ok">Cross-Check: ALL CLEAR</span>
+    {% else %}
+    <span class="pill fail">Cross-Check: DISCREPANCY FOUND</span>
+    {% endif %}
+  </h2>
+  <p style="margin-bottom:0;">
+    {% if result.overall_reconciled %}
+    Every party reconciled against Tally's own closing balance{% if result.ytd_vs_register_rows is not none %}, and every voucher Tally itself says touched a Sundry Debtor is accounted for in the Registers{% endif %}.
+    {% else %}
+    Something doesn't tie out — see the detail above for exactly which party or voucher. Data was still recorded, never discarded, but treat this period as not-yet-final until it's fixed.
+    {% endif %}
+  </p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Before you move on</h2>
+  <p class="subtitle" style="margin-top:-4px;">Open <a href="{{ branch_totals_url }}">Branch P&amp;L Cross-Check</a> and eyeball this branch's Sales/CN/DN totals against Tally's own P&amp;L for the same period.</p>
+  {% if result.snapshot_already_recorded %}
+  <p style="color:#6b7280;">{{ result.to_date }}'s company-wide weekly snapshot has already been recorded — nothing more to do here.</p>
+  {% else %}
+  <p style="font-weight:600;">Do the totals look right?</p>
+  <form method="post" action="{{ url_for('weekly_movement_record') }}" style="display:inline;">
+    <input type="hidden" name="week_ending" value="{{ result.to_date }}">
+    <button class="btn" type="submit">Yes — record this week's snapshot now</button>
+  </form>
+  &nbsp;&nbsp;
+  <a class="btn secondary" href="{{ url_for('register_exceptions_review') }}">No — I need to fix something first</a>
+  <p style="font-size:12px;color:#6b7280;margin-top:8px;">Recording the weekly snapshot is a whole-company action (every branch combined, not just this one) — only click Yes once every branch for this period is done.</p>
+  {% endif %}
+</div>
+{% endif %}

@@ -71,6 +71,7 @@ from ar_mis.register_export import (
 from ar_mis.registers import (
     AGEING_BUCKET_ORDER,
     build_bill_reference_lookup,
+    build_ytd_debtor_voucher_rows,
     compute_credit_note_display_fields,
     compute_invoice_position,
     compute_unapplied_ageing_bucket,
@@ -747,15 +748,67 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             except TallyConnectionError as exc:
                 flash(f"Run ending {c_end.isoformat()} was saved, but its YTD drift check could not run: {exc}", "error")
 
+            # Section 4.2's "TB vs Registers" - Check 1, run automatically
+            # as part of this same save, the same way the drift check just
+            # above already does an extra live pull per chunk. Scoped at
+            # the source to Sundry Debtors (see TallyClient.fetch_sundry_
+            # debtor_vouchers' own docstring), never the whole company.
+            ytd_vs_register_rows = []
+            ytd_debtor_pull_error = None
+            try:
+                sd_vouchers = client.fetch_sundry_debtor_vouchers(fy_start, c_end)
+                ytd_debtor_rows = [
+                    row
+                    for voucher in sd_vouchers
+                    for row in build_ytd_debtor_voucher_rows(voucher, party_names, as_of=c_end)
+                ]
+                store.append_ytd_debtor_voucher_rows(ytd_debtor_rows)
+                ytd_vs_register_rows = compute_ytd_vs_register_comparison(
+                    ytd_debtor_rows,
+                    store.all_sales_dn_rows(branch.branch_id),
+                    store.all_credit_note_rows(branch.branch_id),
+                    store.all_receipt_journal_rows(branch.branch_id),
+                )
+            except TallyConnectionError as exc:
+                ytd_debtor_pull_error = (
+                    f"Run ending {c_end.isoformat()} was saved, but its TB-vs-Registers check could not run: {exc}"
+                )
+                flash(ytd_debtor_pull_error, "error")
+
             chunk_results.append({
                 "start": c_start.isoformat(), "end": c_end.isoformat(), "status": "saved",
                 "outcome": outcome, "drift_findings": drift_findings,
+                "ytd_vs_register_rows": ytd_vs_register_rows, "ytd_debtor_pull_error": ytd_debtor_pull_error,
+                "ytd_vs_register_mismatched": sum(1 for r in ytd_vs_register_rows if r.status != MATCH),
             })
 
+        # Client's own explicit point, confirmed correct: since Check 1
+        # and Check 2 both ultimately depend on the same Registers, a real
+        # gap shows up in BOTH - so one combined status, not two separate
+        # ones a Maker has to reconcile against each other themselves.
+        saved_chunks = [cr for cr in chunk_results if cr["status"] == "saved"]
+        # None (never False) when nothing was freshly saved this run (e.g.
+        # every chunk already recorded) - there's no reconciliation result
+        # to report, and showing a banner either way would be actively
+        # misleading, not just uninformative.
+        overall_reconciled = (
+            all(
+                not cr["outcome"].failed_parties
+                and not cr["ytd_vs_register_mismatched"]
+                and not cr["ytd_debtor_pull_error"]
+                for cr in saved_chunks
+            )
+            if saved_chunks
+            else None
+        )
+        already_recorded = store.has_weekly_movement_for_week(to_date)
         result = {
             "mode": "save", "branch": branch,
             "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
             "chunk_results": chunk_results,
+            "any_saved": bool(saved_chunks),
+            "overall_reconciled": overall_reconciled,
+            "snapshot_already_recorded": already_recorded,
         }
         store.close()
         default_from, default_to = from_date, to_date
@@ -959,6 +1012,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     "branch": branch, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
                     "refused": False, "outcome": upload_result.outcome, "drift_findings": upload_result.drift_findings,
                     "fy_start": financial_year_start(to_date).isoformat(),
+                    "overall_reconciled": not upload_result.outcome.failed_parties,
+                    "snapshot_already_recorded": store.has_weekly_movement_for_week(to_date),
+                    # Manual Upload has no live Tally to pull the Section
+                    # 4.2 Sundry-Debtors-scoped voucher list from - Check 1
+                    # only runs as part of a live Extract & Save, never
+                    # here, so this is honestly absent, not silently 0.
+                    "ytd_vs_register_rows": None,
                 }
             except ManualUploadRefused as exc:
                 result = {

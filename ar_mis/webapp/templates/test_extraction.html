@@ -129,6 +129,20 @@
       <p style="font-size:12px;color:#6b7280;">Once checked against Tally, review these permanently in <a href="{{ url_for('register_exceptions_review') }}">Register Exceptions Review</a>.</p>
       {% endif %}
 
+      {% if cr.ytd_debtor_pull_error %}
+      <p style="color:#991b1b; margin-top:16px;">{{ cr.ytd_debtor_pull_error }}</p>
+      {% elif cr.ytd_vs_register_rows %}
+      <p style="font-weight:600; margin-top:16px;">
+        TB vs Registers (Section 4.2):
+        <span class="pill {{ 'ok' if not cr.ytd_vs_register_mismatched else 'fail' }}">
+          {{ 'ALL MATCHED' if not cr.ytd_vs_register_mismatched else cr.ytd_vs_register_mismatched ~ ' MISMATCHED' }}
+        </span>
+      </p>
+      {% if cr.ytd_vs_register_mismatched %}
+      <p style="font-size:12px;color:#6b7280;">See <a href="{{ url_for('ytd_debtor_voucher_report', as_of=cr.end) }}">TB vs Registers — YTD Debtor Vouchers</a> for the exact rows.</p>
+      {% endif %}
+      {% endif %}
+
       {% if cr.drift_findings %}
       <p style="font-weight:600; margin-top:16px;">YTD drift found (backdated entries not part of this run's own extraction):</p>
       <table>
@@ -152,6 +166,7 @@
     {% endif %}
   {% endfor %}
 </div>
+{% include "_post_save_workflow.html" %}
 {% endif %}
 
 <div class="card">

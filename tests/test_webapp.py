@@ -530,6 +530,12 @@ class FakeTallyClientForCommit:
     def fetch_ytd_sundry_debtors(self, fy_start, as_of):
         return {"Acme": Decimal("-1000.00")}
 
+    def fetch_sundry_debtor_vouchers(self, from_date, to_date):
+        # Section 4.2's "TB vs Registers" live pull - same voucher as
+        # fetch_all_voucher_types, so these commit-plumbing tests reconcile
+        # clean on both checks, same as before this pull existed.
+        return self.fetch_all_voucher_types(from_date, to_date)[VoucherType.SALES]
+
 
 class FakeTallyClientMismatch(FakeTallyClientForCommit):
     """Same voucher stream, but the YTD closing balance disagrees with
@@ -758,7 +764,112 @@ def test_test_extraction_save_writes_data_and_shows_reconciled_clean(client, mon
     store = Store(client.application.config["DB_PATH"])
     assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
     assert len(store.all_sales_dn_rows("KOL")) == 1
+    assert len(store.all_ytd_debtor_voucher_rows("KOL")) == 1  # Section 4.2's Check 1 pull, saved
     store.close()
+
+
+def test_test_extraction_save_shows_combined_cross_check_banner_and_snapshot_prompt(client, monkeypatch):
+    # Section 4.2's guided workflow: both checks reconcile clean here
+    # (FakeTallyClientForCommit's TB-vs-Registers pull is the same voucher
+    # the registers themselves were built from), so one combined "ALL
+    # CLEAR" banner, plus the branch-totals Yes/No prompt with an inline
+    # path to record the week's snapshot without leaving this page.
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
+    )
+    assert b"Cross-Check: ALL CLEAR" in resp.data
+    assert b"TB vs Registers" in resp.data
+    assert b"ALL MATCHED" in resp.data
+    assert b"Do the totals look right?" in resp.data
+    assert b"record this week&#39;s snapshot now" in resp.data or b"record this week's snapshot now" in resp.data
+
+
+def test_test_extraction_save_flags_a_ytd_vs_register_mismatch_in_the_combined_banner(client, monkeypatch):
+    # The real scenario this whole redesign exists for: the live TB-vs-
+    # Registers pull sees a voucher the Registers never got (simulating a
+    # register-build exclusion) - Check 2 (TB closing vs computed closing)
+    # can still reconcile clean on its own, but Check 1 must catch it, and
+    # the combined banner must show the discrepancy either way.
+    class FakeTallyClientWithExtraDebtorVoucher(FakeTallyClientForCommit):
+        def fetch_sundry_debtor_vouchers(self, from_date, to_date):
+            missing = Voucher(
+                voucher_type=VoucherType.RECEIPT, voucher_date=date(2026, 1, 6), voucher_number="RCT/404",
+                branch_id=self.branch.branch_id, party_ledger_name="Acme",
+                entries=[LedgerEntry(party_ledger_name="Acme", amount_as_extracted=Decimal("500.00"))],
+            )
+            return super().fetch_sundry_debtor_vouchers(from_date, to_date) + [missing]
+
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientWithExtraDebtorVoucher)
+    _add_branch(client)
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
+    )
+    assert b"Cross-Check: DISCREPANCY FOUND" in resp.data
+    assert b"1 MISMATCHED" in resp.data
+    assert b"TB vs Registers" in resp.data
+    assert b"YTD Debtor Vouchers" in resp.data  # link to the full comparison report
+
+
+def test_weekly_movement_record_from_extraction_result_records_the_snapshot_inline(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
+    )
+
+    resp = client.post(
+        "/reports/weekly-movement/record", data={"week_ending": _SINGLE_WEEK_END}, follow_redirects=True
+    )
+    assert resp.status_code == 200
+    assert f"Recorded the position as of {_SINGLE_WEEK_END}".encode() in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.has_weekly_movement_for_week(date.fromisoformat(_SINGLE_WEEK_END))
+    store.close()
+
+
+def test_extraction_save_shows_already_recorded_instead_of_the_button_when_a_week_was_recorded_already(
+    client, monkeypatch
+):
+    # A second branch's genuinely fresh save for a week whose company-wide
+    # snapshot is already recorded (e.g. a colleague already recorded it
+    # after their own branch's save) must still show the Check 1/Check 2
+    # banner for THIS branch's own data, but never offer a second,
+    # conflicting "record the snapshot" button.
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)
+    _add_branch(client)
+
+    from ar_mis.models import WeeklyMovementRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.record_weekly_movement(
+        WeeklyMovementRow(
+            week_ending=date.fromisoformat(_SINGLE_WEEK_END), recorded_at=datetime.now(),
+            total_ar=Decimal("0.00"), open_ar_by_fy={}, pre_mis_outstanding=Decimal("0.00"),
+            overdue_ar=Decimal("0.00"), overdue_by_bucket={}, dso=None, collection_efficiency=None,
+            unapplied_cash=Decimal("0.00"),
+        )
+    )
+    store.close()
+
+    _run_test_extraction(client, _SINGLE_WEEK_START, _SINGLE_WEEK_START)
+    resp = client.post(
+        "/test-extraction/save",
+        data={"branch_id": "KOL", "from_date": _SINGLE_WEEK_START, "to_date": _SINGLE_WEEK_END},
+    )
+    assert b"Cross-Check: ALL CLEAR" in resp.data  # this branch's own result still shown
+    assert b"has already been recorded" in resp.data
+    assert b"Do the totals look right?" not in resp.data
 
 
 def test_test_extraction_save_shows_cross_check_links_scoped_to_branch(client, monkeypatch):
@@ -1127,6 +1238,38 @@ def test_manual_upload_clean_run_shows_reconciled_clean(client):
         content_type="multipart/form-data",
     )
     assert b"RECONCILED CLEAN" in resp.data
+    assert b"Cross-Check: ALL CLEAR" in resp.data
+    assert b"Do the totals look right?" in resp.data
+    # Manual Upload has no live Tally to pull Section 4.2's Check 1 from -
+    # the combined banner must not claim a check that never ran.
+    assert b"TB vs Registers" not in resp.data
+
+
+def test_manual_upload_mismatch_shows_discrepancy_in_the_combined_banner(client):
+    _add_manual_upload_branch(client)
+    _seed_manual_upload_openings(client)
+    sales_xml = (MANUAL_UPLOAD_FIXTURES / "voucher_collection_sales.xml").read_bytes()
+    # Deliberately wrong closing balance for one party - same fixture used
+    # by test_manual_upload_shows_mismatch_still_writes_data (if present)
+    # would be ideal, but constructing one inline keeps this test self-
+    # contained and obviously tied to what it's checking.
+    import re
+
+    tb_xml = (MANUAL_UPLOAD_FIXTURES / "ledger_closing_balances.xml").read_bytes()
+    wrong_tb_xml = re.sub(rb"425000\.00", b"999999.00", tb_xml)
+    assert wrong_tb_xml != tb_xml  # guard against the fixture's own text changing silently
+
+    resp = client.post(
+        "/manual-upload",
+        data={
+            "branch_id": "KOL", "from_date": "2026-04-01", "to_date": "2026-04-07",
+            "voucher_Sales": (BytesIO(sales_xml), "sales.xml"),
+            "trial_balance": (BytesIO(wrong_tb_xml), "tb.xml"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert b"RECONCILIATION MISMATCH" in resp.data
+    assert b"Cross-Check: DISCREPANCY FOUND" in resp.data
 
 
 def test_manual_upload_shows_cross_check_links_scoped_to_branch_with_real_figures_behind_them(client):
@@ -4355,8 +4498,12 @@ def test_ytd_debtor_voucher_report_shows_match_and_missing_rows(client):
     store = Store(client.application.config["DB_PATH"])
     store.append_ytd_debtor_voucher_rows([
         YtdDebtorVoucherRow(
+            # Negative: the party's own raw entry for a normal Sale (Tally's
+            # at-source convention) - SalesDNRegisterRow.invoice_value below
+            # is the derived, already-positive gross total for the SAME
+            # sale (see ytd_debtor_cross_check's own docstring).
             branch_id="KOL", as_of=date(2026, 4, 7), voucher_date=date(2026, 4, 1), voucher_type="Sales",
-            raw_voucher_type_name="Sales", voucher_number="1", party_id="ACME", amount=Decimal("1000.00"),
+            raw_voucher_type_name="Sales", voucher_number="1", party_id="ACME", amount=Decimal("-1000.00"),
         ),
         YtdDebtorVoucherRow(
             branch_id="KOL", as_of=date(2026, 4, 7), voucher_date=date(2026, 4, 2), voucher_type="Receipt",
