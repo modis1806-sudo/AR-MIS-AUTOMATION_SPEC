@@ -2060,11 +2060,69 @@ resolves former open item 1.
 
     Full suite green (645 tests) at this point.
 
-    **Still to come, per the agreed build order**: the audited correction
-    actions (exclude/add/correct a voucher, extending the existing Pre-MIS
-    adjustment and drift-incorporation patterns - client explicitly
-    rejected silent edit/delete of original voucher data, since that is
-    the exact failure class this whole system was built to prevent).
+    **Phase 6 scope confirmed with the client** before building it: all
+    three correction actions (Add/Delete/Modify) live on the Check 1
+    screen itself (`/reports/ytd-debtor-vouchers`), never on a separate
+    page. The Review Register (Register Exceptions Review) has no
+    inclusion action and stays out of this - the client's own correction,
+    verified against the actual code rather than taken on memory. The
+    separate Drift Findings page/detector is retired as a destination
+    (Check 1 is strictly more complete - it compares against the
+    Registers directly, not just whether a voucher was ever logged) but
+    its table and historical rows are never deleted, per this app's
+    never-discard-data principle - only new findings stop being generated
+    the old way. Check 1 and Check 2 are confirmed to stay as separate
+    screens (that was already the real build, not a change), while the
+    combined Phase 4/5 banner stays combined - both per the client's own
+    review of a side-by-side mockup.
+
+    **Phase 6a built and tested: "Missing from Registers" now feeds the
+    Add action's backing data.** Rather than build a new detector, this
+    reuses the existing, already-proven `DriftFinding` /
+    `incorporate_drift_finding` mechanism: `ar_mis.ytd_debtor_cross_check.
+    drift_findings_from_missing_registers` takes Check 1's own
+    `MISSING_FROM_REGISTERS` rows plus the same live Sundry-Debtors
+    voucher list Check 1 just pulled, looks each row's original `Voucher`
+    back up by (branch_id, voucher_number, voucher_type), and builds a
+    `DriftFinding` per party exactly the way the old `isolate_drift` did.
+
+    Wired into `test_extraction_save`'s per-chunk loop in place of the old
+    `isolate_drift` call, which pulled the WHOLE company's YTD vouchers a
+    second time just to feed drift detection - that pull is now gone
+    entirely. Check 1's own `sd_vouchers` (already Sundry-Debtors-scoped,
+    already live, already fetched) is reused as the lookup source, so this
+    chunk now makes one live YTD pull instead of two. Order matters here:
+    Check 1's comparison must run first so there's a `MISSING_FROM_
+    REGISTERS` list to feed in - the old isolate_drift block that used to
+    run before Check 1's block is now gone, replaced by this, running
+    after.
+
+    Confirmed end-to-end, not just at the unit level: extended
+    `test_test_extraction_save_flags_a_ytd_vs_register_mismatch_in_the_
+    combined_banner` (which already simulates a voucher present in the
+    live pull but missing from the Registers) to also assert a real
+    `DriftFindingRecord` now lands in storage from that same save request,
+    proving the wiring through the actual route, not just the function in
+    isolation.
+
+    Manual Upload's own `isolate_drift` call (`ar_mis.manual_upload.
+    process_manual_upload`) is untouched for now - it has no live
+    Sundry-Debtors pull to source `drift_findings_from_missing_registers`
+    from yet; fixing that is Phase 6e's job (repointing the existing
+    broken `ytd_vouchers` upload slot at Check 1), not this one's.
+
+    Full suite green (648 tests) at this point.
+
+    **Still to come, per the agreed build order**: Phase 6b (a new
+    audited corrections table for Delete/Modify, threaded through
+    `aggregate_party_movements_from_registers` and
+    `compute_ytd_vs_register_comparison` so a correction changes computed
+    totals everywhere, not just cosmetically on one screen); Phase 6c
+    (the actual Add/Delete/Modify buttons on the Check 1 screen, maker-
+    only, audited); Phase 6d (retire the Drift Findings page/nav entry,
+    stop calling `isolate_drift` anywhere, keep its historical table
+    data); Phase 6e (fix Manual Upload's broken `ytd_vouchers` parser and
+    repoint it at Check 1).
 
 ## Deferred to a later version (not rejected, not in scope now)
 

@@ -50,8 +50,12 @@ from ar_mis.drift_correction import (
 )
 from ar_mis.pipeline import process_branch_data
 from ar_mis.pre_mis_register import compute_pre_mis_register
-from ar_mis.reconciliation import isolate_drift
-from ar_mis.ytd_debtor_cross_check import MATCH, compute_ytd_vs_register_comparison
+from ar_mis.ytd_debtor_cross_check import (
+    MATCH,
+    MISSING_FROM_REGISTERS,
+    compute_ytd_vs_register_comparison,
+    drift_findings_from_missing_registers,
+)
 from ar_mis.reconciliation_report import (
     compute_concentration_risk,
     compute_latest_per_party,
@@ -736,25 +740,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 period_start=c_start,
             )
 
-            drift_findings = []
-            try:
-                ytd_vouchers_by_type = client.fetch_all_voucher_types(fy_start, c_end)
-                ytd_vouchers = [v for vs in ytd_vouchers_by_type.values() for v in vs]
-                party_names = set(closing_extracted)
-                logged_keys = {p: store.logged_voucher_keys(branch.branch_id, p) for p in party_names}
-                week_boundaries = store.all_week_endings()
-                drift_findings = isolate_drift(branch.branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
-                store.record_drift_findings(branch.branch_id, drift_findings, datetime.now())
-            except TallyConnectionError as exc:
-                flash(f"Run ending {c_end.isoformat()} was saved, but its YTD drift check could not run: {exc}", "error")
-
             # Section 4.2's "TB vs Registers" - Check 1, run automatically
-            # as part of this same save, the same way the drift check just
-            # above already does an extra live pull per chunk. Scoped at
-            # the source to Sundry Debtors (see TallyClient.fetch_sundry_
-            # debtor_vouchers' own docstring), never the whole company.
+            # as part of this same save. Scoped at the source to Sundry
+            # Debtors (see TallyClient.fetch_sundry_debtor_vouchers' own
+            # docstring), never the whole company - one live YTD pull,
+            # not two: this same sd_vouchers list is also the source the
+            # drift-finding ("Add to this week") action below replays,
+            # replacing the old whole-company isolate_drift pull entirely.
             ytd_vs_register_rows = []
             ytd_debtor_pull_error = None
+            drift_findings = []
+            party_names = set(closing_extracted)
             try:
                 sd_vouchers = client.fetch_sundry_debtor_vouchers(fy_start, c_end)
                 ytd_debtor_rows = [
@@ -769,6 +765,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     store.all_credit_note_rows(branch.branch_id),
                     store.all_receipt_journal_rows(branch.branch_id),
                 )
+                missing_rows = [r for r in ytd_vs_register_rows if r.status == MISSING_FROM_REGISTERS]
+                week_boundaries = store.all_week_endings()
+                drift_findings = drift_findings_from_missing_registers(missing_rows, sd_vouchers, week_boundaries)
+                store.record_drift_findings(branch.branch_id, drift_findings, datetime.now())
             except TallyConnectionError as exc:
                 ytd_debtor_pull_error = (
                     f"Run ending {c_end.isoformat()} was saved, but its TB-vs-Registers check could not run: {exc}"

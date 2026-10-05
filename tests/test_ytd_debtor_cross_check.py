@@ -3,10 +3,13 @@ from decimal import Decimal
 
 from ar_mis.models import (
     CreditNoteRegisterRow,
+    LedgerEntry,
     NoteType,
     ReceiptJournalRegisterRow,
     RegisterClassification,
     SalesDNRegisterRow,
+    Voucher,
+    VoucherType,
     YtdDebtorVoucherRow,
 )
 from ar_mis.ytd_debtor_cross_check import (
@@ -15,6 +18,7 @@ from ar_mis.ytd_debtor_cross_check import (
     MATCH,
     MISSING_FROM_REGISTERS,
     compute_ytd_vs_register_comparison,
+    drift_findings_from_missing_registers,
 )
 
 
@@ -184,3 +188,58 @@ def test_same_voucher_number_across_different_branches_never_cross_contaminate()
 
 def test_empty_inputs_produce_no_rows():
     assert compute_ytd_vs_register_comparison([], [], [], []) == []
+
+
+# ---- drift_findings_from_missing_registers --------------------------------
+
+
+def test_drift_findings_from_missing_registers_builds_a_replayable_finding():
+    voucher = Voucher(
+        voucher_type=VoucherType.CREDIT_NOTE, voucher_date=date(2025, 4, 1), voucher_number="CN/24",
+        branch_id="B1", party_ledger_name="Joy Ray",
+        entries=[
+            LedgerEntry(party_ledger_name="Joy Ray", amount_as_extracted=Decimal("-2160.00")),
+            LedgerEntry(party_ledger_name="Manoj Lal", amount_as_extracted=Decimal("2160.00")),
+        ],
+    )
+    missing_rows = compute_ytd_vs_register_comparison(
+        [
+            _ytd_row("Credit Note", "CN/24", "Joy Ray", Decimal("-2160.00")),
+            _ytd_row("Credit Note", "CN/24", "Manoj Lal", Decimal("2160.00")),
+        ],
+        [], [], [],
+    )
+    assert {r.status for r in missing_rows} == {MISSING_FROM_REGISTERS}
+
+    findings = drift_findings_from_missing_registers(missing_rows, [voucher], week_boundaries=[date(2026, 4, 7)])
+    assert len(findings) == 2
+    by_party = {f.party_ledger_name: f for f in findings}
+    # flip_sign negates the party's own raw entry (Tally's at-source
+    # convention) - Joy Ray's raw -2160.00 (a Dr decrease at source)
+    # becomes +2160.00 in the uniform AR-movement convention, and vice
+    # versa for Manoj Lal.
+    assert by_party["Joy Ray"].flipped_amount == Decimal("2160.00")
+    assert by_party["Manoj Lal"].flipped_amount == Decimal("-2160.00")
+    assert by_party["Joy Ray"].voucher is voucher  # the real original voucher, ready to replay
+    assert by_party["Joy Ray"].attributed_week == date(2026, 4, 7)
+
+
+def test_drift_findings_from_missing_registers_skips_a_voucher_it_cant_find(): 
+    missing_rows = compute_ytd_vs_register_comparison(
+        [_ytd_row("Sales", "SB/1", "ACME", Decimal("-1000.00"))], [], [], []
+    )
+    # No source voucher supplied - nothing to replay, so nothing is built,
+    # never a crash or a half-built finding.
+    assert drift_findings_from_missing_registers(missing_rows, [], week_boundaries=[]) == []
+
+
+def test_drift_findings_from_missing_registers_rejects_a_non_missing_row():
+    import pytest
+
+    matched_rows = compute_ytd_vs_register_comparison(
+        [_ytd_row("Sales", "1", "ACME", Decimal("-1000.00"))],
+        [_sales_dn_row("1", "ACME", Decimal("1000.00"))], [], [],
+    )
+    assert matched_rows[0].status == MATCH
+    with pytest.raises(ValueError):
+        drift_findings_from_missing_registers(matched_rows, [], week_boundaries=[])

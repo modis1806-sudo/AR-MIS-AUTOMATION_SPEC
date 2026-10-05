@@ -815,6 +815,20 @@ def test_test_extraction_save_flags_a_ytd_vs_register_mismatch_in_the_combined_b
     assert b"TB vs Registers" in resp.data
     assert b"YTD Debtor Vouchers" in resp.data  # link to the full comparison report
 
+    # The "missing from Registers" voucher above is exactly the case
+    # Phase 6a's Add action replays - this save must have already
+    # turned it into a drift finding (ar_mis.ytd_debtor_cross_check.
+    # drift_findings_from_missing_registers, fed by this same live
+    # sd_vouchers pull), not just flagged it in the banner.
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    findings = store.all_drift_findings()
+    assert len(findings) == 1
+    assert findings[0].finding.voucher_number == "RCT/404"
+    assert findings[0].finding.party_ledger_name == "Acme"
+    assert findings[0].incorporated is False
+    store.close()
+
 
 def test_weekly_movement_record_from_extraction_result_records_the_snapshot_inline(client, monkeypatch):
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientForCommit)

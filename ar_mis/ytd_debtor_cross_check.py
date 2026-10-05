@@ -62,9 +62,11 @@ from ar_mis.models import (
     NoteType,
     ReceiptJournalRegisterRow,
     SalesDNRegisterRow,
+    Voucher,
     YtdDebtorVoucherRow,
 )
 from ar_mis.money import is_match
+from ar_mis.reconciliation import DriftFinding, attribute_week
 from ar_mis.sign import flip_sign
 
 MATCH = "Match"
@@ -248,3 +250,70 @@ def compute_ytd_vs_register_comparison(
         )
 
     return rows
+
+
+def drift_findings_from_missing_registers(
+    missing_rows: list[YtdVsRegisterRow],
+    source_vouchers: list[Voucher],
+    week_boundaries: list[date],
+) -> list[DriftFinding]:
+    """Turns Check 1's own "Missing from Registers" rows into the exact
+    same DriftFinding shape the app's existing incorporation mechanism
+    already knows how to fix (ar_mis.drift_correction.incorporate_drift_
+    finding) - no separate "Add" mechanism was built, because this one was
+    already proven and tested. This also replaces the old voucher_log-
+    based `isolate_drift` as the detector: Check 1 is strictly more
+    complete (it compares against what the Registers actually captured,
+    not just whether something was ever logged at all), so there is no
+    longer a reason to run both.
+
+    `source_vouchers` must be the SAME vouchers Check 1 itself was built
+    from (the live Sundry-Debtors pull, or - once Manual Upload gets its
+    own Check 1 coverage - the uploaded equivalent) - this function does
+    not re-fetch anything, it only looks up each missing row's own
+    original voucher by identity, the same way isolate_drift's own
+    findings always carried their real source voucher for later replay.
+
+    Only `missing_rows` (status MISSING_FROM_REGISTERS) make sense here -
+    an "Extra in Registers" or "Amount Mismatch" row has no missing
+    voucher to replay; passing anything else is the caller's bug, not
+    silently handled here.
+    """
+    # Deliberately a different triple than this module's own _Key
+    # (branch, voucher_number, party) - here it's (branch, voucher_number,
+    # voucher_type), since one original Voucher object is shared across
+    # however many tracked parties it touches, never looked up per-party.
+    vouchers_by_key: dict[tuple[str, str, str], Voucher] = {}
+    for voucher in source_vouchers:
+        key = (voucher.branch_id, voucher.voucher_number, voucher.voucher_type.value)
+        vouchers_by_key[key] = voucher
+
+    findings: list[DriftFinding] = []
+    for row in missing_rows:
+        if row.status != MISSING_FROM_REGISTERS:
+            raise ValueError(f"drift_findings_from_missing_registers got a non-missing row: {row.status!r}")
+        voucher = vouchers_by_key.get((row.branch_id, row.voucher_number, row.voucher_type))
+        if voucher is None:
+            continue
+        entry = next((e for e in voucher.entries if e.party_ledger_name == row.party_id), None)
+        if entry is None:
+            continue
+        findings.append(
+            DriftFinding(
+                party_ledger_name=row.party_id,
+                voucher_type=row.voucher_type,
+                voucher_number=row.voucher_number,
+                voucher_date=voucher.voucher_date,
+                # Same uniform AR-movement convention DriftFinding has
+                # always used (flip_sign on the party's own raw entry) -
+                # deliberately NOT the register-comparison-specific
+                # adjustment this module applies to ytd_amount above,
+                # which exists only to make Sales/DN comparable to
+                # invoice_value and has nothing to do with this finding's
+                # own, separate meaning.
+                flipped_amount=flip_sign(entry.amount_as_extracted),
+                attributed_week=attribute_week(voucher.voucher_date, week_boundaries),
+                voucher=voucher,
+            )
+        )
+    return findings
