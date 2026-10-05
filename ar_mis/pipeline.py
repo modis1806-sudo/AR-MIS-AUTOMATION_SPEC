@@ -23,7 +23,15 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from ar_mis.config import BranchConfig, financial_year_start
-from ar_mis.models import CustomerMasterRecord, Voucher, VoucherType, WeeklySnapshotRow
+from ar_mis.models import (
+    CreditNoteRegisterRow,
+    CustomerMasterRecord,
+    ReceiptJournalRegisterRow,
+    SalesDNRegisterRow,
+    Voucher,
+    VoucherType,
+    WeeklySnapshotRow,
+)
 from ar_mis.orchestration import BranchRunOutcome, ExtractionOutcome
 from ar_mis.reconciliation import reconcile_all_parties
 from ar_mis.registers import (
@@ -33,7 +41,7 @@ from ar_mis.registers import (
     build_receipt_journal_register_rows,
     build_sales_dn_register_row,
 )
-from ar_mis.rollforward import aggregate_party_movements, resolve_opening_balances
+from ar_mis.rollforward import aggregate_party_movements_from_registers, resolve_opening_balances
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
 from ar_mis.tally_client import TallyClient
@@ -76,7 +84,8 @@ def process_branch_data(
 
     `closing_extracted` must already be post-sign-flip (Section 2.3),
     matching `all_vouchers`' entries which are still pre-flip (flipped
-    internally by aggregate_party_movements). Callers own the flip on
+    internally by aggregate_party_movements_from_registers, from the
+    register rows this run builds). Callers own the flip on
     closing_extracted because where it comes from differs: a live
     Tally pull needs it applied, some manual-upload sources might not.
 
@@ -101,8 +110,19 @@ def process_branch_data(
     for party in new_parties:
         store.upsert_customer_master(CustomerMasterRecord(party, party, branch_id, Decimal("0.00")))
 
+    # Registers are built FIRST, before movements - Section 4.2's "TB vs
+    # Registers" redesign needs the movements that feed weekly_snapshot
+    # to come from exactly what the registers captured for this run, not
+    # a separate, exclusion-blind re-sum of the same raw vouchers (see
+    # aggregate_party_movements_from_registers' own docstring for why).
+    register_exceptions, sales_dn_rows_built, cn_rows_built, rj_rows_built = _build_and_persist_registers(
+        store, branch_id, all_vouchers
+    )
+
     openings = resolve_opening_balances(store, party_names, branch_id)
-    movements = aggregate_party_movements(all_vouchers, party_names, openings)
+    movements = aggregate_party_movements_from_registers(
+        sales_dn_rows_built, cn_rows_built, rj_rows_built, party_names, openings
+    )
     results = reconcile_all_parties(branch_id, movements, closing_extracted)
     failed = [r for r in results if not r.reconciled]
 
@@ -141,7 +161,6 @@ def process_branch_data(
                 flipped_amount=flip_sign(entry.amount_as_extracted),
             )
 
-    register_exceptions = _build_and_persist_registers(store, branch_id, all_vouchers)
     resolved_extracted_at = extracted_at or datetime.now()
     store.record_extraction_run(branch_id, week_ending, resolved_extracted_at)
     if register_exceptions.unattributable_party:
@@ -171,13 +190,24 @@ def process_branch_data(
 
 def _build_and_persist_registers(
     store: Store, branch_id: str, all_vouchers: list[Voucher]
-) -> RegisterBuildExceptions:
+) -> tuple[
+    RegisterBuildExceptions,
+    list[SalesDNRegisterRow],
+    list[CreditNoteRegisterRow],
+    list[ReceiptJournalRegisterRow],
+]:
     """Builds and persists the Sales & DN, Credit Note, and Receipt &
     Journal registers (docs/registers_and_reporting_design.md items 1-2)
     from this run's vouchers - only ever called after reconciliation has
     already cleared (see process_branch_data), matching the same
     "never write partial/wrong data" principle already enforced for
     weekly_snapshot and voucher_log.
+
+    Also returns the rows actually built THIS run (not the branch's full
+    history) - process_branch_data needs exactly these, and only these,
+    to compute this run's own movements from the registers rather than
+    the raw vouchers (Section 4.2's "TB vs Registers" redesign; see
+    ar_mis.rollforward.aggregate_party_movements_from_registers).
 
     Sales & DN rows are built and persisted FIRST, then the bill-
     reference lookup is built from the branch's ENTIRE tracked history
@@ -196,6 +226,7 @@ def _build_and_persist_registers(
     live-reproduced case this fixes).
     """
     exceptions = RegisterBuildExceptions()
+    sales_dn_rows_built: list[SalesDNRegisterRow] = []
 
     for voucher in all_vouchers:
         if voucher.voucher_type not in (VoucherType.SALES, VoucherType.DEBIT_NOTE):
@@ -214,20 +245,25 @@ def _build_and_persist_registers(
         row = build_sales_dn_register_row(voucher, customer, exceptions)
         if row is not None:
             store.append_sales_dn_row(row)
+            sales_dn_rows_built.append(row)
 
     lookup = build_bill_reference_lookup(store.all_sales_dn_rows(branch_id))
     tracked_party_names = {r["party_id"] for r in store.all_customer_master_records() if r["branch_id"] == branch_id}
 
+    cn_rows_built: list[CreditNoteRegisterRow] = []
+    rj_rows_built: list[ReceiptJournalRegisterRow] = []
     for voucher in all_vouchers:
         if voucher.voucher_type == VoucherType.CREDIT_NOTE:
             row = build_credit_note_register_row(voucher, tracked_party_names, lookup, exceptions)
             if row is not None:
                 store.append_credit_note_row(row)
+                cn_rows_built.append(row)
         elif voucher.voucher_type in (VoucherType.RECEIPT, VoucherType.JOURNAL):
             rows = build_receipt_journal_register_rows(voucher, tracked_party_names, lookup, exceptions)
             store.append_receipt_journal_rows(rows)
+            rj_rows_built.extend(rows)
 
-    return exceptions
+    return exceptions, sales_dn_rows_built, cn_rows_built, rj_rows_built
 
 
 def build_branch_runner(store: Store, week_ending: date, from_date: date, to_date: date):

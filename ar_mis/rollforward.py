@@ -22,7 +22,14 @@ from decimal import Decimal
 
 from ar_mis.money import to_money
 from ar_mis.sign import flip_sign
-from ar_mis.models import Voucher, VoucherType
+from ar_mis.models import (
+    CreditNoteRegisterRow,
+    NoteType,
+    ReceiptJournalRegisterRow,
+    SalesDNRegisterRow,
+    Voucher,
+    VoucherType,
+)
 
 _MOVEMENT_TYPES = (
     VoucherType.SALES,
@@ -104,6 +111,92 @@ def aggregate_party_movements(
             if entry.party_ledger_name not in party_ledger_names:
                 continue
             totals[entry.party_ledger_name][field] += flip_sign(entry.amount_as_extracted)
+
+    movements: dict[str, PartyMovement] = {}
+    for party_name in party_ledger_names:
+        t = totals[party_name]
+        opening = to_money(openings.get(party_name, Decimal("0.00")))
+        movements[party_name] = PartyMovement(
+            party_ledger_name=party_name,
+            opening=opening,
+            sales=t["sales"],
+            credit_notes=t["credit_notes"],
+            debit_notes=t["debit_notes"],
+            receipts=t["receipts"],
+            journals=t["journals"],
+        )
+    return movements
+
+
+def aggregate_party_movements_from_registers(
+    sales_dn_rows: list[SalesDNRegisterRow],
+    cn_rows: list[CreditNoteRegisterRow],
+    rj_rows: list[ReceiptJournalRegisterRow],
+    party_ledger_names: set[str],
+    openings: dict[str, Decimal],
+) -> dict[str, PartyMovement]:
+    """Section 4.2's "TB vs Registers" redesign (docs/registers_and_
+    reporting_design.md item 56) - TB Cross-Check's own "our side" number,
+    rebuilt from what the three master registers actually captured for
+    this run's vouchers, never a fresh re-sum of the raw vouchers
+    themselves (aggregate_party_movements above, which this replaces for
+    this exact purpose).
+
+    The whole point: aggregate_party_movements has no exclusion logic at
+    all - a voucher a register builder couldn't confidently place (into
+    Register Exceptions Review) was still silently counted there, which is
+    exactly how TB Cross-Check could show "Reconciled: Yes" for a party
+    even when a real voucher never made it into any register (the client's
+    own real Joy Ray/Manoj Lal case). Summing the REGISTER rows instead
+    means a register-build exclusion now visibly starves this total too -
+    the same gap shows up here AND in the separate Check 1 (ar_mis.
+    ytd_debtor_cross_check), never just one or the other, since both now
+    ultimately depend on the same Registers.
+
+    Callers must pass only the register rows actually built from THIS
+    run's vouchers (ar_mis.pipeline._build_and_persist_registers' own
+    return value) - not the branch's entire register history - since this
+    computes one week's MOVEMENT (a delta added to `openings`), not a
+    cumulative total.
+
+    The three registers do NOT all use the same sign convention, and this
+    function must not treat them as if they did (a real bug caught by test
+    while building this, not a hypothetical one):
+
+    - CreditNoteRegisterRow.cn_amount and ReceiptJournalRegisterRow.amount
+      are each the party's own ledger entry's RAW amount_as_extracted
+      (Tally's at-source convention: Dr negative, Cr positive) - flip_sign
+      converts these to the post-flip AR convention, exactly mirroring
+      what aggregate_party_movements already did for the party's own
+      entry.
+    - SalesDNRegisterRow.invoice_value is NOT that - it's a DERIVED,
+      already-positive gross total (taxable_value + tax, each built from
+      abs() of the voucher's OTHER, non-party entries - see
+      build_sales_dn_register_row), not the party's own raw signed entry
+      at all. It already reads as "a positive Dr increase to the debtor"
+      by construction, which IS the post-flip AR convention - flip_sign-ing
+      it on top would wrongly invert a real sale into a negative movement.
+    """
+    totals: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: {f: Decimal("0.00") for f in _TYPE_TO_FIELD.values()}
+    )
+
+    for row in sales_dn_rows:
+        if row.party_id not in party_ledger_names:
+            continue
+        field = "debit_notes" if row.note_type == NoteType.DEBIT_NOTE else "sales"
+        totals[row.party_id][field] += row.invoice_value
+
+    for row in cn_rows:
+        if row.party_id not in party_ledger_names:
+            continue
+        totals[row.party_id]["credit_notes"] += flip_sign(row.cn_amount)
+
+    for row in rj_rows:
+        if row.party_id not in party_ledger_names:
+            continue
+        field = "receipts" if row.voucher_type == VoucherType.RECEIPT.value else "journals"
+        totals[row.party_id][field] += flip_sign(row.amount)
 
     movements: dict[str, PartyMovement] = {}
     for party_name in party_ledger_names:

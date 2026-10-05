@@ -1973,15 +1973,57 @@ resolves former open item 1.
     nothing to batch-apply until those exist. Full suite green (633 tests)
     at this point.
 
-    **Still to come, per the agreed build order**: Check 2's redefinition
-    (Opening + Registers vs TB, replacing the raw-voucher re-sum), the
-    guided workflow chaining extraction → combined cross-check pop-up →
-    branch-total confirmation → inline snapshot recording or correction
-    routing, and the audited correction actions (exclude/add/correct a
-    voucher, extending the existing Pre-MIS adjustment and drift-
-    incorporation patterns - client explicitly rejected silent edit/delete
-    of original voucher data, since that is the exact failure class this
-    whole system was built to prevent).
+    **Phase 3 built and tested: Check 2 redefined.** TB Cross-Check's
+    "our side" number (weekly_snapshot's sales/credit_notes/debit_notes/
+    receipts/journals/closing_computed) no longer comes from a fresh
+    re-sum of raw vouchers (`aggregate_party_movements`, which has no
+    exclusion logic at all) - it now comes from exactly what the three
+    master registers captured for that run
+    (`ar_mis.rollforward.aggregate_party_movements_from_registers`).
+    `ar_mis.pipeline.process_branch_data` was reordered so the registers
+    are built FIRST, and `_build_and_persist_registers` now returns the
+    rows it actually built (not just exceptions) so movements are computed
+    from precisely those rows, not the branch's whole history and not the
+    raw vouchers again.
+
+    A real sign-convention bug was caught by test before being trusted:
+    `SalesDNRegisterRow.invoice_value` is a DERIVED, already-positive gross
+    total (built from `abs()` of the voucher's other, non-party entries -
+    see `build_sales_dn_register_row`), not the party's own raw signed
+    entry the way `CreditNoteRegisterRow.cn_amount` and
+    `ReceiptJournalRegisterRow.amount` are. Applying `flip_sign` to all
+    three uniformly (the first version written) silently inverted every
+    real sale into a negative movement - caught immediately by the
+    existing test suite (10 pre-existing tests failed), fixed by only
+    flipping CN/Receipt/Journal amounts and using Sales/DN's invoice_value
+    as-is.
+
+    Two old test fixtures (`fixtures/voucher_collection_sales.xml`,
+    `voucher_collection_receipt.xml`) turned out to predate this app's own
+    reliance on voucher-level PARTYLEDGERNAME and never carried that tag -
+    real Tally exports always do (confirmed: 162 occurrences in the real
+    `SalesReg.xml` sample, zero in these two). Register-building has
+    always required it; this was invisible before because TB Cross-Check
+    never depended on the registers. Fixed the fixtures to match real
+    Tally shape, not the production code.
+
+    End-to-end regression test added confirming the actual intended
+    behavior change: a debtor-to-debtor Credit Note (the same real
+    scenario fixed for Receipt/Journal in item 55, still excluded wholesale
+    for Credit Note per that item's own note) now correctly produces
+    `reconciled: False` for both parties it touches - under the old
+    raw-voucher basis, the exact same scenario would have reconciled
+    clean, hiding the fact that the CN never made it into any register.
+    Full suite green (640 tests) at this point.
+
+    **Still to come, per the agreed build order**: the guided workflow
+    chaining extraction → combined cross-check pop-up → branch-total
+    confirmation → inline snapshot recording or correction routing, and
+    the audited correction actions (exclude/add/correct a voucher,
+    extending the existing Pre-MIS adjustment and drift-incorporation
+    patterns - client explicitly rejected silent edit/delete of original
+    voucher data, since that is the exact failure class this whole system
+    was built to prevent).
 
 ## Deferred to a later version (not rejected, not in scope now)
 

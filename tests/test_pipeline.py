@@ -236,3 +236,39 @@ def test_recon_fail_still_records_an_extraction_timestamp(store):
         extracted_at=datetime(2026, 4, 8, 14, 30, 0),
     )
     assert store.last_extraction_at("KOL") == datetime(2026, 4, 8, 14, 30, 0)
+
+
+def test_a_cn_voucher_excluded_from_the_register_now_shows_as_a_reconciliation_mismatch(store):
+    # Section 4.2's "TB vs Registers" redesign, proven end to end: a
+    # debtor-to-debtor reallocation Credit Note (the same real scenario
+    # already fixed for Receipt/Journal, item 55 - still excluded wholesale
+    # for Credit Note, per that item's own note) used to be silently
+    # absorbed by aggregate_party_movements' raw-voucher re-sum, which has
+    # no exclusion logic at all. Now that movements come from the
+    # Registers, the exact same exclusion starves this total too - the
+    # gap is no longer invisible.
+    voucher = Voucher(
+        voucher_type=VoucherType.CREDIT_NOTE, voucher_date=date(2026, 4, 1), voucher_number="CN/24",
+        branch_id="KOL", party_ledger_name="Joy Ray",
+        entries=[
+            LedgerEntry(party_ledger_name="Joy Ray", amount_as_extracted=Decimal("-2160.00")),
+            LedgerEntry(party_ledger_name="Manoj Lal", amount_as_extracted=Decimal("2160.00")),
+        ],
+    )
+    # Both parties' TB closing reflects this CN having genuinely happened
+    # (opening 0 + this CN's own flipped movement) - the correct, true
+    # figures a real Tally pull would report.
+    closing_extracted = {"Joy Ray": Decimal("2160.00"), "Manoj Lal": Decimal("-2160.00")}
+    outcome = process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), [voucher], closing_extracted)
+
+    assert outcome.outcome == ExtractionOutcome.PASS  # never withheld, per this module's own principle
+    assert sorted(outcome.failed_parties) == ["Joy Ray", "Manoj Lal"]
+    assert outcome.register_build_exceptions  # the CN voucher itself is flagged
+    assert store.all_credit_note_rows("KOL") == []  # confirmed: never made it into the register
+
+    rows = {r.party_id: r for r in store.all_weekly_snapshot_rows()}
+    assert rows["Joy Ray"].credit_notes == Decimal("0.00")  # starved, not the real -2160/+2160
+    assert rows["Joy Ray"].closing_computed == Decimal("0.00")
+    assert rows["Joy Ray"].reconciled is False
+    assert rows["Manoj Lal"].credit_notes == Decimal("0.00")
+    assert rows["Manoj Lal"].reconciled is False

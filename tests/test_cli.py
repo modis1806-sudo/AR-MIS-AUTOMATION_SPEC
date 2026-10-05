@@ -35,7 +35,11 @@ class FakeTallyClient:
             voucher_date=date(2026, 1, 3),
             voucher_number="SB/1",
             branch_id=self.branch.branch_id,
-            entries=[LedgerEntry(party_ledger_name="Acme", amount_as_extracted=Decimal("-100000.00"))],
+            party_ledger_name="Acme",
+            entries=[
+                LedgerEntry(party_ledger_name="Acme", amount_as_extracted=Decimal("-100000.00")),
+                LedgerEntry(party_ledger_name="Sales", amount_as_extracted=Decimal("100000.00")),
+            ],
         )
         return {vt: ([voucher] if vt == VoucherType.SALES else []) for vt in VoucherType}
 
