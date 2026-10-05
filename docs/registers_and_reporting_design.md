@@ -2405,6 +2405,46 @@ resolves former open item 1.
     remains - `ar_mis.cli.run`, the standalone weekly batch script, still
     outside this build order pending the client's own call on it.
 
+    **Phase 6f: the standalone CLI tool removed outright, resolving the
+    Phase 6e follow-up above the same day it was raised.** Asked the
+    client directly whether `ar_mis/cli.py` (the "third `isolate_drift`
+    call site," flagged above as needing their own call before touching
+    it) was ever actually run - confirmed: never, only ever the webapp,
+    even during development. With that confirmed, migrating `cli.py`'s
+    own copy of the drift check was pointless work on code nobody uses -
+    removing it was the right call, not fixing it.
+
+    Removed outright, not just unlinked: `ar_mis/cli.py` itself,
+    `ar_mis/gate.py` (`evaluate_output_gate`/`GateStatus`/`may_auto_send` -
+    the old PASS/FAIL aggregation this script's own "clean vs. needs
+    manual sign-off" decision ran on), `ar_mis/reporting.py` (the static
+    Excel snapshot `generate_report` built, Section 6's originally-
+    planned CFO output - superseded by the webapp's own live Reports
+    screens years before this session, never updated to match anything
+    built since), and the `run_weekly_cycle`/`WeeklyCycleReport` pair
+    inside `ar_mis/orchestration.py` (the human-in-the-loop multi-branch
+    retry loop - confirmed via grep that `ExtractionOutcome`/
+    `BranchRunOutcome`, the only two things in that module anything else
+    still imports, don't depend on either). Their own dedicated test
+    files (`test_cli.py`, `test_gate.py`, `test_reporting.py`,
+    `test_orchestration.py` - the latter tested nothing except
+    `run_weekly_cycle`) went with them, rather than leaving tests for
+    code that no longer exists.
+
+    Confirmed nothing else in the codebase referenced any of it before
+    deleting (`grep` across every `.py` file for each removed name) -
+    the only remaining mentions after the fact are this doc and README's
+    own new "Removed: the standalone CLI tool" section, which exists
+    specifically so a future reader finds out WHY this gap exists rather
+    than assuming it's an oversight. `ar_mis/seed.py`'s own standalone
+    `python -m ar_mis.seed` one-time CSV import is unrelated to any of
+    this and was left untouched - it's a different tool entirely, still
+    used by the webapp's own branch-scoped upload.
+
+    Full suite green (677 tests - 21 removed with the deleted test files,
+    net reduction expected and correct, since this phase retires code
+    and tests together rather than adding either) at this point.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

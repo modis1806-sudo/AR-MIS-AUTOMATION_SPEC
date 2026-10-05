@@ -32,19 +32,44 @@ These were open in the spec and have been resolved by the client before build:
    so a zero-tolerance comparison means "genuine mismatch", not floating-point
    noise. See `ar_mis/money.py`.
 2. **Per-branch extraction failure (4.3):** a branch that fails extraction
-   (connection drop, malformed XML, company-mismatch) is skipped and the run
-   continues with the remaining branches, then **the failed branch(es) are
-   retried once at the end of the run**, after the rest of the queue has been
-   processed. Only a branch that still fails on that retry pass is recorded as
-   a final FAILED branch for the week (excluded from the consolidated report,
-   flagged explicitly — never silently dropped, never shown as stale prior-week
-   data). See `ar_mis/orchestration.py`.
-3. **CFO consumption mode (Section 6):** static weekly snapshot report,
-   matching the confirmed weekly cadence. Interactive drill-down is a secondary
-   tool for AR Managers, not the CFO's primary view. See `ar_mis/reporting.py`.
+   (connection drop, malformed XML, company-mismatch) is flagged explicitly on
+   the webapp's own Test Extraction / Extract & Save page — never silently
+   dropped, never shown as stale prior-week data. The Maker retries it
+   themselves from there (one branch, one button, same as any other webapp
+   action); there is no separate automated multi-branch retry queue, since
+   the webapp is this app's only real operating path (see "Removed: the
+   standalone CLI tool" below). `ar_mis/orchestration.py` carries the shared
+   `BranchRunOutcome`/`ExtractionOutcome` shape every real path uses.
+3. **CFO consumption mode (Section 6):** the webapp's own Reports screens
+   (TB Reconciliation Cross-Check, AR Snapshot, and the rest) are this app's
+   actual weekly-consumption surface — see "Removed: the standalone CLI tool"
+   below for why the originally-planned static Excel snapshot report isn't
+   part of the current build.
 4. **PTP status granularity (Section 6):** per-entry status
    (Active / Kept / Broken), consistent with the existing Layer 3 Action Log
    design.
+
+## Removed: the standalone CLI tool
+
+The original spec (Section 2.2) called for a single terminal command
+(`ar_mis/cli.py`, `python -m ar_mis.cli <week-ending>`) that a staff member
+would run once a week - driving `ar_mis/orchestration.py`'s multi-branch
+retry loop, `ar_mis/gate.py`'s PASS/FAIL aggregation, and `ar_mis/
+reporting.py`'s static Excel snapshot (Section 6), all in one go. The webapp
+was built alongside it as the real day-to-day interface, and every
+reconciliation/reporting capability was built there first, independently
+(Extract & Save, Manual Upload, and the full set of Reports screens) -
+`cli.py` was never updated to match any of it as the webapp grew (Check 1/
+Check 2, the audited correction actions, Register Exceptions Review, none
+of it). Confirmed with the client this session that the CLI was never
+actually used in practice - the webapp was always the real path - so
+`cli.py`, `gate.py`, `reporting.py`, and the now-dead `run_weekly_cycle`
+function in `orchestration.py` (plus their own test files) were removed
+outright rather than carrying forward unused, increasingly-stale code.
+`ar_mis/orchestration.py` itself stays - `BranchRunOutcome`/
+`ExtractionOutcome`, the shared per-branch outcome shape every real path
+(webapp Extract & Save, Manual Upload, `ar_mis.pipeline.process_branch_
+data`) still uses, live there.
 
 ## Live Tally connection: Test Extraction passes end-to-end against real TallyPrime
 
@@ -150,22 +175,18 @@ Extraction and core reconciliation:
 - `ar_mis/drift_correction.py` — the correction mechanism for a Drift
   Finding: replays its original voucher into the registers under a new,
   Maker-chosen week, never editing the locked historical week.
-- `ar_mis/orchestration.py` — human-in-the-loop branch loop + retry queue.
-- `ar_mis/gate.py` — PASS/FAIL aggregation + output gate (4.4).
-- `ar_mis/reporting.py` — static weekly snapshot report (Section 6).
+- `ar_mis/orchestration.py` — the shared `BranchRunOutcome`/`ExtractionOutcome`
+  per-branch outcome shape (see "Removed: the standalone CLI tool" above for
+  what used to live here too).
 - `ar_mis/pipeline.py` — wires extraction → roll-forward → reconciliation →
-  register-building → storage into the per-branch runner orchestration
-  drives; the one function (`process_branch_data`) that both a live
-  Tally pull and a manual XML upload both call, so neither path can drift
-  from the other.
-- `ar_mis/cli.py` — the actual script run each Monday (Section 2.2); ties
-  orchestration, pipeline, the 4.2 drift check, the 4.4 gate, and reporting
-  into one weekly command. Reads its branch list from Branch Master
+  register-building → storage into the one function (`process_branch_data`)
+  that both a live Tally pull and a manual XML upload both call, so neither
+  path can drift from the other. Reads its branch list from Branch Master
   (`Store.list_branches()`) — `ar_mis/config.py` no longer carries a
   hardcoded branch list at all.
-- `ar_mis/seed.py` — one-time Layer 1 Pre-MIS Outstanding load, shared by
-  the CLI tool (multi-branch CSV) and the webapp's own branch-scoped
-  upload (see "One-time setup" below).
+- `ar_mis/seed.py` — one-time Layer 1 Pre-MIS Outstanding load (own standalone
+  `python -m ar_mis.seed` command, see "One-time setup" below), also used by
+  the webapp's own branch-scoped upload.
 
 Registers and reporting (the actual day-to-day screens):
 - `ar_mis/registers.py` — builds the three master registers (Sales & DN,
@@ -502,13 +523,13 @@ transfer between godowns, unrelated to an accounting Journal voucher.
 
 ## Running the weekly cycle
 
-```
-python -m ar_mis.cli 2026-01-05    # week ending date; defaults to today
-```
+The webapp is the only real path - see "Seeing the application: the local
+web app" above (`python -m ar_mis.webapp.app`, then Extract & Save or
+Manual Upload per branch). There is no separate terminal command for this
+any more (see "Removed: the standalone CLI tool" above).
 
 Branches come from Branch Master (`Store.list_branches()`), not from a
-hardcoded list — add/edit them there before the first real run, same as for
-a live webapp extraction.
+hardcoded list — add/edit them there before the first real run.
 
 ## Known gaps
 

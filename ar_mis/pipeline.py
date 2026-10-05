@@ -72,7 +72,7 @@ def process_branch_data(
     the branch too, which is what the old halt-the-whole-branch behavior
     did. `BranchRunOutcome.failed_parties` still reports which parties
     didn't reconcile this run, for anything downstream that needs to
-    flag it (ar_mis.gate.evaluate_output_gate, the webapp).
+    flag it (the webapp's own combined Cross-Check banner).
 
     `extracted_at` is the real wall-clock moment this run happened (for
     the Registers/Reports screens' freshness indicator) - defaults to
