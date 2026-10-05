@@ -2181,14 +2181,74 @@ resolves former open item 1.
 
     Full suite green (678 tests) at this point.
 
-    **Still to come, per the agreed build order**: Phase 6c (the actual
-    Add/Delete/Modify buttons on the Check 1 screen, maker-only, audited -
-    and wiring the webapp's own routes, which don't yet read `all_
-    register_row_corrections()` back out of storage at all); Phase 6d
-    (retire the Drift Findings page/nav entry, stop calling `isolate_
-    drift` anywhere, keep its historical table data); Phase 6e (fix
-    Manual Upload's broken `ytd_vouchers` parser and repoint it at
-    Check 1).
+    **Phase 6c built and tested: Add/Delete/Modify/Reinstate live on the
+    Check 1 screen itself.** `ytd_debtor_voucher_report()` now reads
+    `all_register_row_corrections()` back out of storage on every page
+    load and threads them into `compute_ytd_vs_register_comparison`, so
+    a correction recorded a moment ago is already reflected the next time
+    anyone opens this screen - never a separate "apply" step. Per-row
+    action, driven by `row.status`: Missing from Registers gets an "Add
+    to Registers" form (reusing `drift_finding_incorporate` outright, not
+    a second mechanism - see below); Extra in Registers gets "Delete";
+    Amount Mismatch gets "Modify". New maker-only route
+    `register_row_correction_submit` (`POST /reports/ytd-debtor-vouchers/
+    correction`) handles Exclude/Correct Amount/Reinstate uniformly -
+    branch_id/voucher_type/voucher_number/party_id/action/reason/
+    corrected_by always required, corrected_amount required only for
+    Correct Amount, redirects back to the same `as_of` the Maker was
+    looking at.
+
+    `drift_finding_incorporate` (Phase 2's own route, previously only
+    reachable from the standalone Drift Findings page) gained a small,
+    additive `return_to`/`as_of` hidden-field pair, read by a new
+    `_drift_finding_redirect()` helper - when the Add form on THIS screen
+    posts to it, the Maker lands back on Check 1, not on Drift Findings;
+    every existing call site (the Drift Findings page itself) keeps its
+    old behavior unchanged, since the field is simply absent there. No
+    second "add a missing voucher" mechanism was built - Phase 6a's
+    `drift_findings_from_missing_registers` already creates the exact
+    `DriftFindingRecord` this form incorporates, looked up here by the
+    same (branch_id, voucher_type, voucher_number, party_id) identity,
+    never re-detected on page load.
+
+    **A real design gap, caught before shipping, not after**: an Exclude
+    on an "Extra in Registers" row removes that voucher's only remaining
+    key from the register-side amounts - and since "Extra in Registers"
+    means the YTD pull never had this key either, the row has NO side
+    left to appear under at all once excluded. A per-row "Reinstate"
+    button attached only to that now-vanished row is therefore dead code
+    for the one case Delete actually exists for. Fixed by adding a
+    durable **Corrections Log** section beneath the main table - every
+    correction ever recorded, oldest at the bottom, each marked Active or
+    Superseded (`latest_correction_id_by_key`, the same latest-wins
+    identity `effective_corrections` uses, keyed off insertion order
+    rather than object equality to stay correct even if two corrections
+    happen to carry identical values) - Reinstate always lives there,
+    never only inline on a row that might not exist to click on. Confirmed
+    with a dedicated test asserting Delete removes a row from the visible
+    comparison while it still shows, correctly, in the Corrections Log.
+
+    Verified in a real browser-equivalent flow (not just the test client):
+    started the dev server, seeded data via the Store API directly, and
+    drove the Correct Amount action through actual HTTP requests - the
+    mismatch cleared from the comparison table and the Corrections Log
+    showed it Active, exactly as the unit/integration tests already
+    asserted.
+
+    New webapp tests: maker sees Delete/Modify, a Checker sees neither;
+    Exclude/Correct Amount/Reinstate each round-trip through the real
+    route; all four validation failures (missing voucher identity, bad
+    action, missing reason/name, invalid corrected_amount); Add renders
+    only when a backing DriftFindingRecord exists and links to the
+    correct finding id; `drift_finding_incorporate`'s new redirect
+    override.
+
+    Full suite green (688 tests) at this point.
+
+    **Still to come, per the agreed build order**: Phase 6d (retire the
+    Drift Findings page/nav entry, stop calling `isolate_drift` anywhere,
+    keep its historical table data); Phase 6e (fix Manual Upload's broken
+    `ytd_vouchers` parser and repoint it at Check 1).
 
 ## Deferred to a later version (not rejected, not in scope now)
 

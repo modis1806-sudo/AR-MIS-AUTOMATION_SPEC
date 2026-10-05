@@ -64,10 +64,14 @@
       <th>Tally (YTD pull)</th>
       <th>Registers</th>
       <th data-tt-filter data-tt-col="status">Match / Mismatch</th>
+      {% if session.role == "maker" %}<th>Actions</th>{% endif %}
     </tr>
   </thead>
   <tbody>
   {% for row in rows %}
+    {% set key = (row.branch_id, row.voucher_type, row.voucher_number, row.party_id) %}
+    {% set active = active_corrections.get(key) %}
+    {% set finding_id = finding_ids.get(key) %}
     <tr data-tt-row {% if row.status != 'Match' %}style="background:#fef2f2;"{% endif %}>
       <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.voucher_type }}|{{ row.voucher_number }}|{{ row.party_id }}"></td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
@@ -80,12 +84,119 @@
       <td data-tt-col="status">
         {% if row.status == 'Match' %}<span class="pill ok">Match</span>
         {% else %}<span class="pill fail">{{ row.status }}</span>{% endif %}
+        {% if active %}
+          <div style="font-size:11px; color:#6b7280; margin-top:2px;">{{ active.action }} by {{ active.corrected_by }} on {{ active.corrected_at.strftime('%d %b %Y') }} — {{ active.reason }}</div>
+        {% endif %}
       </td>
+      {% if session.role == "maker" %}
+      <td>
+        <div style="display:flex; flex-direction:column; gap:8px; min-width:220px;">
+          {% if row.status == 'Missing from Registers' %}
+            {% if finding_id %}
+            <form method="post" action="{{ url_for('drift_finding_incorporate', finding_id=finding_id) }}" style="display:flex; flex-direction:column; gap:6px;">
+              <input type="hidden" name="return_to" value="ytd_debtor_voucher_report">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <label style="font-size:11px; color:#6b7280;">Week ending
+                <input type="date" name="week_ending" style="width:100%; padding:6px 8px;" required>
+              </label>
+              <label style="font-size:11px; color:#6b7280;">{{ row.party_id }}'s Sundry Debtors closing (Tally), as of that date
+                <input type="text" name="party_closing_extracted" placeholder="e.g. 125000.00" style="width:100%; padding:6px 8px;" required>
+              </label>
+              <input name="incorporated_by" placeholder="Your name" style="padding:6px 8px;" required>
+              <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Add to Registers</button>
+            </form>
+            {% else %}
+            <span style="font-size:11px; color:#6b7280;">No backing voucher on record to replay yet.</span>
+            {% endif %}
+          {% elif row.status == 'Extra in Registers' and not active %}
+            <form method="post" action="{{ url_for('register_row_correction_submit') }}" style="display:flex; flex-direction:column; gap:6px;">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
+              <input type="hidden" name="voucher_type" value="{{ row.voucher_type }}">
+              <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
+              <input type="hidden" name="party_id" value="{{ row.party_id }}">
+              <input type="hidden" name="action" value="Exclude">
+              <input name="reason" placeholder="Reason" style="padding:6px 8px;" required>
+              <input name="corrected_by" placeholder="Your name" style="padding:6px 8px;" required>
+              <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Delete</button>
+            </form>
+          {% elif row.status == 'Amount Mismatch' and not active %}
+            <form method="post" action="{{ url_for('register_row_correction_submit') }}" style="display:flex; flex-direction:column; gap:6px;">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
+              <input type="hidden" name="voucher_type" value="{{ row.voucher_type }}">
+              <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
+              <input type="hidden" name="party_id" value="{{ row.party_id }}">
+              <input type="hidden" name="action" value="Correct Amount">
+              <input name="corrected_amount" placeholder="Corrected amount" style="padding:6px 8px;" required>
+              <input name="reason" placeholder="Reason" style="padding:6px 8px;" required>
+              <input name="corrected_by" placeholder="Your name" style="padding:6px 8px;" required>
+              <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Modify</button>
+            </form>
+          {% endif %}
+          {% if active %}
+            <span style="font-size:11px; color:#6b7280;">Reinstate below in Corrections Log — an Exclude that leaves no matching Tally-side voucher drops this row from the table above entirely, so Reinstate always lives there, not here.</span>
+          {% endif %}
+        </div>
+      </td>
+      {% endif %}
     </tr>
   {% else %}
-    <tr><td colspan="9" class="empty">Nothing to compare for this date yet.</td></tr>
+    <tr><td colspan="{{ 10 if session.role == 'maker' else 9 }}" class="empty">Nothing to compare for this date yet.</td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+
+{% if correction_log %}
+<h2 style="margin-top:32px;">Corrections Log</h2>
+<p class="subtitle">Every Delete/Modify/Reinstate ever recorded against these registers, oldest action at the bottom — append-only, the original register row is never edited or deleted. Only the currently effective correction for a voucher can be reinstated; an earlier, already-superseded one is kept purely as history.</p>
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th>Branch</th><th>Voucher</th><th>Party</th><th>Action</th><th>Corrected Amount</th>
+      <th>Reason</th><th>By</th><th>When</th>
+      {% if session.role == "maker" %}<th>Actions</th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in correction_log %}
+    {% set log_key = (r.correction.branch_id, r.correction.voucher_type, r.correction.voucher_number, r.correction.party_id) %}
+    {% set is_active = latest_correction_id_by_key.get(log_key) == r.id %}
+    <tr>
+      <td>{{ r.correction.branch_id }}</td>
+      <td>{{ r.correction.voucher_type }} {{ r.correction.voucher_number }}</td>
+      <td>{{ r.correction.party_id }}</td>
+      <td>
+        {{ r.correction.action }}
+        {% if is_active %}<span class="pill status-active">Active</span>{% else %}<span class="pill">Superseded</span>{% endif %}
+      </td>
+      <td>{{ r.correction.corrected_amount|inr if r.correction.corrected_amount is not none else "—" }}</td>
+      <td>{{ r.correction.reason }}</td>
+      <td>{{ r.correction.corrected_by }}</td>
+      <td>{{ r.correction.corrected_at.strftime('%d %b %Y, %I:%M %p') }}</td>
+      {% if session.role == "maker" %}
+      <td>
+        {% if is_active and r.correction.action != 'Reinstate' %}
+        <form method="post" action="{{ url_for('register_row_correction_submit') }}" style="display:flex; gap:6px;">
+          <input type="hidden" name="as_of" value="{{ as_of }}">
+          <input type="hidden" name="branch_id" value="{{ r.correction.branch_id }}">
+          <input type="hidden" name="voucher_type" value="{{ r.correction.voucher_type }}">
+          <input type="hidden" name="voucher_number" value="{{ r.correction.voucher_number }}">
+          <input type="hidden" name="party_id" value="{{ r.correction.party_id }}">
+          <input type="hidden" name="action" value="Reinstate">
+          <input name="reason" placeholder="Reason" style="width:110px; padding:6px 8px;" required>
+          <input name="corrected_by" placeholder="Your name" style="width:100px; padding:6px 8px;" required>
+          <button class="btn secondary" type="submit" style="padding:6px 10px; font-size:12px;">Reinstate</button>
+        </form>
+        {% endif %}
+      </td>
+      {% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
 {% endblock %}

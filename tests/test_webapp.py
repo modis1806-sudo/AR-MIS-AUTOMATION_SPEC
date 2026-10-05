@@ -4568,3 +4568,198 @@ def test_ytd_debtor_voucher_report_shows_message_when_no_pull_recorded_yet(clien
 def test_reports_home_links_to_ytd_debtor_voucher_report(client):
     resp = client.get("/reports")
     assert b"/reports/ytd-debtor-vouchers" in resp.data
+
+
+# ---- Check 1's own Add/Delete/Modify/Reinstate actions (Phase 6c) --------
+
+
+def _seed_extra_and_mismatch_rows(client):
+    from ar_mis.models import CreditNoteRegisterRow, RegisterClassification, YtdDebtorVoucherRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_ytd_debtor_voucher_rows([
+        YtdDebtorVoucherRow(
+            branch_id="KOL", as_of=date(2026, 4, 7), voucher_date=date(2026, 4, 2), voucher_type="Credit Note",
+            raw_voucher_type_name="Credit Note", voucher_number="CN2", party_id="ACME", amount=Decimal("300.00"),
+        ),
+    ])
+    store.append_credit_note_row(CreditNoteRegisterRow(
+        branch_id="KOL", cn_date=date(2026, 4, 1), voucher_number="CN1", party_id="ACME",
+        cn_amount=Decimal("250.00"), classification=RegisterClassification.CURRENT,
+    ))
+    store.append_credit_note_row(CreditNoteRegisterRow(
+        branch_id="KOL", cn_date=date(2026, 4, 2), voucher_number="CN2", party_id="ACME",
+        cn_amount=Decimal("250.00"), classification=RegisterClassification.CURRENT,
+    ))
+    store.close()
+
+
+def test_ytd_debtor_voucher_report_shows_delete_and_modify_actions_for_maker(client):
+    _seed_extra_and_mismatch_rows(client)
+    resp = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
+    assert b"Extra in Registers" in resp.data
+    assert b"Amount Mismatch" in resp.data
+    assert b">Delete<" in resp.data
+    assert b">Modify<" in resp.data
+
+
+def test_ytd_debtor_voucher_report_hides_actions_for_a_checker(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    _seed_extra_and_mismatch_rows(roleless_client)
+    resp = roleless_client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
+    assert resp.status_code == 200
+    assert b">Delete<" not in resp.data
+    assert b">Modify<" not in resp.data
+
+
+def test_register_row_correction_submit_excludes_an_extra_in_registers_row(client):
+    _seed_extra_and_mismatch_rows(client)
+    resp = client.post(
+        "/reports/ytd-debtor-vouchers/correction",
+        data={
+            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
+            "party_id": "ACME", "action": "Exclude", "reason": "Not a real Sundry Debtor voucher",
+            "corrected_by": "AR Manager",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Correction recorded" in resp.data
+    # CN1 never appeared in the YTD pull either, so excluding it drops
+    # the row from the comparison table entirely - confirmed via the
+    # durable Corrections Log, which is the only place it's visible now.
+    assert b"CN1" in resp.data  # still shown in the Corrections Log
+    assert b"Active" in resp.data
+
+
+def test_register_row_correction_submit_corrects_an_amount_mismatch(client):
+    _seed_extra_and_mismatch_rows(client)
+    resp = client.post(
+        "/reports/ytd-debtor-vouchers/correction",
+        data={
+            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN2",
+            "party_id": "ACME", "action": "Correct Amount", "corrected_amount": "300.00",
+            "reason": "Register captured the wrong figure", "corrected_by": "AR Manager",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    report = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
+    rows_section = report.data
+    assert b"Amount Mismatch" not in rows_section
+
+
+def test_register_row_correction_submit_requires_a_reason(client):
+    resp = client.post(
+        "/reports/ytd-debtor-vouchers/correction",
+        data={
+            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
+            "party_id": "ACME", "action": "Exclude", "reason": "", "corrected_by": "AR Manager",
+        },
+        follow_redirects=True,
+    )
+    assert b"Enter a reason for this correction" in resp.data
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_register_row_corrections() == []
+    store.close()
+
+
+def test_register_row_correction_submit_requires_a_valid_corrected_amount(client):
+    resp = client.post(
+        "/reports/ytd-debtor-vouchers/correction",
+        data={
+            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN2",
+            "party_id": "ACME", "action": "Correct Amount", "corrected_amount": "not-a-number",
+            "reason": "test", "corrected_by": "AR Manager",
+        },
+        follow_redirects=True,
+    )
+    assert b"Enter a valid corrected amount" in resp.data
+
+
+def test_register_row_correction_submit_rejects_an_unknown_action(client):
+    resp = client.post(
+        "/reports/ytd-debtor-vouchers/correction",
+        data={
+            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
+            "party_id": "ACME", "action": "Delete Forever", "reason": "test", "corrected_by": "AR Manager",
+        },
+        follow_redirects=True,
+    )
+    assert b"Choose a valid correction action" in resp.data
+
+
+def test_register_row_correction_reinstate_marks_the_exclude_superseded(client):
+    _seed_extra_and_mismatch_rows(client)
+    client.post(
+        "/reports/ytd-debtor-vouchers/correction",
+        data={
+            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
+            "party_id": "ACME", "action": "Exclude", "reason": "test exclude", "corrected_by": "AR Manager",
+        },
+    )
+    resp = client.post(
+        "/reports/ytd-debtor-vouchers/correction",
+        data={
+            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
+            "party_id": "ACME", "action": "Reinstate", "reason": "excluded by mistake", "corrected_by": "AR Manager",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    # CN1 has no YTD-side counterpart, so once reinstated it goes back to
+    # being Extra in Registers again, with a Delete form available once
+    # more (the correction is no longer active).
+    assert b"Extra in Registers" in resp.data
+    assert b"Superseded" in resp.data
+
+
+def test_ytd_debtor_voucher_report_shows_add_action_for_a_backed_missing_from_registers_row(client):
+    from ar_mis.reconciliation import DriftFinding
+    from ar_mis.models import YtdDebtorVoucherRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_ytd_debtor_voucher_rows([
+        YtdDebtorVoucherRow(
+            branch_id="KOL", as_of=date(2026, 4, 7), voucher_date=date(2026, 4, 2), voucher_type="Credit Note",
+            raw_voucher_type_name="Credit Note", voucher_number="CN9", party_id="ACME", amount=Decimal("300.00"),
+        ),
+    ])
+    voucher = Voucher(
+        voucher_type=VoucherType.CREDIT_NOTE, voucher_date=date(2026, 4, 2), voucher_number="CN9",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("300.00"), bill_name="CN9", bill_type="New Ref")],
+    )
+    finding = DriftFinding(
+        party_ledger_name="ACME", voucher_type="Credit Note", voucher_number="CN9",
+        voucher_date=date(2026, 4, 2), flipped_amount=Decimal("-300.00"), attributed_week=date(2026, 4, 7),
+        voucher=voucher,
+    )
+    store.record_drift_findings("KOL", [finding], datetime(2026, 4, 7, 9, 0))
+    store.close()
+
+    resp = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
+    assert resp.status_code == 200
+    assert b"Missing from Registers" in resp.data
+    assert b"Add to Registers" in resp.data
+    finding_id = Store(client.application.config["DB_PATH"]).all_drift_findings()[0].id
+    assert f"/reports/drift-findings/{finding_id}/incorporate".encode() in resp.data
+
+
+def test_drift_finding_incorporate_redirects_back_to_ytd_report_when_asked(client):
+    _seed_drift_finding(client)
+    from ar_mis.storage import Store
+    finding_id = Store(client.application.config["DB_PATH"]).all_drift_findings()[0].id
+
+    resp = client.post(
+        f"/reports/drift-findings/{finding_id}/incorporate",
+        data={
+            "week_ending": "2026-03-15", "party_closing_extracted": "50000.00",
+            "incorporated_by": "AR Manager", "return_to": "ytd_debtor_voucher_report", "as_of": "2026-03-15",
+        },
+    )
+    assert resp.status_code == 302
+    assert resp.headers["Location"].startswith("/reports/ytd-debtor-vouchers")
