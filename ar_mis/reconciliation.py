@@ -132,8 +132,8 @@ class DriftFindingRecord:
     """A DriftFinding as persisted (Store.record_drift_findings) - found
     and fixed this session: previously a finding was only ever shown once,
     on the result page of the run that found it, then gone. `id` is the
-    drift_finding table's own row id, needed to acknowledge or incorporate
-    a specific finding later. `discovered_at` is the real wall-clock
+    drift_finding table's own row id, needed to incorporate a specific
+    finding later. `discovered_at` is the real wall-clock
     moment this finding was FIRST detected - a still-unresolved backdated
     voucher re-appears in isolate_drift's output on every subsequent
     extraction until it's actually incorporated, so
@@ -141,9 +141,14 @@ class DriftFindingRecord:
     and leaves an already-recorded one alone, rather than spawning a
     fresh row every week it stays unresolved.
 
-    Two distinct, independent signals, never conflated:
-    `acknowledged` is a human saying "I've seen this" - an audit note
-    only, it never touches weekly_snapshot or any register.
+    `acknowledged`/`acknowledged_by`/`acknowledged_at` were a human
+    saying "I've seen this" - an audit note only, never touching
+    weekly_snapshot or any register. Retired along with the standalone
+    Drift Findings page (Phase 6d, client's explicit call - Check 1 is
+    strictly more complete and is now the only UI for this mechanism):
+    there is no longer a way to SET these fields, but they are read back
+    unchanged for any finding that was already acknowledged before the
+    retirement, per this app's never-discard-data principle.
     `incorporated` is the real fix (ar_mis.drift_correction): the missing
     voucher has actually been written into the registers and
     weekly_snapshot, under a new correction week. Incorporating does NOT

@@ -2245,10 +2245,77 @@ resolves former open item 1.
 
     Full suite green (688 tests) at this point.
 
-    **Still to come, per the agreed build order**: Phase 6d (retire the
-    Drift Findings page/nav entry, stop calling `isolate_drift` anywhere,
-    keep its historical table data); Phase 6e (fix Manual Upload's broken
-    `ytd_vouchers` parser and repoint it at Check 1).
+    **Phase 6d built and tested: the standalone Drift Findings page is
+    retired.** Removed: the `drift_findings_report` route and its
+    `drift_findings.html` template, the `drift_finding_acknowledge` route,
+    the Reports Home nav card linking to it, and the now-fully-orphaned
+    `Store.acknowledge_drift_finding` method (zero remaining callers once
+    its one route was gone). Per this app's never-discard-data principle,
+    nothing about the underlying DATA moved: the `drift_finding` table,
+    every historical row in it (including any `acknowledged`/
+    `acknowledged_by`/`acknowledged_at` set before this retirement), and
+    `DriftFindingRecord`'s own fields for reading them back all stay
+    exactly as they were - only the one-way street to SET a NEW
+    acknowledgement is gone, since it had no remaining UI entry point.
+
+    `drift_finding_incorporate` (Check 1's own Add action, Phase 6a/6c)
+    is UNCHANGED in what it does - only its redirect target changed,
+    from the now-deleted page to Check 1 itself, unconditionally (the
+    `return_to` hidden field this needed while both pages coexisted is
+    gone too, along with the conditional in `_drift_finding_redirect` -
+    there is only one caller now, so there is only one destination).
+
+    Tests updated to match: the dead-page assertions (`test_drift_
+    findings_renders_with_no_data`, `..._shows_outstanding_finding_and_
+    count`, `test_maker_can_acknowledge_a_finding`, `test_checker_can_
+    view_but_not_acknowledge_drift_findings`, the storage-level
+    `test_acknowledge_drift_finding`) were removed outright rather than
+    patched around a feature that no longer exists; two new tests
+    (`test_drift_findings_report_page_is_retired` - a 404; `test_reports_
+    home_no_longer_links_to_drift_findings`) assert the retirement itself
+    rather than leaving it unverified. `test_maker_can_incorporate_a_
+    finding_and_reconcile_clean`'s assertions were adjusted to check the
+    flash message and the persisted record directly instead of HTML the
+    deleted page used to render (who incorporated a finding and when is
+    still durably stored and queryable - `DriftFindingRecord.
+    incorporated_by`/`incorporated_at` - it simply isn't re-displayed in
+    any table any more, an accepted, deliberate trade for one less
+    screen). `test_every_report_screen_has_a_back_to_reports_link`'s path
+    list dropped `/reports/drift-findings` and gained `/reports/ytd-
+    debtor-vouchers`, which hadn't been in that regression test at all
+    until now.
+
+    **A genuinely new finding, surfaced rather than silently acted on**:
+    `isolate_drift` (the function Phase 6a already stopped calling from
+    the webapp's `test_extraction_save`) turns out to have a THIRD call
+    site this session hadn't tracked until now - `ar_mis.cli.run`, the
+    standalone weekly batch script (Section 2.2), which still does its
+    own separate live YTD pull and feeds `isolate_drift`'s findings
+    straight into `evaluate_output_gate` as a gate-blocking signal. This
+    is a safety-critical, batch-mode-only code path this whole session's
+    work has not touched at all. Deliberately NOT rewritten here as a
+    drive-by alongside the webapp's own retirement - migrating it to
+    Check 1 the way the webapp was migrated is a real, separate task
+    (does the CLI's own TallyClient instance get a `fetch_sundry_debtor_
+    vouchers` call added, does the gate's "clean" definition change
+    shape, is this batch script even still the client's live operational
+    path now that the webapp has Extract & Save) that deserves its own
+    attention, not a decision made in passing. `ar_mis.manual_upload.
+    process_manual_upload`'s own `isolate_drift` call (Phase 6e's actual
+    job) is the second, already-known remaining call site - so "stop
+    calling isolate_drift anywhere" is NOT yet fully true after this
+    phase, only "stop calling it from the webapp's live-extraction path,"
+    which is the part that was actually in scope here.
+
+    Full suite green (684 tests - four removed, two added, net -4 - since
+    Phase 6d retires behavior rather than adding it) at this point.
+
+    **Still to come, per the agreed build order**: Phase 6e (fix Manual
+    Upload's broken `ytd_vouchers` parser and repoint it at Check 1,
+    the second of the two remaining `isolate_drift` call sites). The
+    newly-found third call site (`ar_mis.cli.run`) is flagged above as
+    its own follow-up, outside this build order until the client weighs
+    in on it.
 
 ## Deferred to a later version (not rejected, not in scope now)
 

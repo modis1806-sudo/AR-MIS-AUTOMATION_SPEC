@@ -3543,8 +3543,8 @@ def test_every_report_screen_has_a_back_to_reports_link(client):
     for path in (
         "/reports/ar-snapshot", "/reports/exceptions", "/reports/ageing-matrix",
         "/reports/weekly-movement", "/reports/tb-cross-check", "/reports/concentration-risk",
-        "/reports/branch-totals", "/reports/drift-findings", "/reports/register-exceptions",
-        "/reports/pre-mis-adjustments",
+        "/reports/branch-totals", "/reports/register-exceptions",
+        "/reports/pre-mis-adjustments", "/reports/ytd-debtor-vouchers",
     ):
         resp = client.get(path)
         assert resp.status_code == 200
@@ -4356,68 +4356,20 @@ def _seed_drift_finding(client, voucher_number="SB/0099-BACKDATED"):
     store.close()
 
 
-def test_drift_findings_renders_with_no_data(client):
+def test_drift_findings_report_page_is_retired(client):
+    # Phase 6d: the standalone Drift Findings page is gone - Check 1
+    # (/reports/ytd-debtor-vouchers) is strictly more complete and is the
+    # only place the Add action lives now. The underlying data (and the
+    # Add/incorporate mechanism itself) is never deleted, just this
+    # separate destination for it.
     resp = client.get("/reports/drift-findings")
-    assert resp.status_code == 200
-    assert b"Backdated Entry Findings" in resp.data
-    assert b"No backdated entries found yet" in resp.data
+    assert resp.status_code == 404
 
 
-def test_drift_findings_shows_outstanding_finding_and_count(client):
-    _seed_drift_finding(client)
-    resp = client.get("/reports/drift-findings")
-    assert resp.status_code == 200
-    assert b"SB/0099-BACKDATED" in resp.data
-    assert b"Outstanding" in resp.data
-    assert b"50,000.00" in resp.data
-
-
-def test_maker_can_acknowledge_a_finding(client):
-    _seed_drift_finding(client)
-    from ar_mis.storage import Store
-    store = Store(client.application.config["DB_PATH"])
-    finding_id = store.all_drift_findings()[0].id
-    store.close()
-
-    resp = client.post(
-        f"/reports/drift-findings/{finding_id}/acknowledge",
-        data={"acknowledged_by": "AR Manager"},
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    assert b"Acknowledged" in resp.data
-    assert b"AR Manager" in resp.data
-
-    store = Store(client.application.config["DB_PATH"])
-    record = store.all_drift_findings()[0]
-    assert record.acknowledged is True
-    assert record.acknowledged_by == "AR Manager"
-    store.close()
-
-
-def test_checker_can_view_but_not_acknowledge_drift_findings(roleless_client):
-    _seed_drift_finding(roleless_client)
-    roleless_client.post("/choose-role", data={"role": "checker"})
-    resp = roleless_client.get("/reports/drift-findings")
-    assert resp.status_code == 200
-    assert b"Acknowledge" not in resp.data  # no button/form for a Checker
-
-    from ar_mis.storage import Store
-    store = Store(roleless_client.application.config["DB_PATH"])
-    finding_id = store.all_drift_findings()[0].id
-    store.close()
-
-    resp = roleless_client.post(
-        f"/reports/drift-findings/{finding_id}/acknowledge",
-        data={"acknowledged_by": "Someone"},
-        follow_redirects=True,
-    )
-    assert b"available for your role" in resp.data
-
-
-def test_reports_home_links_to_drift_findings(client):
+def test_reports_home_no_longer_links_to_drift_findings(client):
     resp = client.get("/reports")
-    assert b"Backdated Entry Findings" in resp.data
+    assert b"Backdated Entry Findings" not in resp.data
+    assert b"/reports/drift-findings" not in resp.data
 
 
 def test_maker_can_incorporate_a_finding_and_reconcile_clean(client):
@@ -4434,12 +4386,14 @@ def test_maker_can_incorporate_a_finding_and_reconcile_clean(client):
     )
     assert resp.status_code == 200
     assert b"reconciled clean" in resp.data
-    assert b"Incorporated" in resp.data
-    assert b"AR Manager" in resp.data
+    # Redirects to Check 1 (there is no standalone Drift Findings page any
+    # more) - confirmed by landing back on its own page title.
+    assert b"TB vs Registers" in resp.data
 
     store = Store(client.application.config["DB_PATH"])
     record = store.all_drift_findings()[0]
     assert record.incorporated is True
+    assert record.incorporated_by == "AR Manager"
     assert record.incorporated_week_ending == date(2026, 9, 12)
     rows = store.all_sales_dn_rows("KOL")
     assert len(rows) == 1

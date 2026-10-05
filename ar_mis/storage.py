@@ -1689,17 +1689,6 @@ class Store:
             for r in cur.fetchall()
         ]
 
-    def acknowledge_drift_finding(self, finding_id: int, acknowledged_by: str, acknowledged_at: datetime) -> None:
-        """Marks a finding as reviewed by a human - an audit note only,
-        never touching weekly_snapshot or any register. See
-        ar_mis.drift_correction for the actual correction mechanism.
-        """
-        self.conn.execute(
-            "UPDATE drift_finding SET acknowledged=1, acknowledged_by=?, acknowledged_at=? WHERE id=?",
-            (acknowledged_by, acknowledged_at.isoformat(), finding_id),
-        )
-        self.conn.commit()
-
     def mark_drift_finding_incorporated(
         self, finding_id: int, incorporated_by: str, incorporated_at: datetime, week_ending: date
     ) -> None:

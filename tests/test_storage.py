@@ -497,18 +497,6 @@ def test_all_drift_findings_orders_most_recent_first(store):
     assert [r.finding.voucher_number for r in records] == ["SB/002", "SB/001"]
 
 
-def test_acknowledge_drift_finding(store):
-    store.record_drift_findings("KOL", [_drift_finding()], datetime(2026, 1, 6, 9, 0))
-    finding_id = store.all_drift_findings()[0].id
-
-    store.acknowledge_drift_finding(finding_id, "AR Manager - Kolkata", datetime(2026, 1, 7, 10, 0))
-
-    record = store.all_drift_findings()[0]
-    assert record.acknowledged is True
-    assert record.acknowledged_by == "AR Manager - Kolkata"
-    assert record.acknowledged_at == datetime(2026, 1, 7, 10, 0)
-
-
 def test_drift_finding_voucher_round_trips_full_entries():
     voucher = Voucher(
         voucher_type=VoucherType.SALES, voucher_date=date(2026, 1, 4), voucher_number="SB/999",

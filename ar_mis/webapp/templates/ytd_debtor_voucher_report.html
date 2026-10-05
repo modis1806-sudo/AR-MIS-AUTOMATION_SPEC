@@ -94,7 +94,6 @@
           {% if row.status == 'Missing from Registers' %}
             {% if finding_id %}
             <form method="post" action="{{ url_for('drift_finding_incorporate', finding_id=finding_id) }}" style="display:flex; flex-direction:column; gap:6px;">
-              <input type="hidden" name="return_to" value="ytd_debtor_voucher_report">
               <input type="hidden" name="as_of" value="{{ as_of }}">
               <label style="font-size:11px; color:#6b7280;">Week ending
                 <input type="date" name="week_ending" style="width:100%; padding:6px 8px;" required>

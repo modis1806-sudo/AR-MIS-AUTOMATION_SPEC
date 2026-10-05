@@ -2481,54 +2481,14 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             branches=branches, selected_branch_id=branch_id,
         )
 
-    @app.route("/reports/drift-findings")
-    def drift_findings_report():
-        """Section 4.2's backdated-entry findings, found and fixed this
-        session so they no longer vanish once the run that found them is
-        over: every finding ever discovered (across Extract & Save,
-        Manual Upload, and the CLI alike) is listed here, most recent
-        first. Two independent actions: acknowledging (an audit note
-        only - "someone has seen this") and incorporating (the actual
-        fix - ar_mis.drift_correction). The headline count tracks
-        incorporation, not acknowledgement - acknowledging a finding
-        doesn't change the fact that Tally and this app still disagree
-        until the voucher is actually incorporated.
-        """
-        store = get_store()
-        records = store.all_drift_findings()
-        freshness = _freshness(store.last_extraction_at())
-        store.close()
-
-        outstanding_count = sum(1 for r in records if not r.incorporated)
-        return render_template(
-            "drift_findings.html", records=records, outstanding_count=outstanding_count, freshness=freshness,
-            default_week_ending=date.today().isoformat(),
-        )
-
-    @app.route("/reports/drift-findings/<int:finding_id>/acknowledge", methods=["POST"])
-    @requires_role("maker")
-    def drift_finding_acknowledge(finding_id):
-        acknowledged_by = request.form.get("acknowledged_by", "").strip()
-        if not acknowledged_by:
-            flash("Enter your name to acknowledge a finding.", "error")
-            return redirect(url_for("drift_findings_report"))
-
-        store = get_store()
-        store.acknowledge_drift_finding(finding_id, acknowledged_by, datetime.now())
-        store.close()
-        flash("Finding acknowledged.", "success")
-        return redirect(url_for("drift_findings_report"))
-
     def _drift_finding_redirect():
-        """Where to send the Maker back to after acting on a finding - the
-        standalone Drift Findings page by default, or straight back to
-        Check 1's own screen (same as_of they were looking at) when the
-        Add action was triggered from there (ar_mis.ytd_debtor_cross_
-        check.drift_findings_from_missing_registers is this same finding's
-        own detector now)."""
-        if request.form.get("return_to") == "ytd_debtor_voucher_report":
-            return redirect(url_for("ytd_debtor_voucher_report", as_of=request.form.get("as_of", "")))
-        return redirect(url_for("drift_findings_report"))
+        """Where to send the Maker back to after acting on a finding.
+        There is no standalone Drift Findings page any more (retired per
+        the client's explicit call - Check 1 is strictly more complete,
+        so a second screen for the same underlying mechanism had no
+        remaining utility) - every caller is Check 1's own Add form, so
+        this always lands back on that same `as_of`."""
+        return redirect(url_for("ytd_debtor_voucher_report", as_of=request.form.get("as_of", "")))
 
     @app.route("/reports/drift-findings/<int:finding_id>/incorporate", methods=["POST"])
     @requires_role("maker")
