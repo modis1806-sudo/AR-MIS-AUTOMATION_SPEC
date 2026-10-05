@@ -205,9 +205,19 @@ Registers and reporting (the actual day-to-day screens):
 - `ar_mis/weekly_movement.py` — Weekly Movement Register: a recorded,
   locked-once history, not a live recalculation like every other report.
 - `ar_mis/reconciliation_report.py` — TB Reconciliation Cross-Check
-  (Tally's own closing balance next to this app's own workings, one row
-  per party per branch per week, mismatches never discarded) and AR
-  Concentration Risk (top N parties by outstanding, as a % of total AR).
+  (Check 2: Tally's own closing balance next to this app's own workings,
+  one row per party per branch per week, mismatches never discarded) and
+  AR Concentration Risk (top N parties by outstanding, as a % of total AR).
+- `ar_mis/ytd_debtor_cross_check.py` — Check 1 (TB vs Registers — YTD
+  Debtor Vouchers): compares a live, Sundry-Debtors-scoped voucher pull
+  against what the three master registers actually captured, voucher-
+  wise; also the Manual Upload variant of the same check, scoped one
+  dimension coarser (no party — see "TB vs Registers — YTD Debtor
+  Vouchers" above for why).
+- `ar_mis/register_corrections.py` — the audited Delete/Modify/Reinstate
+  overlay both Check 1 and Check 2 (`ar_mis.rollforward.aggregate_
+  party_movements_from_registers`) read, so a correction changes both
+  checks' totals identically, never just one screen.
 - `ar_mis/branch_totals.py` — Branch Sales + CN + DN Total, a plain
   per-branch turnover figure to eyeball against Tally's own P&L.
 - `ar_mis/manual_upload.py` — the fallback extraction path (see "Manual
@@ -270,19 +280,28 @@ nav sections:
   **Save** re-runs the same range and actually writes it — reconciliation,
   registers, everything — chunked into ~7-day pieces for request-size
   reasons, one chunk at a time, so a chunk that already has recorded data
-  is safely skipped rather than re-processed.
+  is safely skipped rather than re-processed. Each save also runs a live,
+  Sundry-Debtors-scoped voucher pull and compares it against the Registers
+  (Check 1, see "TB vs Registers — YTD Debtor Vouchers" below) alongside
+  the usual party-level reconciliation (Check 2) — one combined "Cross-
+  Check: ALL CLEAR / DISCREPANCY FOUND" banner covers both, since a real
+  gap in the Registers shows up in either check, never just one.
 - **Manual Upload** — a fallback for when the live Tally connection isn't
   reachable at all (built after the client's own Tally Gateway Server proved
   unreliable during real testing). Upload the same data by hand, exported
   from Tally's own File → Export menu: the five weekly voucher types, the
   Trial Balance/Sundry Debtors closing balance as-on the reporting date, and
-  optionally a YTD voucher-wise detail file for the Section 4.2 drift check.
-  Runs through the exact same roll-forward, auto-discovery, and
-  zero-tolerance reconciliation as a live extraction
-  (`ar_mis.pipeline.process_branch_data`) — parsing never cared whether XML
-  arrived over HTTP or as a file, so neither does anything downstream of it.
-  Refuses outright if the branch/week already has recorded data from either
-  a live run or an earlier upload — first one in wins, no silent overwrite.
+  optionally a YTD voucher-wise file (Tally's "Sundry Debtors → Ctrl+H →
+  Voucher view" export) for Check 1 — scoped to branch + voucher type +
+  voucher number only, since that export carries no debtor name at all
+  (confirmed against a real sample; see `ar_mis.parsers.parse_manual_ytd_
+  voucher_report`'s own docstring). Runs through the exact same roll-
+  forward, auto-discovery, and zero-tolerance reconciliation as a live
+  extraction (`ar_mis.pipeline.process_branch_data`) — parsing never cared
+  whether XML arrived over HTTP or as a file, so neither does anything
+  downstream of it. Refuses outright if the branch/week already has
+  recorded data from either a live run or an earlier upload — first one in
+  wins, no silent overwrite.
 
 ### Registers
 
@@ -302,11 +321,16 @@ store of its own:
 
 ### Reports
 
-- **TB Reconciliation Cross-Check** — Tally's own Sundry Debtors closing
-  balance next to this app's own workings (Opening + Sales + DN − CN +
-  Receipts + Journals), one row per party per branch per week, **kept
+- **TB Reconciliation Cross-Check (Check 2)** — Tally's own Sundry Debtors
+  closing balance next to this app's own workings (Opening + Sales + DN −
+  CN + Receipts + Journals), one row per party per branch per week, **kept
   forever, mismatches included** — the direct answer to "how do I know
-  this data is correct?" A From/To range scopes the table; the summary
+  this data is correct?" Built from what the three master registers
+  actually captured, never a fresh re-sum of raw vouchers — a voucher a
+  register builder couldn't confidently place now visibly starves this
+  total too, instead of being silently counted regardless (the real
+  Joy Ray/Manoj Lal case that forced this redesign). A From/To range
+  scopes the table; the summary
   tiles (Total Debtor as per Books, parties currently mismatched, total
   absolute difference) always use each party's latest state as of the
   selected date regardless of that range, so they never silently shrink
@@ -363,14 +387,27 @@ store of its own:
   for a chosen period, plain enough to eyeball directly against Tally's
   own P&L page (gross/GST-inclusive by necessity, since Credit Note rows
   never carry a tax split).
-- **Backdated Entry Findings** (reached from Reports; see `ar_mis/
-  reconciliation.py`/`drift_correction.py`) — a voucher a fresh full-year
-  Tally pull found that no prior weekly extraction ever captured. Kept
-  permanently until reviewed. **Acknowledge** is an audit note only.
-  **Incorporate** is the real fix: replays the voucher into the registers
-  under a new week you choose, never editing the locked historical week,
-  and needs that party's real Tally closing balance as of that date to
-  confirm it actually reconciles clean afterward.
+- **TB vs Registers — YTD Debtor Vouchers (Check 1)** — an independent
+  second read of what Tally itself says touched a Sundry Debtor (a live,
+  Sundry-Debtors-scoped voucher pull, never the whole company filtered
+  down afterward), compared voucher-wise against what the three master
+  registers actually captured. Four outcomes per voucher: **Match**;
+  **Missing from Registers** (Tally has it, the registers don't) —
+  **Add to Registers** replays it in, under a new week you choose, using
+  that party's real Tally closing balance to confirm it reconciles clean
+  afterward; **Extra in Registers** (the registers have it, Tally's own
+  list doesn't) — **Delete**; **Amount Mismatch** — **Modify** to the
+  correct figure. Every Delete/Modify/Reinstate is an audited, append-
+  only row (`ar_mis.register_corrections`), never a silent edit to the
+  original register row, and feeds straight into both this check and
+  TB Reconciliation Cross-Check's own totals, never just this screen. A
+  **Corrections Log** below the main table lists every correction ever
+  recorded (Active/Superseded) regardless of whether its own row still
+  appears above — an Exclude on a voucher Tally's own list never had
+  removes its only remaining key, so Reinstate always lives there.
+  Manual Upload gets its own, coarser version of this (scoped to branch +
+  voucher type + voucher number only, no Add/Delete/Modify — see Manual
+  Upload above) since its own YTD file carries no debtor name at all.
 
 ## Diagnosing a live Tally connection from the command line
 
@@ -539,9 +576,10 @@ item below — update that file first when picking up the next one.
 **Built and working:** every register/report described above, live-tested
 against real TallyPrime (see the section below), bill-level ageing/due-date
 detail (`BILLTYPE`, due date — the original "no ageing-bucket detail" gap
-this section used to describe), Drift Findings + correction, Register
-Exceptions Review, Catch Up a Party, search/filter/select-all across every
-large table.
+this section used to describe), Check 1 (TB vs Registers) and Check 2 (TB
+Reconciliation Cross-Check) with the full audited Add/Delete/Modify/
+Reinstate correction set, Register Exceptions Review, Catch Up a Party,
+search/filter/select-all across every large table.
 
 **Deliberately not built yet** — real internal-controls gaps identified and
 discussed explicitly with the client, kept here rather than silently assumed
