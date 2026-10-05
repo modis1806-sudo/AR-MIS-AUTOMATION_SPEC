@@ -27,6 +27,7 @@ from ar_mis.models import (
     YtdDebtorVoucherRow,
 )
 from ar_mis.reconciliation import DriftFinding
+from ar_mis.register_corrections import CORRECT_AMOUNT, EXCLUDE, RegisterRowCorrection
 from ar_mis.storage import SCHEMA_VERSION, Store
 
 
@@ -558,6 +559,70 @@ def test_mark_drift_finding_incorporated(store):
     assert record.incorporated_week_ending == date(2026, 9, 12)
     # Incorporating is independent of acknowledging.
     assert record.acknowledged is False
+
+
+def _register_row_correction(**overrides) -> RegisterRowCorrection:
+    defaults = dict(
+        branch_id="KOL", voucher_type="Sales", voucher_number="SB/777", party_id="Acme",
+        action=EXCLUDE, corrected_amount=None, reason="Wrongly flagged as Sundry Debtor voucher",
+        corrected_by="AR Manager - Kolkata", corrected_at=datetime(2026, 1, 6, 9, 0),
+    )
+    defaults.update(overrides)
+    return RegisterRowCorrection(**defaults)
+
+
+def test_record_register_row_correction_then_read_back(store):
+    correction_id = store.record_register_row_correction(_register_row_correction())
+    records = store.all_register_row_corrections()
+    assert len(records) == 1
+    r = records[0]
+    assert r.id == correction_id
+    assert r.correction.branch_id == "KOL"
+    assert r.correction.voucher_number == "SB/777"
+    assert r.correction.party_id == "Acme"
+    assert r.correction.action == EXCLUDE
+    assert r.correction.corrected_amount is None
+    assert r.correction.reason == "Wrongly flagged as Sundry Debtor voucher"
+    assert r.correction.corrected_by == "AR Manager - Kolkata"
+    assert r.correction.corrected_at == datetime(2026, 1, 6, 9, 0)
+
+
+def test_record_register_row_correction_stores_a_corrected_amount(store):
+    store.record_register_row_correction(
+        _register_row_correction(action=CORRECT_AMOUNT, corrected_amount=Decimal("1234.56"))
+    )
+    record = store.all_register_row_corrections()[0]
+    assert record.correction.action == CORRECT_AMOUNT
+    assert record.correction.corrected_amount == Decimal("1234.56")
+
+
+def test_record_register_row_correction_never_deduplicates(store):
+    # Unlike drift_finding, the SAME voucher identity can legitimately be
+    # corrected more than once over time (a Modify that needs a further
+    # Modify, or a Reinstate undoing an earlier Exclude) - every row is
+    # kept, append-only, never merged or overwritten.
+    store.record_register_row_correction(_register_row_correction(action=EXCLUDE))
+    store.record_register_row_correction(_register_row_correction(action=EXCLUDE))
+    assert len(store.all_register_row_corrections()) == 2
+
+
+def test_all_register_row_corrections_orders_oldest_first(store):
+    store.record_register_row_correction(
+        _register_row_correction(voucher_number="SB/002", corrected_at=datetime(2026, 1, 13, 9, 0))
+    )
+    store.record_register_row_correction(
+        _register_row_correction(voucher_number="SB/001", corrected_at=datetime(2026, 1, 6, 9, 0))
+    )
+    records = store.all_register_row_corrections()
+    assert [r.correction.voucher_number for r in records] == ["SB/001", "SB/002"]
+
+
+def test_all_register_row_corrections_filters_by_branch(store):
+    store.record_register_row_correction(_register_row_correction(branch_id="KOL"))
+    store.record_register_row_correction(_register_row_correction(branch_id="MUM"))
+    assert len(store.all_register_row_corrections("KOL")) == 1
+    assert len(store.all_register_row_corrections("MUM")) == 1
+    assert len(store.all_register_row_corrections()) == 2
 
 
 def test_has_weekly_snapshot_for_party_week(store):

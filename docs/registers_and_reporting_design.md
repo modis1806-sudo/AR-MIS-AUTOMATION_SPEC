@@ -2113,16 +2113,82 @@ resolves former open item 1.
 
     Full suite green (648 tests) at this point.
 
-    **Still to come, per the agreed build order**: Phase 6b (a new
-    audited corrections table for Delete/Modify, threaded through
-    `aggregate_party_movements_from_registers` and
-    `compute_ytd_vs_register_comparison` so a correction changes computed
-    totals everywhere, not just cosmetically on one screen); Phase 6c
-    (the actual Add/Delete/Modify buttons on the Check 1 screen, maker-
-    only, audited); Phase 6d (retire the Drift Findings page/nav entry,
-    stop calling `isolate_drift` anywhere, keep its historical table
-    data); Phase 6e (fix Manual Upload's broken `ytd_vouchers` parser and
-    repoint it at Check 1).
+    **Phase 6b built and tested: the audited Delete/Modify overlay.** New
+    module `ar_mis.register_corrections` - deliberately NOT inside
+    `ytd_debtor_cross_check.py` or `rollforward.py`, since both of those
+    now depend on it: `RegisterRowCorrection` (EXCLUDE="Delete",
+    CORRECT_AMOUNT="Modify", REINSTATE undoes either), a new append-only
+    `register_row_correction` storage table (schema v15,
+    `Store.record_register_row_correction`/`all_register_row_
+    corrections`) - same never-UPDATE/DELETE discipline as drift_finding
+    and pre_mis_adjustments, since the client's rejection of silently
+    editing original voucher data applies exactly the same way here. The
+    SAME voucher identity can legitimately be corrected more than once
+    over time (no UNIQUE constraint, unlike drift_finding) -
+    `effective_corrections` reduces a full history down to the latest row
+    per identity, the same latest-wins reduction this app already uses
+    for `all_ytd_debtor_voucher_rows`' own as_of scoping.
+
+    A correction's identity is (branch_id, voucher_type, voucher_number,
+    party_id) using the exact same five labels Check 1 already uses
+    ("Sales"/"Debit Note"/"Credit Note"/"Receipt"/"Journal") - deliberately
+    the EXACT label, never a type-group, so a correction can never
+    silently leak across a sibling type sharing the same register (a
+    "Receipt" exclude must never touch a "Credit Note" row that happens
+    to share the same voucher_number+party). The one carve-out, not a
+    bug: Check 1's own combined "Sales & DN Register" scope already
+    treats Sales and Debit Note as one register (pre-existing, confirmed
+    in this module's own docstring, nothing new here) - a correction
+    tagged either label can affect that one combined dict, mirroring how
+    the register itself was already structured before corrections
+    existed. `aggregate_party_movements_from_registers` (Check 2), which
+    DOES keep Sales and Debit Note as separate party-movement fields,
+    scopes each correction to its own exact single-label frozenset
+    instead, so it never mixes the two there.
+
+    The genuinely shared, single-source-of-truth piece moved into this
+    new module: the per-(branch, voucher_number, party) reduction
+    (`sales_dn_amounts`/`cn_amounts`/`rj_amounts`) that collapses however
+    many physical register rows/bill-allocation lines make up one voucher
+    into one figure, in each register's own NATIVE (unflipped)
+    convention - built once, used by both `compute_ytd_vs_register_
+    comparison` (which already needed this) and, newly, `aggregate_
+    party_movements_from_registers` (which previously summed row-by-row
+    directly into party totals, with no per-voucher reduction step at
+    all - safe before corrections existed, since there was nothing to
+    apply per-voucher, but exactly the gap a Receipt/Journal correction
+    would have fallen into: a CORRECT_AMOUNT replacing only ONE of
+    several bill-allocation lines for the same voucher would have been
+    wrong, either double-counting or partially applying the fix). Each
+    caller still applies its OWN final-convention flip (or non-flip) on
+    top, exactly as before - deliberately kept out of the shared module,
+    so there remains only one place, ever, that decides whether to
+    flip_sign a given field.
+
+    `compute_ytd_vs_register_comparison`'s own EXTRA_IN_REGISTERS
+    direction had to change its own iteration from walking the raw
+    register rows to walking the CORRECTED amounts dict's own keys -
+    an EXCLUDE-d key must never show up as "extra" (or anywhere else)
+    once excluded, even though the original row is never touched in
+    storage. Confirmed behavior-preserving for the empty-corrections case
+    by running the full existing test suite unchanged before adding any
+    new correction-specific test.
+
+    Confirmed end-to-end: a correction recorded once now changes both
+    checks' own computed totals identically (new cross-module test,
+    `test_same_correction_is_consistent_across_check_1_and_check_2`) -
+    the real point of this phase, not just "a correction compiles."
+
+    Full suite green (678 tests) at this point.
+
+    **Still to come, per the agreed build order**: Phase 6c (the actual
+    Add/Delete/Modify buttons on the Check 1 screen, maker-only, audited -
+    and wiring the webapp's own routes, which don't yet read `all_
+    register_row_corrections()` back out of storage at all); Phase 6d
+    (retire the Drift Findings page/nav entry, stop calling `isolate_
+    drift` anywhere, keep its historical table data); Phase 6e (fix
+    Manual Upload's broken `ytd_vouchers` parser and repoint it at
+    Check 1).
 
 ## Deferred to a later version (not rejected, not in scope now)
 

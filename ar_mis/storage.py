@@ -46,6 +46,7 @@ from ar_mis.models import (
     YtdDebtorVoucherRow,
 )
 from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
+from ar_mis.register_corrections import RegisterRowCorrection, RegisterRowCorrectionRecord
 
 # Schema changes must be additive-only — new tables, or new columns via
 # ALTER TABLE ADD COLUMN — never a DROP/recreate of an existing table
@@ -65,7 +66,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -458,6 +459,31 @@ CREATE TABLE IF NOT EXISTS ytd_debtor_voucher (
     party_id TEXT NOT NULL,
     amount TEXT NOT NULL,
     UNIQUE (branch_id, as_of, voucher_number, party_id)
+);
+""",
+    # Phase 6b's Delete/Modify overlay on the three master registers
+    # (ar_mis.register_corrections) - the client's explicit rejection of
+    # silent edit/delete of original voucher data applies here exactly as
+    # it already does to drift_finding/pre_mis_adjustments: append-only,
+    # never UPDATE/DELETE against a register row. No UNIQUE constraint -
+    # the SAME voucher can legitimately be corrected more than once over
+    # time (a Modify that needs a further Modify, or a Reinstate that
+    # undoes an earlier Exclude), and the latest row for a given identity
+    # is always the one that applies (ar_mis.register_corrections.
+    # effective_corrections) - every earlier row stays as audit history,
+    # never superseded by being overwritten in place.
+    15: """
+CREATE TABLE IF NOT EXISTS register_row_correction (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    voucher_type TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    corrected_amount TEXT,
+    reason TEXT NOT NULL,
+    corrected_by TEXT NOT NULL,
+    corrected_at TEXT NOT NULL
 );
 """,
 }
@@ -1612,6 +1638,56 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         row = self.conn.execute("SELECT * FROM drift_finding WHERE id=?", (finding_id,)).fetchone()
         return self._drift_finding_record_from_row(row) if row else None
+
+    def record_register_row_correction(self, correction: RegisterRowCorrection) -> int:
+        """The only sanctioned way to Delete (Exclude) or Modify (Correct
+        Amount) a register row's own contribution to any downstream total
+        - always a new row, never an UPDATE/DELETE against an existing
+        correction or the register row itself. Returns the new row's id.
+        """
+        cur = self.conn.execute(
+            "INSERT INTO register_row_correction (branch_id, voucher_type, voucher_number, party_id,"
+            " action, corrected_amount, reason, corrected_by, corrected_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                correction.branch_id, correction.voucher_type, correction.voucher_number, correction.party_id,
+                correction.action, str(correction.corrected_amount) if correction.corrected_amount is not None else None,
+                correction.reason, correction.corrected_by, correction.corrected_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def all_register_row_corrections(self, branch_id: str | None = None) -> list[RegisterRowCorrectionRecord]:
+        """Every correction ever recorded, oldest first - the order
+        ar_mis.register_corrections.effective_corrections needs to reduce
+        this full history down to the one effective correction per
+        voucher identity (latest wins)."""
+        self.conn.row_factory = sqlite3.Row
+        if branch_id is not None:
+            cur = self.conn.execute(
+                "SELECT * FROM register_row_correction WHERE branch_id=? ORDER BY corrected_at ASC, id ASC",
+                (branch_id,),
+            )
+        else:
+            cur = self.conn.execute("SELECT * FROM register_row_correction ORDER BY corrected_at ASC, id ASC")
+        return [
+            RegisterRowCorrectionRecord(
+                id=r["id"],
+                correction=RegisterRowCorrection(
+                    branch_id=r["branch_id"],
+                    voucher_type=r["voucher_type"],
+                    voucher_number=r["voucher_number"],
+                    party_id=r["party_id"],
+                    action=r["action"],
+                    corrected_amount=Decimal(r["corrected_amount"]) if r["corrected_amount"] is not None else None,
+                    reason=r["reason"],
+                    corrected_by=r["corrected_by"],
+                    corrected_at=datetime.fromisoformat(r["corrected_at"]),
+                ),
+            )
+            for r in cur.fetchall()
+        ]
 
     def acknowledge_drift_finding(self, finding_id: int, acknowledged_by: str, acknowledged_at: datetime) -> None:
         """Marks a finding as reviewed by a human - an audit note only,

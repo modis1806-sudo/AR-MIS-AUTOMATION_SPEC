@@ -30,6 +30,7 @@ from ar_mis.models import (
     Voucher,
     VoucherType,
 )
+from ar_mis.register_corrections import RegisterRowCorrection, apply_corrections, effective_corrections
 
 _MOVEMENT_TYPES = (
     VoucherType.SALES,
@@ -134,6 +135,7 @@ def aggregate_party_movements_from_registers(
     rj_rows: list[ReceiptJournalRegisterRow],
     party_ledger_names: set[str],
     openings: dict[str, Decimal],
+    corrections: list[RegisterRowCorrection] = (),
 ) -> dict[str, PartyMovement]:
     """Section 4.2's "TB vs Registers" redesign (docs/registers_and_
     reporting_design.md item 56) - TB Cross-Check's own "our side" number,
@@ -176,27 +178,63 @@ def aggregate_party_movements_from_registers(
       at all. It already reads as "a positive Dr increase to the debtor"
       by construction, which IS the post-flip AR convention - flip_sign-ing
       it on top would wrongly invert a real sale into a negative movement.
-    """
-    totals: dict[str, dict[str, Decimal]] = defaultdict(
-        lambda: {f: Decimal("0.00") for f in _TYPE_TO_FIELD.values()}
-    )
 
+    `corrections` (Phase 6b's Delete/Modify overlay, ar_mis.register_
+    corrections) is applied per-voucher (branch + voucher_number + party),
+    never per physical row - a Receipt/Journal voucher's several bill-
+    allocation lines are collapsed into one figure first (the same
+    reduction ar_mis.ytd_debtor_cross_check already needs for its own
+    voucher-wise comparison), then corrected, then summed into the
+    party's field total - a correction can never be double-counted or
+    partially applied just because a voucher happens to have more than
+    one physical register row.
+    """
+    effective = effective_corrections(list(corrections))
+
+    sales_raw: dict[tuple[str, str, str], Decimal] = {}
+    debit_note_raw: dict[tuple[str, str, str], Decimal] = {}
     for row in sales_dn_rows:
         if row.party_id not in party_ledger_names:
             continue
-        field = "debit_notes" if row.note_type == NoteType.DEBIT_NOTE else "sales"
-        totals[row.party_id][field] += row.invoice_value
+        key = (row.branch_id, row.voucher_number, row.party_id)
+        bucket = debit_note_raw if row.note_type == NoteType.DEBIT_NOTE else sales_raw
+        bucket[key] = bucket.get(key, Decimal("0.00")) + row.invoice_value
 
+    cn_raw: dict[tuple[str, str, str], Decimal] = {}
     for row in cn_rows:
         if row.party_id not in party_ledger_names:
             continue
-        totals[row.party_id]["credit_notes"] += flip_sign(row.cn_amount)
+        key = (row.branch_id, row.voucher_number, row.party_id)
+        cn_raw[key] = cn_raw.get(key, Decimal("0.00")) + row.cn_amount
 
+    receipt_raw: dict[tuple[str, str, str], Decimal] = {}
+    journal_raw: dict[tuple[str, str, str], Decimal] = {}
     for row in rj_rows:
         if row.party_id not in party_ledger_names:
             continue
-        field = "receipts" if row.voucher_type == VoucherType.RECEIPT.value else "journals"
-        totals[row.party_id][field] += flip_sign(row.amount)
+        key = (row.branch_id, row.voucher_number, row.party_id)
+        bucket = receipt_raw if row.voucher_type == VoucherType.RECEIPT.value else journal_raw
+        bucket[key] = bucket.get(key, Decimal("0.00")) + row.amount
+
+    sales_c = apply_corrections(sales_raw, frozenset({"Sales"}), effective)
+    debit_note_c = apply_corrections(debit_note_raw, frozenset({"Debit Note"}), effective)
+    cn_c = apply_corrections(cn_raw, frozenset({"Credit Note"}), effective)
+    receipt_c = apply_corrections(receipt_raw, frozenset({"Receipt"}), effective)
+    journal_c = apply_corrections(journal_raw, frozenset({"Journal"}), effective)
+
+    totals: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: {f: Decimal("0.00") for f in _TYPE_TO_FIELD.values()}
+    )
+    for key, amount in sales_c.items():
+        totals[key[2]]["sales"] += amount
+    for key, amount in debit_note_c.items():
+        totals[key[2]]["debit_notes"] += amount
+    for key, amount in cn_c.items():
+        totals[key[2]]["credit_notes"] += flip_sign(amount)
+    for key, amount in receipt_c.items():
+        totals[key[2]]["receipts"] += flip_sign(amount)
+    for key, amount in journal_c.items():
+        totals[key[2]]["journals"] += flip_sign(amount)
 
     movements: dict[str, PartyMovement] = {}
     for party_name in party_ledger_names:

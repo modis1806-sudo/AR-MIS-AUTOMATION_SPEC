@@ -67,16 +67,20 @@ from ar_mis.models import (
 )
 from ar_mis.money import is_match
 from ar_mis.reconciliation import DriftFinding, attribute_week
+from ar_mis.register_corrections import (
+    CREDIT_NOTE_TYPES as _CREDIT_NOTE_TYPES,
+    RECEIPT_JOURNAL_TYPES as _RECEIPT_JOURNAL_TYPES,
+    SALES_DN_TYPES as _SALES_DN_TYPES,
+    RegisterRowCorrection,
+    apply_corrections,
+    effective_corrections,
+)
 from ar_mis.sign import flip_sign
 
 MATCH = "Match"
 AMOUNT_MISMATCH = "Amount Mismatch"
 MISSING_FROM_REGISTERS = "Missing from Registers"
 EXTRA_IN_REGISTERS = "Extra in Registers"
-
-_SALES_DN_TYPES = {"Sales", "Debit Note"}
-_RECEIPT_JOURNAL_TYPES = {"Receipt", "Journal"}
-_CREDIT_NOTE_TYPES = {"Credit Note"}
 
 _Key = tuple[str, str, str]  # (branch_id, voucher_number, party_id) - always scoped to one register
 
@@ -93,27 +97,40 @@ class YtdVsRegisterRow:
     status: str
 
 
-def _sales_dn_amounts(rows: list[SalesDNRegisterRow]) -> tuple[dict[_Key, Decimal], dict[_Key, date]]:
+def _sales_dn_amounts(
+    rows: list[SalesDNRegisterRow],
+) -> tuple[dict[_Key, Decimal], dict[_Key, date], dict[_Key, str]]:
     amounts: dict[_Key, Decimal] = {}
     dates: dict[_Key, date] = {}
+    labels: dict[_Key, str] = {}
     for row in rows:
         key = (row.branch_id, row.voucher_number, row.party_id)
         amounts[key] = amounts.get(key, Decimal("0.00")) + row.invoice_value
         dates.setdefault(key, row.invoice_date)
-    return amounts, dates
+        # NoteType.INVOICE.value is "Invoice", but the YTD side's own
+        # categorization (VoucherType.SALES.value) is "Sales" - normalize
+        # here, same reason the old EXTRA_IN_REGISTERS loop below did.
+        labels.setdefault(key, "Sales" if row.note_type == NoteType.INVOICE else row.note_type.value)
+    return amounts, dates, labels
 
 
-def _cn_amounts(rows: list[CreditNoteRegisterRow]) -> tuple[dict[_Key, Decimal], dict[_Key, date]]:
+def _cn_amounts(
+    rows: list[CreditNoteRegisterRow],
+) -> tuple[dict[_Key, Decimal], dict[_Key, date], dict[_Key, str]]:
     amounts: dict[_Key, Decimal] = {}
     dates: dict[_Key, date] = {}
+    labels: dict[_Key, str] = {}
     for row in rows:
         key = (row.branch_id, row.voucher_number, row.party_id)
         amounts[key] = amounts.get(key, Decimal("0.00")) + row.cn_amount
         dates.setdefault(key, row.cn_date)
-    return amounts, dates
+        labels.setdefault(key, "Credit Note")
+    return amounts, dates, labels
 
 
-def _rj_amounts(rows: list[ReceiptJournalRegisterRow]) -> tuple[dict[_Key, Decimal], dict[_Key, date]]:
+def _rj_amounts(
+    rows: list[ReceiptJournalRegisterRow],
+) -> tuple[dict[_Key, Decimal], dict[_Key, date], dict[_Key, str]]:
     # Summed, not just taken - item 2's design keeps one Receipt & Journal
     # Register row per bill allocation, but this check is voucher-wise:
     # several bill-allocation rows for the same voucher+party collapse to
@@ -121,11 +138,13 @@ def _rj_amounts(rows: list[ReceiptJournalRegisterRow]) -> tuple[dict[_Key, Decim
     # collapses the YTD pull's own side.
     amounts: dict[_Key, Decimal] = {}
     dates: dict[_Key, date] = {}
+    labels: dict[_Key, str] = {}
     for row in rows:
         key = (row.branch_id, row.voucher_number, row.party_id)
         amounts[key] = amounts.get(key, Decimal("0.00")) + row.amount
         dates.setdefault(key, row.txn_date)
-    return amounts, dates
+        labels.setdefault(key, row.voucher_type)
+    return amounts, dates, labels
 
 
 def compute_ytd_vs_register_comparison(
@@ -133,6 +152,7 @@ def compute_ytd_vs_register_comparison(
     sales_dn_rows: list[SalesDNRegisterRow],
     cn_rows: list[CreditNoteRegisterRow],
     rj_rows: list[ReceiptJournalRegisterRow],
+    corrections: list[RegisterRowCorrection] = (),
 ) -> list[YtdVsRegisterRow]:
     """Both directions of the client's own explicit ask: a voucher missing
     from the registers, AND a voucher sitting in a register that Tally's
@@ -147,10 +167,26 @@ def compute_ytd_vs_register_comparison(
     branch's full register history (cumulative from FY start, per item 2),
     since a register row from an earlier week is still a real voucher this
     YTD pull's own date range would also cover.
+
+    `corrections` (Phase 6b's Delete/Modify overlay, ar_mis.register_
+    corrections) is applied to the register side only, before either
+    direction is computed - an EXCLUDE-d key drops out of the register
+    amounts entirely (so it correctly re-surfaces as MISSING_FROM_
+    REGISTERS if the YTD pull still has it, or simply disappears from
+    this report if it doesn't - exactly mirroring what "this should never
+    have been in the register" means), and a CORRECT_AMOUNT-ed key's
+    register_amount becomes the Maker's own corrected figure, which the
+    usual is_match comparison then judges on its own merits - a correction
+    is never silently trusted as "now a match."
     """
-    sales_dn_amounts, sales_dn_dates = _sales_dn_amounts(sales_dn_rows)
-    cn_amounts, cn_dates = _cn_amounts(cn_rows)
-    rj_amounts, rj_dates = _rj_amounts(rj_rows)
+    sales_dn_amounts_raw, sales_dn_dates, sales_dn_labels = _sales_dn_amounts(sales_dn_rows)
+    cn_amounts_raw, cn_dates, cn_labels = _cn_amounts(cn_rows)
+    rj_amounts_raw, rj_dates, rj_labels = _rj_amounts(rj_rows)
+
+    effective = effective_corrections(list(corrections))
+    sales_dn_amounts = apply_corrections(sales_dn_amounts_raw, _SALES_DN_TYPES, effective)
+    cn_amounts = apply_corrections(cn_amounts_raw, _CREDIT_NOTE_TYPES, effective)
+    rj_amounts = apply_corrections(rj_amounts_raw, _RECEIPT_JOURNAL_TYPES, effective)
 
     def _register_side(voucher_type: str) -> tuple[dict[_Key, Decimal], dict[_Key, date], str]:
         if voucher_type in _SALES_DN_TYPES:
@@ -204,48 +240,49 @@ def compute_ytd_vs_register_comparison(
 
     # The other direction: a register row whose (voucher_number, party_id)
     # never appeared in the YTD pull for that SAME register's own voucher
-    # type(s). branch_id/voucher_type come from the register row itself,
-    # since the YTD side has nothing for this key by definition.
-    for row in sales_dn_rows:
-        key = (row.branch_id, row.voucher_number, row.party_id)
-        # NoteType.INVOICE.value is "Invoice", but the YTD side's own
-        # categorization (ar_mis.models.VoucherType.SALES.value) is
-        # "Sales" - normalize here so the two sides' labels for the same
-        # real voucher actually compare equal, or every Sales row would
-        # wrongly show as "extra" despite genuinely matching.
-        voucher_type = "Sales" if row.note_type == NoteType.INVOICE else row.note_type.value
+    # type(s). branch_id/voucher_type come from the register side's own
+    # labels dict, since the YTD side has nothing for this key by
+    # definition. Driven by the CORRECTED amounts dicts' own keys, never
+    # the raw rows directly - an EXCLUDE-d key has no entry left in
+    # `sales_dn_amounts`/`cn_amounts`/`rj_amounts` (the register row
+    # itself is untouched in storage, only dropped from this computation),
+    # so it correctly never appears here once excluded.
+    for key, register_amount in sales_dn_amounts.items():
+        voucher_type = sales_dn_labels[key]
         if (voucher_type, key) in seen_type_keys:
             continue
         seen_type_keys.add((voucher_type, key))
+        branch_id, voucher_number, party_id = key
         rows.append(
             YtdVsRegisterRow(
-                branch_id=row.branch_id, voucher_type=voucher_type, voucher_number=row.voucher_number,
-                party_id=row.party_id, voucher_date=row.invoice_date, ytd_amount=None,
-                register_amount=sales_dn_amounts[key], status=EXTRA_IN_REGISTERS,
+                branch_id=branch_id, voucher_type=voucher_type, voucher_number=voucher_number,
+                party_id=party_id, voucher_date=sales_dn_dates[key], ytd_amount=None,
+                register_amount=register_amount, status=EXTRA_IN_REGISTERS,
             )
         )
-    for row in cn_rows:
-        key = (row.branch_id, row.voucher_number, row.party_id)
+    for key, register_amount in cn_amounts.items():
         if ("Credit Note", key) in seen_type_keys:
             continue
         seen_type_keys.add(("Credit Note", key))
+        branch_id, voucher_number, party_id = key
         rows.append(
             YtdVsRegisterRow(
-                branch_id=row.branch_id, voucher_type="Credit Note", voucher_number=row.voucher_number,
-                party_id=row.party_id, voucher_date=row.cn_date, ytd_amount=None,
-                register_amount=cn_amounts[key], status=EXTRA_IN_REGISTERS,
+                branch_id=branch_id, voucher_type="Credit Note", voucher_number=voucher_number,
+                party_id=party_id, voucher_date=cn_dates[key], ytd_amount=None,
+                register_amount=register_amount, status=EXTRA_IN_REGISTERS,
             )
         )
-    for row in rj_rows:
-        key = (row.branch_id, row.voucher_number, row.party_id)
-        if (row.voucher_type, key) in seen_type_keys:
+    for key, register_amount in rj_amounts.items():
+        voucher_type = rj_labels[key]
+        if (voucher_type, key) in seen_type_keys:
             continue
-        seen_type_keys.add((row.voucher_type, key))
+        seen_type_keys.add((voucher_type, key))
+        branch_id, voucher_number, party_id = key
         rows.append(
             YtdVsRegisterRow(
-                branch_id=row.branch_id, voucher_type=row.voucher_type, voucher_number=row.voucher_number,
-                party_id=row.party_id, voucher_date=row.txn_date, ytd_amount=None,
-                register_amount=rj_amounts[key], status=EXTRA_IN_REGISTERS,
+                branch_id=branch_id, voucher_type=voucher_type, voucher_number=voucher_number,
+                party_id=party_id, voucher_date=rj_dates[key], ytd_amount=None,
+                register_amount=register_amount, status=EXTRA_IN_REGISTERS,
             )
         )
 

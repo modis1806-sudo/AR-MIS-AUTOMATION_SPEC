@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from ar_mis.models import (
@@ -13,6 +13,7 @@ from ar_mis.models import (
     VoucherType,
     WeeklySnapshotRow,
 )
+from ar_mis.register_corrections import CORRECT_AMOUNT, EXCLUDE, REINSTATE, RegisterRowCorrection
 from ar_mis.rollforward import (
     aggregate_party_movements,
     aggregate_party_movements_from_registers,
@@ -265,3 +266,113 @@ def test_from_registers_only_counts_rows_for_tracked_parties():
         sales_dn, [], [], {"Acme Corp"}, {"Acme Corp": Decimal("0.00")}
     )
     assert movements["Acme Corp"].sales == Decimal("0.00")
+
+
+def _correction(**overrides):
+    defaults = dict(
+        branch_id="KOL", voucher_type="Sales", voucher_number="SB/1", party_id="Acme Corp",
+        action=EXCLUDE, corrected_amount=None, reason="test", corrected_by="Maker",
+        corrected_at=datetime(2026, 4, 10, 9, 0),
+    )
+    defaults.update(overrides)
+    return RegisterRowCorrection(**defaults)
+
+
+def test_from_registers_exclude_correction_drops_a_sales_voucher_entirely():
+    party = "Acme Corp"
+    sales_dn = [
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 4, 6), note_type=NoteType.INVOICE,
+            voucher_number="SB/1", bill_allocation_reference="SB/1", party_id=party,
+            taxable_value=Decimal("100000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("100000.00"), due_date=date(2026, 5, 6),
+        )
+    ]
+    corrections = [_correction(action=EXCLUDE)]
+    movements = aggregate_party_movements_from_registers(
+        sales_dn, [], [], {party}, {party: Decimal("50000.00")}, corrections=corrections
+    )
+    assert movements[party].sales == Decimal("0.00")
+    assert movements[party].closing_computed == Decimal("50000.00")
+
+
+def test_from_registers_correct_amount_on_a_sales_voucher_is_not_flipped():
+    # Sign-convention regression: a Modify on a Sales/DN row must stay in
+    # invoice_value's already-positive convention, never get flip_sign-ed
+    # the way a CN/RJ correction does - this is exactly the same trap
+    # already caught three times elsewhere in this app.
+    party = "Acme Corp"
+    sales_dn = [
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 4, 6), note_type=NoteType.INVOICE,
+            voucher_number="SB/1", bill_allocation_reference="SB/1", party_id=party,
+            taxable_value=Decimal("100000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("100000.00"), due_date=date(2026, 5, 6),
+        )
+    ]
+    corrections = [_correction(action=CORRECT_AMOUNT, corrected_amount=Decimal("105000.00"))]
+    movements = aggregate_party_movements_from_registers(
+        sales_dn, [], [], {party}, {party: Decimal("50000.00")}, corrections=corrections
+    )
+    assert movements[party].sales == Decimal("105000.00")
+    assert movements[party].closing_computed == Decimal("155000.00")
+
+
+def test_from_registers_correct_amount_on_a_credit_note_still_gets_flipped():
+    party = "Acme Corp"
+    cn_rows = [
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 4, 6), voucher_number="CN/1", party_id=party,
+            cn_amount=Decimal("10000.00"), classification=RegisterClassification.CURRENT,
+        )
+    ]
+    corrections = [
+        _correction(voucher_type="Credit Note", voucher_number="CN/1", action=CORRECT_AMOUNT, corrected_amount=Decimal("12000.00"))
+    ]
+    movements = aggregate_party_movements_from_registers(
+        [], cn_rows, [], {party}, {party: Decimal("50000.00")}, corrections=corrections
+    )
+    # Raw cn_amount convention -> flip_sign -> -12000.00, same direction
+    # as the uncorrected case already proves above.
+    assert movements[party].credit_notes == Decimal("-12000.00")
+    assert movements[party].closing_computed == Decimal("38000.00")
+
+
+def test_from_registers_a_debit_note_correction_never_touches_a_same_keyed_sales_row():
+    party = "Acme Corp"
+    sales_dn = [
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 4, 6), note_type=NoteType.INVOICE,
+            voucher_number="1", bill_allocation_reference="1", party_id=party,
+            taxable_value=Decimal("100000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("100000.00"), due_date=date(2026, 5, 6),
+        )
+    ]
+    # Same (branch, voucher_number, party) key, but tagged "Debit Note" -
+    # must not exclude the Sales row above.
+    corrections = [_correction(voucher_type="Debit Note", voucher_number="1", action=EXCLUDE)]
+    movements = aggregate_party_movements_from_registers(
+        sales_dn, [], [], {party}, {party: Decimal("0.00")}, corrections=corrections
+    )
+    assert movements[party].sales == Decimal("100000.00")
+    assert movements[party].debit_notes == Decimal("0.00")
+
+
+def test_from_registers_exclude_then_reinstate_restores_the_raw_figure():
+    party = "Acme Corp"
+    sales_dn = [
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 4, 6), note_type=NoteType.INVOICE,
+            voucher_number="SB/1", bill_allocation_reference="SB/1", party_id=party,
+            taxable_value=Decimal("100000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("100000.00"), due_date=date(2026, 5, 6),
+        )
+    ]
+    corrections = [
+        _correction(action=EXCLUDE, corrected_at=datetime(2026, 4, 10, 9, 0)),
+        _correction(action=REINSTATE, corrected_at=datetime(2026, 4, 11, 9, 0)),
+    ]
+    movements = aggregate_party_movements_from_registers(
+        sales_dn, [], [], {party}, {party: Decimal("0.00")}, corrections=corrections
+    )
+    assert movements[party].sales == Decimal("100000.00")
