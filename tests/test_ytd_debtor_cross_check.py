@@ -4,6 +4,7 @@ from decimal import Decimal
 from ar_mis.models import (
     CreditNoteRegisterRow,
     LedgerEntry,
+    ManualYtdVoucherRow,
     NoteType,
     ReceiptJournalRegisterRow,
     RegisterClassification,
@@ -18,6 +19,7 @@ from ar_mis.ytd_debtor_cross_check import (
     EXTRA_IN_REGISTERS,
     MATCH,
     MISSING_FROM_REGISTERS,
+    compute_manual_ytd_vs_register_comparison,
     compute_ytd_vs_register_comparison,
     drift_findings_from_missing_registers,
 )
@@ -356,3 +358,121 @@ def test_correction_never_leaks_across_a_different_register_sharing_the_same_key
     rows = compute_ytd_vs_register_comparison(ytd, [], cn, [], corrections=corrections)
     assert len(rows) == 1
     assert rows[0].status == MATCH
+
+
+def _manual_ytd_row(voucher_type: str, voucher_number: str, amount: Decimal, branch_id: str = "B1") -> ManualYtdVoucherRow:
+    return ManualYtdVoucherRow(
+        branch_id=branch_id, voucher_date=date(2025, 4, 1), voucher_type=voucher_type,
+        voucher_number=voucher_number, amount=amount,
+    )
+
+
+def test_manual_comparison_matches_a_sales_voucher_without_party():
+    ytd = [_manual_ytd_row("Sales", "SB/1", Decimal("-1000.00"))]
+    sales_dn = [_sales_dn_row("SB/1", "ACME", Decimal("1000.00"))]
+    rows = compute_manual_ytd_vs_register_comparison(ytd, sales_dn, [], [])
+    assert len(rows) == 1
+    assert rows[0].status == MATCH
+    assert rows[0].voucher_number == "SB/1"
+    assert not hasattr(rows[0], "party_id")
+
+
+def test_manual_comparison_sales_amount_is_flip_signed_not_raw_compared():
+    # Same sign-convention trap caught three times already - a Sales/DN
+    # voucher's YTD amount must be flip_sign-ed before comparing against
+    # invoice_value's own already-positive convention, exactly like the
+    # party-ful live comparison already does.
+    ytd = [_manual_ytd_row("Sales", "SB/1", Decimal("-1000.00"))]
+    sales_dn = [_sales_dn_row("SB/1", "ACME", Decimal("1000.00"))]
+    rows = compute_manual_ytd_vs_register_comparison(ytd, sales_dn, [], [])
+    assert rows[0].ytd_amount == Decimal("1000.00")
+
+
+def test_manual_comparison_credit_note_compares_raw_to_raw():
+    ytd = [_manual_ytd_row("Credit Note", "CN1", Decimal("250.00"))]
+    cn = [
+        CreditNoteRegisterRow(
+            branch_id="B1", cn_date=date(2025, 4, 2), voucher_number="CN1", party_id="ACME",
+            cn_amount=Decimal("250.00"), classification=RegisterClassification.CURRENT,
+        )
+    ]
+    rows = compute_manual_ytd_vs_register_comparison(ytd, [], cn, [])
+    assert rows[0].status == MATCH
+    assert rows[0].ytd_amount == Decimal("250.00")
+
+
+def test_manual_comparison_missing_from_registers():
+    ytd = [_manual_ytd_row("Sales", "SB/99", Decimal("-5000.00"))]
+    rows = compute_manual_ytd_vs_register_comparison(ytd, [], [], [])
+    assert len(rows) == 1
+    assert rows[0].status == MISSING_FROM_REGISTERS
+
+
+def test_manual_comparison_extra_in_registers():
+    cn = [
+        CreditNoteRegisterRow(
+            branch_id="B1", cn_date=date(2025, 4, 2), voucher_number="CN1", party_id="ACME",
+            cn_amount=Decimal("250.00"), classification=RegisterClassification.CURRENT,
+        )
+    ]
+    rows = compute_manual_ytd_vs_register_comparison([], [], cn, [])
+    assert len(rows) == 1
+    assert rows[0].status == EXTRA_IN_REGISTERS
+    assert rows[0].voucher_type == "Credit Note"
+
+
+def test_manual_comparison_amount_mismatch():
+    ytd = [_manual_ytd_row("Credit Note", "CN1", Decimal("300.00"))]
+    cn = [
+        CreditNoteRegisterRow(
+            branch_id="B1", cn_date=date(2025, 4, 2), voucher_number="CN1", party_id="ACME",
+            cn_amount=Decimal("250.00"), classification=RegisterClassification.CURRENT,
+        )
+    ]
+    rows = compute_manual_ytd_vs_register_comparison(ytd, [], cn, [])
+    assert rows[0].status == AMOUNT_MISMATCH
+
+
+def test_manual_comparison_never_cross_contaminates_different_voucher_types_sharing_a_number():
+    # Same identity-scoping discipline as the party-ful comparison - a
+    # Sales "1" and a Receipt "1" must never be treated as the same
+    # voucher just because the number matches.
+    ytd = [
+        _manual_ytd_row("Sales", "1", Decimal("-1000.00")),
+        _manual_ytd_row("Receipt", "1", Decimal("1000.00")),
+    ]
+    sales_dn = [_sales_dn_row("1", "ACME", Decimal("1000.00"))]
+    rj = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2025, 4, 1), voucher_type="Receipt", voucher_number="1",
+            party_id="ACME", amount=Decimal("1000.00"),
+        )
+    ]
+    rows = compute_manual_ytd_vs_register_comparison(ytd, sales_dn, [], rj)
+    assert len(rows) == 2
+    assert {r.status for r in rows} == {MATCH}
+
+
+def test_manual_comparison_collapses_two_different_debtors_sharing_a_voucher_number():
+    # The whole point of dropping party_id here - two physically
+    # different debtors' own register rows sharing a voucher_number
+    # (which never happens for Sales/CN, but is exactly what a journal
+    # splitting across two debtors looks like in the registers) are
+    # summed together, matching the parsed YTD file's own already-netted
+    # figure for that voucher (see parse_manual_ytd_voucher_report's own
+    # Journal-row test).
+    ytd = [_manual_ytd_row("Journal", "6", Decimal("0.00"))]
+    rj = [
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2025, 4, 1), voucher_type="Journal", voucher_number="6",
+            party_id="Party A", amount=Decimal("-50000.00"),
+        ),
+        ReceiptJournalRegisterRow(
+            branch_id="B1", txn_date=date(2025, 4, 1), voucher_type="Journal", voucher_number="6",
+            party_id="Party B", amount=Decimal("50000.00"),
+        ),
+    ]
+    rows = compute_manual_ytd_vs_register_comparison(ytd, [], [], rj)
+    assert len(rows) == 1
+    assert rows[0].status == MATCH
+    assert rows[0].register_amount == Decimal("0.00")

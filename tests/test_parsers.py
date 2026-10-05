@@ -10,6 +10,7 @@ from ar_mis.parsers import (
     categorize_voucher_type,
     parse_currently_loaded_companies,
     parse_ledger_closing_balances,
+    parse_manual_ytd_voucher_report,
     parse_voucher_collection,
 )
 
@@ -376,6 +377,88 @@ def test_parse_ledger_closing_balances_display_report_raises_on_mismatched_pair_
 </ENVELOPE>"""
     with pytest.raises(ValueError, match="cannot pair name to closing balance"):
         parse_ledger_closing_balances(raw)
+
+
+def test_parse_manual_ytd_voucher_report_basic_shape():
+    raw = """<ENVELOPE>
+ <DSPVCHDATE>6-Apr-26</DSPVCHDATE>
+ <DSPVCHLEDACCOUNT>Freight Income</DSPVCHLEDACCOUNT>
+ <DSPVCHTYPE>Sale</DSPVCHTYPE>
+ <DSPVCHDRAMT>-125000.00</DSPVCHDRAMT>
+ <DSPVCHCRAMT></DSPVCHCRAMT>
+ <DSPEXPLVCHNUMBER>(No. :SB/0142)</DSPEXPLVCHNUMBER>
+</ENVELOPE>"""
+    rows = parse_manual_ytd_voucher_report(raw, "KOL")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.branch_id == "KOL"
+    assert row.voucher_date == date(2026, 4, 6)
+    assert row.voucher_type == "Sales"
+    assert row.voucher_number == "SB/0142"
+    assert row.amount == Decimal("-125000.00")
+
+
+def test_parse_manual_ytd_voucher_report_maps_every_known_type_label():
+    raw = """<ENVELOPE>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>Sale</DSPVCHTYPE><DSPVCHDRAMT>-1.00</DSPVCHDRAMT><DSPVCHCRAMT></DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :1)</DSPEXPLVCHNUMBER>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>TAX INVOICE</DSPVCHTYPE><DSPVCHDRAMT>-1.00</DSPVCHDRAMT><DSPVCHCRAMT></DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :2)</DSPEXPLVCHNUMBER>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>D/Note</DSPVCHTYPE><DSPVCHDRAMT>-1.00</DSPVCHDRAMT><DSPVCHCRAMT></DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :3)</DSPEXPLVCHNUMBER>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>C/Note</DSPVCHTYPE><DSPVCHDRAMT></DSPVCHDRAMT><DSPVCHCRAMT>1.00</DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :4)</DSPEXPLVCHNUMBER>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>Rcpt</DSPVCHTYPE><DSPVCHDRAMT></DSPVCHDRAMT><DSPVCHCRAMT>1.00</DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :5)</DSPEXPLVCHNUMBER>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>Jrnl</DSPVCHTYPE><DSPVCHDRAMT>-1.00</DSPVCHDRAMT><DSPVCHCRAMT>1.00</DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :6)</DSPEXPLVCHNUMBER>
+</ENVELOPE>"""
+    rows = parse_manual_ytd_voucher_report(raw, "KOL")
+    by_number = {r.voucher_number: r for r in rows}
+    assert by_number["1"].voucher_type == "Sales"
+    assert by_number["2"].voucher_type == "Sales"
+    assert by_number["3"].voucher_type == "Debit Note"
+    assert by_number["4"].voucher_type == "Credit Note"
+    assert by_number["5"].voucher_type == "Receipt"
+    assert by_number["6"].voucher_type == "Journal"
+    # A journal moving balance between two tracked debtors nets to zero
+    # at this party-less granularity - correct, not a loss of precision.
+    assert by_number["6"].amount == Decimal("0.00")
+
+
+def test_parse_manual_ytd_voucher_report_skips_an_unrecognized_voucher_type():
+    raw = """<ENVELOPE>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>Pymt</DSPVCHTYPE><DSPVCHDRAMT>-1.00</DSPVCHDRAMT><DSPVCHCRAMT></DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :1)</DSPEXPLVCHNUMBER>
+</ENVELOPE>"""
+    assert parse_manual_ytd_voucher_report(raw, "KOL") == []
+
+
+def test_parse_manual_ytd_voucher_report_skips_a_trailing_incomplete_footer_row():
+    # CONFIRMED against the real sample: the file ends with one closing/
+    # adjustment line with a blank DSPVCHTYPE and no DSPEXPLVCHNUMBER at
+    # all - never a real voucher.
+    raw = """<ENVELOPE>
+ <DSPVCHDATE>6-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHTYPE>Sale</DSPVCHTYPE><DSPVCHDRAMT>-1.00</DSPVCHDRAMT><DSPVCHCRAMT></DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :1)</DSPEXPLVCHNUMBER>
+ <DSPVCHDATE>7-Apr-26</DSPVCHDATE><DSPVCHLEDACCOUNT>Unadjusted Forex Gain/Loss</DSPVCHLEDACCOUNT><DSPVCHTYPE></DSPVCHTYPE><DSPVCHDRAMT></DSPVCHDRAMT><DSPVCHCRAMT>476310.18</DSPVCHCRAMT>
+</ENVELOPE>"""
+    rows = parse_manual_ytd_voucher_report(raw, "KOL")
+    assert len(rows) == 1
+    assert rows[0].voucher_number == "1"
+
+
+def test_parse_manual_ytd_voucher_report_raises_on_a_broken_tag_sequence():
+    raw = """<ENVELOPE>
+ <DSPVCHDATE>1-Apr-26</DSPVCHDATE><DSPVCHTYPE>Sale</DSPVCHTYPE><DSPVCHLEDACCOUNT>X</DSPVCHLEDACCOUNT><DSPVCHDRAMT>-1.00</DSPVCHDRAMT><DSPVCHCRAMT></DSPVCHCRAMT><DSPEXPLVCHNUMBER>(No. :1)</DSPEXPLVCHNUMBER>
+</ENVELOPE>"""
+    with pytest.raises(ValueError, match="unexpected tag sequence"):
+        parse_manual_ytd_voucher_report(raw, "KOL")
+
+
+def test_parse_manual_ytd_voucher_report_handles_real_sample():
+    raw = (FIXTURES / "real_samples" / "YTDData.xml").read_text(encoding="utf-8")
+    rows = parse_manual_ytd_voucher_report(raw, "KOL")
+    assert len(rows) == 247
+    from collections import Counter
+    counts = Counter(r.voucher_type for r in rows)
+    assert counts == {"Sales": 162, "Receipt": 46, "Journal": 34, "Credit Note": 4, "Debit Note": 1}
+    first = rows[0]
+    assert first.voucher_number == "1/HSLPL/26-27"
+    assert first.voucher_date == date(2026, 4, 1)
+    assert first.amount == Decimal("-21830.00")
 
 
 def test_parse_currently_loaded_companies():

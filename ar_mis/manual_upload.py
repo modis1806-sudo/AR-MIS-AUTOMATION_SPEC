@@ -11,10 +11,18 @@ report view):
        reporting week (From Date -> To Date)
   6. Trial Balance / Sundry Debtors closing balance as-on the To Date
   7. Voucher-wise detail from day 1 of the financial year through the
-     To Date - Section 4.2's YTD full-pull cross-check, satisfied from
-     an uploaded file instead of a live pull. Optional: if not supplied,
-     the weekly figures are still processed, just without a drift check
-     this run.
+     To Date - Check 1's own YTD cross-check (docs/registers_and_
+     reporting_design.md item 56), satisfied from an uploaded file
+     instead of a live pull. Optional: if not supplied, the weekly
+     figures are still processed, just without this cross-check this
+     run. Exported from Tally as "Sundry Debtors -> Ctrl+H -> Voucher
+     view" (the one shape a real operator's Tally UI can actually
+     produce here - see ar_mis.parsers.parse_manual_ytd_voucher_report's
+     own docstring) - a Display Report shape that carries no party field
+     at all, so this comparison is scoped one dimension coarser than the
+     live pull's own Check 1 (branch + voucher type + voucher number,
+     never party - see ar_mis.ytd_debtor_cross_check.compute_manual_ytd_
+     vs_register_comparison's own docstring for why that's not a gap).
 
 These are ordinary Tally-exported XML files - the same shape
 ar_mis.parsers already handles, since parsing never cared whether XML
@@ -33,15 +41,15 @@ equivalent "just overwrite it" path for weekly figures by design).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 
 from ar_mis.models import Voucher
 from ar_mis.orchestration import BranchRunOutcome
-from ar_mis.parsers import parse_ledger_closing_balances, parse_voucher_collection
+from ar_mis.parsers import parse_ledger_closing_balances, parse_manual_ytd_voucher_report, parse_voucher_collection
 from ar_mis.pipeline import process_branch_data
-from ar_mis.reconciliation import DriftFinding, isolate_drift
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
+from ar_mis.ytd_debtor_cross_check import ManualYtdVsRegisterRow, compute_manual_ytd_vs_register_comparison
 
 WEEKLY_VOUCHER_SLOTS = ["Sales", "Credit Note", "Debit Note", "Receipt", "Journal"]
 
@@ -54,7 +62,7 @@ class ManualUploadRefused(Exception):
 @dataclass
 class ManualUploadResult:
     outcome: BranchRunOutcome
-    drift_findings: list[DriftFinding] = field(default_factory=list)
+    ytd_vs_register_rows: list[ManualYtdVsRegisterRow] = field(default_factory=list)
 
 
 def process_manual_upload(
@@ -99,14 +107,19 @@ def process_manual_upload(
 
     # data is now always written (see process_branch_data's own docstring
     # for this session's never-discard reversal), so this only needs to
-    # gate on whether a YTD file was actually supplied.
-    drift_findings: list[DriftFinding] = []
+    # gate on whether a YTD file was actually supplied. Never persisted
+    # anywhere (unlike the live pull's own ytd_debtor_voucher table) -
+    # there is no party dimension to key a stored row on, so this is
+    # shown once on this upload's own result page, not added to any
+    # permanent, filterable report.
+    ytd_vs_register_rows: list[ManualYtdVsRegisterRow] = []
     if ytd_voucher_xml.strip():
-        ytd_vouchers = parse_voucher_collection(ytd_voucher_xml, branch_id)
-        party_names = set(closing_extracted)
-        logged_keys = {party: store.logged_voucher_keys(branch_id, party) for party in party_names}
-        week_boundaries = store.all_week_endings()
-        drift_findings = isolate_drift(branch_id, ytd_vouchers, party_names, logged_keys, week_boundaries)
-        store.record_drift_findings(branch_id, drift_findings, datetime.now())
+        manual_ytd_rows = parse_manual_ytd_voucher_report(ytd_voucher_xml, branch_id)
+        ytd_vs_register_rows = compute_manual_ytd_vs_register_comparison(
+            manual_ytd_rows,
+            store.all_sales_dn_rows(branch_id),
+            store.all_credit_note_rows(branch_id),
+            store.all_receipt_journal_rows(branch_id),
+        )
 
-    return ManualUploadResult(outcome=outcome, drift_findings=drift_findings)
+    return ManualUploadResult(outcome=outcome, ytd_vs_register_rows=ytd_vs_register_rows)

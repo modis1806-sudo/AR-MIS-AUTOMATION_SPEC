@@ -440,6 +440,43 @@ class YtdDebtorVoucherRow:
     amount: Decimal
 
 
+@dataclass(frozen=True)
+class ManualYtdVoucherRow:
+    """Manual Upload's own equivalent of YtdDebtorVoucherRow, from the one
+    export shape a real operator's Tally UI can actually produce for this
+    (Sundry Debtors -> Ctrl+H -> Voucher view, confirmed against the real
+    fixtures/real_samples/YTDData.xml) - see ar_mis.parsers.parse_manual_
+    ytd_voucher_report's own docstring for the export's exact tag shape.
+
+    Deliberately carries NO party_id, unlike YtdDebtorVoucherRow - this
+    export's own DSPVCHLEDACCOUNT column is the voucher's CONTRA ledger
+    (the revenue/bank/other-debtor leg), never the debtor's own name, so
+    there is nothing reliable to extract one from. Confirmed this is not
+    a gap that matters for Check 1's own purpose: the client's explicit
+    instruction (their own prior Excel cross-check template's SUMIFS
+    formula filters by branch + voucher type + date range, never by
+    debtor) and the fact that Tally itself numbers a voucher uniquely
+    per type per company (never per party) together mean (branch_id,
+    voucher_type, voucher_number) is already a complete, unambiguous
+    identity on its own.
+
+    `amount` is this voucher's own net DSPVCHDRAMT + DSPVCHCRAMT (exactly
+    one of which is populated for every real voucher type except Journal,
+    where both legs can sit on one row when a journal moves balance
+    between two tracked debtors - summing nets a balanced inter-debtor
+    transfer to zero at this party-less granularity, which is the
+    correct, not a degraded, outcome once party is no longer part of the
+    comparison). Same raw, at-source sign convention as YtdDebtorVoucherRow.amount
+    - never flip_sign'd here.
+    """
+
+    branch_id: str
+    voucher_date: date
+    voucher_type: str
+    voucher_number: str
+    amount: Decimal
+
+
 @dataclass
 class InvoiceFollowUp:
     """The one genuinely mutable/editable record in the registers design

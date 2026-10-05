@@ -120,11 +120,17 @@ def test_process_manual_upload_auto_discovers_new_customer(store):
     assert store.get_opening_balance("A & B Transport Pvt Ltd", "KOL") == Decimal("0.00")
 
 
-def test_process_manual_upload_runs_drift_check_when_ytd_file_given(store):
+def test_process_manual_upload_runs_ytd_cross_check_when_ytd_file_given(store):
+    # Phase 6e: Manual Upload's YTD file is Tally's own "Sundry Debtors ->
+    # Ctrl+H -> Voucher view" Display Report export (fixtures/manual_ytd_
+    # voucher_display_report.xml, built from the real confirmed shape) -
+    # not the live gateway's Voucher Collection shape the old isolate_
+    # drift-based test used. SB/0142 matches what's in the Sales register
+    # already; SB/0199-BACKDATED does not exist there at all.
     _seed_matching_openings(store)
     sales_xml = (FIXTURES / "voucher_collection_sales.xml").read_text()
     tb_xml = (FIXTURES / "ledger_closing_balances.xml").read_text()
-    ytd_xml = (FIXTURES / "voucher_collection_sales_with_backdated_entry.xml").read_text()
+    ytd_xml = (FIXTURES / "manual_ytd_voucher_display_report.xml").read_text()
 
     result = process_manual_upload(
         store, "KOL", "Kolkata", date(2026, 4, 7),
@@ -133,19 +139,22 @@ def test_process_manual_upload_runs_drift_check_when_ytd_file_given(store):
         ytd_voucher_xml=ytd_xml,
     )
     assert result.outcome.outcome == ExtractionOutcome.PASS
-    assert len(result.drift_findings) == 1
-    assert result.drift_findings[0].voucher_number == "SB/0099-BACKDATED"
+    # SB/0142 (in both), SB/0199-BACKDATED (YTD file only), and SB/0143
+    # (register only, per voucher_collection_sales.xml's own second
+    # voucher - Reliable Cargo Movers - which the YTD file doesn't cover).
+    assert len(result.ytd_vs_register_rows) == 3
+    by_voucher = {r.voucher_number: r for r in result.ytd_vs_register_rows}
+    assert by_voucher["SB/0142"].status == "Match"
+    assert by_voucher["SB/0199-BACKDATED"].status == "Missing from Registers"
+    assert by_voucher["SB/0143"].status == "Extra in Registers"
 
-    # Found and fixed this session: the finding must be persisted, not
-    # just shown once on this call's own return value.
-    persisted = store.all_drift_findings()
-    assert len(persisted) == 1
-    assert persisted[0].finding.voucher_number == "SB/0099-BACKDATED"
-    assert persisted[0].branch_id == "KOL"
-    assert persisted[0].acknowledged is False
+    # Never persisted anywhere - there is no party dimension to key a
+    # stored row on (see ManualYtdVoucherRow's own docstring) - shown
+    # once on this call's own return value only.
+    assert store.all_drift_findings() == []
 
 
-def test_process_manual_upload_skips_drift_check_when_ytd_file_omitted(store):
+def test_process_manual_upload_skips_ytd_cross_check_when_ytd_file_omitted(store):
     _seed_matching_openings(store)
     sales_xml = (FIXTURES / "voucher_collection_sales.xml").read_text()
     tb_xml = (FIXTURES / "ledger_closing_balances.xml").read_text()
@@ -155,7 +164,7 @@ def test_process_manual_upload_skips_drift_check_when_ytd_file_omitted(store):
         weekly_voucher_xml={"Sales": sales_xml},
         trial_balance_xml=tb_xml,
     )
-    assert result.drift_findings == []
+    assert result.ytd_vs_register_rows == []
 
 
 def test_process_manual_upload_ignores_blank_voucher_slots(store):

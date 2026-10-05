@@ -81,23 +81,36 @@
     <p style="font-size:12px;color:#6b7280;">Once checked against Tally, review these permanently in <a href="{{ url_for('register_exceptions_review') }}">Register Exceptions Review</a>.</p>
     {% endif %}
 
-    {% if result.drift_findings %}
+    {% if result.ytd_vs_register_rows is none %}
+    <p style="color:#6b7280; margin-top:16px;">No YTD voucher file was uploaded this time - the voucher-wise cross-check against Tally's own data didn't run for this save.</p>
+    {% else %}
+    <p style="font-weight:600; margin-top:16px;">
+      TB vs Registers (Check 1):
+      <span class="pill {{ 'ok' if not result.ytd_vs_register_mismatched else 'fail' }}">
+        {{ 'ALL MATCHED' if not result.ytd_vs_register_mismatched else result.ytd_vs_register_mismatched ~ ' MISMATCHED' }}
+      </span>
+    </p>
+    <p style="font-size:12px;color:#6b7280;">Scoped to branch + voucher type + voucher number only - the uploaded YTD file (Tally's "Sundry Debtors &rarr; Ctrl+H &rarr; Voucher view" export) carries no debtor name, same as this branch's own prior Excel cross-check template never needed one for this.</p>
+    {% if result.ytd_vs_register_rows %}
     <table>
-      <thead><tr><th>Party</th><th>Voucher</th><th>Date</th><th>Amount</th><th>Attributed Week</th></tr></thead>
+      <thead><tr><th>Voucher Type</th><th>Voucher No.</th><th>Date</th><th>Tally (YTD file)</th><th>Registers</th><th>Status</th></tr></thead>
       <tbody>
-      {% for f in result.drift_findings %}
-        <tr>
-          <td>{{ f.party_ledger_name }}</td>
-          <td>{{ f.voucher_type }} {{ f.voucher_number }}</td>
-          <td>{{ f.voucher_date }}</td>
-          <td>{{ f.flipped_amount|inr }}</td>
-          <td>{{ f.attributed_week or 'unassigned' }}</td>
+      {% for r in result.ytd_vs_register_rows %}
+        <tr {% if r.status != 'Match' %}style="background:#fef2f2;"{% endif %}>
+          <td>{{ r.voucher_type }}</td>
+          <td>{{ r.voucher_number }}</td>
+          <td>{{ r.voucher_date or '' }}</td>
+          <td>{{ r.ytd_amount|inr if r.ytd_amount is not none else '—' }}</td>
+          <td>{{ r.register_amount|inr if r.register_amount is not none else '—' }}</td>
+          <td>
+            {% if r.status == 'Match' %}<span class="pill ok">Match</span>
+            {% else %}<span class="pill fail">{{ r.status }}</span>{% endif %}
+          </td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
-    {% else %}
-    <p style="color:#166534;">No YTD drift found.</p>
+    {% endif %}
     {% endif %}
   </div>
   {% endif %}

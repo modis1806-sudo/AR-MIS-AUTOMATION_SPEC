@@ -2310,12 +2310,100 @@ resolves former open item 1.
     Full suite green (684 tests - four removed, two added, net -4 - since
     Phase 6d retires behavior rather than adding it) at this point.
 
-    **Still to come, per the agreed build order**: Phase 6e (fix Manual
-    Upload's broken `ytd_vouchers` parser and repoint it at Check 1,
-    the second of the two remaining `isolate_drift` call sites). The
-    newly-found third call site (`ar_mis.cli.run`) is flagged above as
-    its own follow-up, outside this build order until the client weighs
-    in on it.
+    **Phase 6e built and tested: Manual Upload's YTD voucher file finally
+    works, and genuinely feeds Check 1.** Investigating the broken
+    `ytd_vouchers` slot started from `fixtures/real_samples/YTDData.xml`
+    (the real capture already on file, confirmed by the earlier "CONFIRMED
+    BUG" finding above as Tally's "Display Report" shape, `DSPVCH*` tags) -
+    inspecting it directly (247 real rows, every field's actual values)
+    surfaced something the earlier finding hadn't: `DSPVCHLEDACCOUNT`,
+    which looked like it might be the debtor's own name, is actually the
+    voucher's CONTRA ledger - a revenue ledger for a Sale, a bank for a
+    Receipt, the other debtor's name for a journal reallocating between
+    two tracked debtors (confirmed by cross-tabulating all 247 rows by
+    voucher type: Sale/Receipt/Credit Note/Debit Note/Tax Invoice rows
+    show only non-debtor ledgers there; only Journal rows show company
+    names, and only because that leg happens to be another debtor). There
+    is no field anywhere in this export identifying which specific
+    Sundry Debtor a Sale/Receipt/CN/DN row's own leg belongs to.
+
+    Raised as a real blocker before writing any code - this isn't a
+    parsing bug fixable by reading the file more carefully, it's a
+    genuine absence in the data as captured. Client's direct, correct
+    pushback: Check 1 was never supposed to need party identity in the
+    first place. The client's own prior Excel cross-check template
+    (`AR_MIS_Template_26-27_Final.xlsb`, `Data_Validation` sheet) was
+    shown live - its SUMIFS formula filters by branch, voucher type, and
+    date range only (`'Voucher Details as per Books'!A:A,...B:B,...C:C,
+    ...F:F,"Sales"`), no debtor-name column anywhere - and the client's
+    own explicit statement: "date and voucher type and voucher number...
+    There is no need of Debtor Ledger Name in here." Confirmed sound
+    independent of the client's say-so too: Tally numbers a voucher
+    uniquely per type per company, never per party, so (branch_id,
+    voucher_type, voucher_number) was already a complete, unambiguous
+    identity - party_id in the LIVE Check 1's own key was never load-
+    bearing for uniqueness, only for splitting a multi-debtor voucher's
+    own movement by party, which Check 1's "does this voucher exist"
+    question never actually needed.
+
+    Built on that corrected basis, never party-ful:
+    - `ar_mis.models.ManualYtdVoucherRow` - branch_id, voucher_date,
+      voucher_type, voucher_number, amount. No party_id field at all,
+      unlike `YtdDebtorVoucherRow`.
+    - `ar_mis.parsers.parse_manual_ytd_voucher_report` - the same
+      positional-pairing technique `parse_ledger_closing_balances`
+      already uses for the Trial Balance's DSPACCNAME/DSPACCINFO pair,
+      extended to six flat sibling tags per voucher (DSPVCHDATE/
+      DSPVCHLEDACCOUNT/DSPVCHTYPE/DSPVCHDRAMT/DSPVCHCRAMT/
+      DSPEXPLVCHNUMBER, confirmed exactly this repeating shape against
+      the real sample - 247 complete 6-tag groups). `amount` is DR+CR
+      net (exactly one is normally populated; a debtor-to-debtor journal
+      populates both on one row, and netting them correctly collapses a
+      balanced inter-debtor transfer to zero at this party-less
+      granularity - confirmed against the real sample's own Journal
+      rows, most of which net to exactly 0.00, with the genuine non-zero
+      ones all confirmed to have an external, non-debtor contra ledger).
+      CONFIRMED against the real sample: the file ends with one
+      INCOMPLETE trailing group (a closing/adjustment line like
+      "Unadjusted Forex Gain/Loss" with a blank DSPVCHTYPE and no
+      DSPEXPLVCHNUMBER at all) - never a real voucher, always skipped.
+    - `ar_mis.ytd_debtor_cross_check.compute_manual_ytd_vs_register_
+      comparison` / `ManualYtdVsRegisterRow` - a parallel, coarser Check 1
+      for this one input, identity (branch_id, voucher_type,
+      voucher_number) only. Same sign-convention handling as the live
+      comparison (flip_sign on the YTD side for Sales/Debit Note only);
+      the register side's own per-voucher reduction drops party_id from
+      the key too, so two different debtors' own register rows that
+      happen to share a voucher_number (exactly the journal-split case)
+      sum together, matching the YTD file's own already-netted figure
+      for that voucher - not a precision loss, the correct comparison at
+      this granularity.
+
+    `ar_mis.manual_upload.process_manual_upload` now calls this instead
+    of the old `isolate_drift` path; `ManualUploadResult.drift_findings`
+    is gone, replaced by `ytd_vs_register_rows`. Never persisted to the
+    `ytd_debtor_voucher` table or shown on `/reports/ytd-debtor-vouchers`
+    - that table's schema requires a party_id this input can't supply -
+    shown once, inline, on the Manual Upload result page only, the same
+    way `drift_findings` was only ever shown there before. The combined
+    Cross-Check banner (`_post_save_workflow.html`) now factors this in:
+    `overall_reconciled` is false if either Check 2 (party reconciliation)
+    or this new Check 1 shows a mismatch, matching the live path's own
+    combined-banner logic from Phase 4/5.
+
+    Tested against the real `YTDData.xml` sample throughout (not just
+    synthetic fixtures) - the parser test suite confirms the exact
+    247/162/46/34/4/1 row and per-type counts, and a full webapp-route
+    smoke test posts the real file through `/manual-upload` end to end.
+
+    Full suite green (698 tests) at this point.
+
+    **Not done here, flagged, not silently skipped**: `ar_mis.manual_
+    upload`'s old `isolate_drift` import is gone, so of the three
+    `isolate_drift` call sites known as of Phase 6d, two are now retired
+    (the webapp's live path, Phase 6a; Manual Upload, this phase) and one
+    remains - `ar_mis.cli.run`, the standalone weekly batch script, still
+    outside this build order pending the client's own call on it.
 
 ## Deferred to a later version (not rejected, not in scope now)
 

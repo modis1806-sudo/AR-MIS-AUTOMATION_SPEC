@@ -1015,17 +1015,18 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     ytd_voucher_xml=ytd_voucher_xml,
                     from_date=from_date,
                 )
+                ytd_vs_register_mismatched = sum(1 for r in upload_result.ytd_vs_register_rows if r.status != MATCH)
                 result = {
                     "branch": branch, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
-                    "refused": False, "outcome": upload_result.outcome, "drift_findings": upload_result.drift_findings,
+                    "refused": False, "outcome": upload_result.outcome,
                     "fy_start": financial_year_start(to_date).isoformat(),
-                    "overall_reconciled": not upload_result.outcome.failed_parties,
+                    "overall_reconciled": not upload_result.outcome.failed_parties and not ytd_vs_register_mismatched,
                     "snapshot_already_recorded": store.has_weekly_movement_for_week(to_date),
-                    # Manual Upload has no live Tally to pull the Section
-                    # 4.2 Sundry-Debtors-scoped voucher list from - Check 1
-                    # only runs as part of a live Extract & Save, never
-                    # here, so this is honestly absent, not silently 0.
-                    "ytd_vs_register_rows": None,
+                    # None (not an empty list) when no YTD file was supplied
+                    # this upload - Check 1 genuinely didn't run, which is
+                    # different from "ran and found nothing wrong."
+                    "ytd_vs_register_rows": upload_result.ytd_vs_register_rows if ytd_voucher_xml.strip() else None,
+                    "ytd_vs_register_mismatched": ytd_vs_register_mismatched,
                 }
             except ManualUploadRefused as exc:
                 result = {

@@ -34,7 +34,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree as ET
 
-from ar_mis.models import LedgerEntry, Voucher, VoucherType
+from ar_mis.models import LedgerEntry, ManualYtdVoucherRow, Voucher, VoucherType
 from ar_mis.registers import classify_tax_ledger, is_round_off_ledger
 
 _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
@@ -456,3 +456,94 @@ def parse_currently_loaded_companies(raw_xml: str) -> list[str]:
             seen.add(n)
             result.append(n)
     return result
+
+
+_MANUAL_YTD_VOUCHER_NUMBER = re.compile(r"\(No\.\s*:(.*?)\)")
+
+_MANUAL_YTD_TYPE_LABELS = {
+    "Sale": "Sales",
+    "TAX INVOICE": "Sales",
+    "D/Note": "Debit Note",
+    "C/Note": "Credit Note",
+    "Rcpt": "Receipt",
+    "Jrnl": "Journal",
+}
+
+_MANUAL_YTD_ROW_TAGS = (
+    "DSPVCHDATE", "DSPVCHLEDACCOUNT", "DSPVCHTYPE", "DSPVCHDRAMT", "DSPVCHCRAMT", "DSPEXPLVCHNUMBER",
+)
+
+
+def parse_manual_ytd_voucher_report(raw_xml: str, branch_id: str) -> list[ManualYtdVoucherRow]:
+    """Manual Upload's YTD voucher file - Tally's "Sundry Debtors -> Ctrl+H
+    -> Voucher view" Display Report export (CONFIRMED real shape, see
+    fixtures/real_samples/YTDData.xml), the one shape a real operator's
+    Tally UI can actually produce for this (the live gateway's own
+    Collection/Voucher shape, which `parse_voucher_collection` expects,
+    simply isn't reachable from Tally's UI "Export" button at all - same
+    root cause as the Trial Balance Display Report fix).
+
+    Six flat, un-nested sibling tags repeat per voucher, in document
+    order, with no wrapping per-row element and no shared key to join on
+    (the exact same positional-pairing situation `parse_ledger_closing_
+    balances` already solved for the Trial Balance's DSPACCNAME/
+    DSPACCINFO pair, just six streams instead of two): DSPVCHDATE,
+    DSPVCHLEDACCOUNT, DSPVCHTYPE, DSPVCHDRAMT, DSPVCHCRAMT,
+    DSPEXPLVCHNUMBER. CONFIRMED against the real sample: the file ends
+    with one trailing INCOMPLETE group (a closing/adjustment line like
+    "Unadjusted Forex Gain/Loss" with a blank DSPVCHTYPE and no
+    DSPEXPLVCHNUMBER at all) - never a real voucher, always skipped
+    rather than guessed at.
+
+    DSPVCHLEDACCOUNT is NOT the debtor - CONFIRMED against the real
+    sample it is the voucher's own CONTRA ledger (a revenue ledger for a
+    Sale, a bank for a Receipt, the other debtor's name for a journal
+    that reallocates between two tracked debtors) - so this parser
+    builds ManualYtdVoucherRow, which carries no party field at all (see
+    its own docstring for why that's not a gap for this check's actual
+    purpose). `amount` is DSPVCHDRAMT + DSPVCHCRAMT net (exactly one is
+    normally populated; a debtor-to-debtor journal populates both on the
+    one row, and summing them nets a balanced transfer to zero at this
+    party-less granularity, correctly).
+
+    A DSPVCHTYPE this app doesn't recognize (blank, or anything outside
+    Sale/TAX INVOICE/D-Note/C-Note/Rcpt/Jrnl) is skipped, not an error -
+    mirrors `parse_voucher_collection`'s own tolerance for irrelevant
+    voucher types, since this export could in principle carry a line
+    this app has no AR-relevant category for. A genuinely malformed tag
+    SEQUENCE (not just an unrecognized value) raises instead - that
+    means this report's whole shape has changed, not that one row is
+    unusual.
+    """
+    root = ET.fromstring(_sanitize_xml(raw_xml))
+    children = list(root)
+    rows: list[ManualYtdVoucherRow] = []
+    i = 0
+    n = len(children)
+    while i + len(_MANUAL_YTD_ROW_TAGS) <= n:
+        group = children[i : i + len(_MANUAL_YTD_ROW_TAGS)]
+        tags = tuple(c.tag for c in group)
+        if tags != _MANUAL_YTD_ROW_TAGS:
+            raise ValueError(
+                f"Manual YTD voucher Display Report has an unexpected tag sequence at position {i}: "
+                f"{tags} - the report's shape has changed."
+            )
+        date_el, _ledaccount_el, type_el, dr_el, cr_el, vchno_el = group
+        raw_type = _text(type_el)
+        voucher_type = _MANUAL_YTD_TYPE_LABELS.get(raw_type)
+        if voucher_type is not None:
+            match = _MANUAL_YTD_VOUCHER_NUMBER.search(_text(vchno_el))
+            voucher_number = match.group(1).strip() if match else ""
+            if voucher_number:
+                amount = _parse_decimal_amount(_text(dr_el, "0")) + _parse_decimal_amount(_text(cr_el, "0"))
+                rows.append(
+                    ManualYtdVoucherRow(
+                        branch_id=branch_id,
+                        voucher_date=datetime.strptime(_text(date_el), "%d-%b-%y").date(),
+                        voucher_type=voucher_type,
+                        voucher_number=voucher_number,
+                        amount=amount,
+                    )
+                )
+        i += len(_MANUAL_YTD_ROW_TAGS)
+    return rows

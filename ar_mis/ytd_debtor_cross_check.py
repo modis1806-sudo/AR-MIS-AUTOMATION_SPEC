@@ -59,6 +59,7 @@ from decimal import Decimal
 
 from ar_mis.models import (
     CreditNoteRegisterRow,
+    ManualYtdVoucherRow,
     NoteType,
     ReceiptJournalRegisterRow,
     SalesDNRegisterRow,
@@ -354,3 +355,191 @@ def drift_findings_from_missing_registers(
             )
         )
     return findings
+
+
+_BranchVoucherKey = tuple[str, str]  # (branch_id, voucher_number) - no party, see ManualYtdVsRegisterRow
+
+
+@dataclass(frozen=True)
+class ManualYtdVsRegisterRow:
+    """Manual Upload's own Check 1 - see compute_manual_ytd_vs_register_
+    comparison's own docstring for why this carries no party_id, unlike
+    YtdVsRegisterRow."""
+
+    branch_id: str
+    voucher_type: str
+    voucher_number: str
+    voucher_date: date | None
+    ytd_amount: Decimal | None
+    register_amount: Decimal | None
+    status: str
+
+
+def _sales_dn_amounts_by_voucher(
+    rows: list[SalesDNRegisterRow],
+) -> tuple[dict[_BranchVoucherKey, Decimal], dict[_BranchVoucherKey, date], dict[_BranchVoucherKey, str]]:
+    amounts: dict[_BranchVoucherKey, Decimal] = {}
+    dates: dict[_BranchVoucherKey, date] = {}
+    labels: dict[_BranchVoucherKey, str] = {}
+    for row in rows:
+        key = (row.branch_id, row.voucher_number)
+        amounts[key] = amounts.get(key, Decimal("0.00")) + row.invoice_value
+        dates.setdefault(key, row.invoice_date)
+        labels.setdefault(key, "Sales" if row.note_type == NoteType.INVOICE else row.note_type.value)
+    return amounts, dates, labels
+
+
+def _cn_amounts_by_voucher(
+    rows: list[CreditNoteRegisterRow],
+) -> tuple[dict[_BranchVoucherKey, Decimal], dict[_BranchVoucherKey, date], dict[_BranchVoucherKey, str]]:
+    amounts: dict[_BranchVoucherKey, Decimal] = {}
+    dates: dict[_BranchVoucherKey, date] = {}
+    labels: dict[_BranchVoucherKey, str] = {}
+    for row in rows:
+        key = (row.branch_id, row.voucher_number)
+        amounts[key] = amounts.get(key, Decimal("0.00")) + row.cn_amount
+        dates.setdefault(key, row.cn_date)
+        labels.setdefault(key, "Credit Note")
+    return amounts, dates, labels
+
+
+def _rj_amounts_by_voucher(
+    rows: list[ReceiptJournalRegisterRow],
+) -> tuple[dict[_BranchVoucherKey, Decimal], dict[_BranchVoucherKey, date], dict[_BranchVoucherKey, str]]:
+    amounts: dict[_BranchVoucherKey, Decimal] = {}
+    dates: dict[_BranchVoucherKey, date] = {}
+    labels: dict[_BranchVoucherKey, str] = {}
+    for row in rows:
+        key = (row.branch_id, row.voucher_number)
+        amounts[key] = amounts.get(key, Decimal("0.00")) + row.amount
+        dates.setdefault(key, row.txn_date)
+        labels.setdefault(key, row.voucher_type)
+    return amounts, dates, labels
+
+
+def compute_manual_ytd_vs_register_comparison(
+    ytd_rows: list[ManualYtdVoucherRow],
+    sales_dn_rows: list[SalesDNRegisterRow],
+    cn_rows: list[CreditNoteRegisterRow],
+    rj_rows: list[ReceiptJournalRegisterRow],
+) -> list[ManualYtdVsRegisterRow]:
+    """Manual Upload's own version of Check 1, for when there is no live
+    Tally connection to pull the Sundry-Debtors-scoped voucher list from
+    (ar_mis.tally_client.TallyClient.fetch_sundry_debtor_vouchers)- the
+    one export a real operator's Tally UI CAN produce for this (Sundry
+    Debtors -> Ctrl+H -> Voucher view, ar_mis.parsers.parse_manual_ytd_
+    voucher_report) carries no party field at all, so identity here is
+    (branch_id, voucher_type, voucher_number) only - never party_id.
+
+    This is a deliberate, confirmed design choice, not a fallback made
+    because the data happens to be missing it: the client's own prior
+    Excel cross-check template filtered its SUMIFS formula by branch +
+    voucher type + date range only, never by debtor name, and Tally
+    itself already numbers a voucher uniquely per type per company
+    (never per party) - so (branch_id, voucher_type, voucher_number) was
+    already a complete, unambiguous identity on its own, same as the
+    live Check 1's own key minus the one dimension this export can't
+    supply.
+
+    Same sign-convention handling as compute_ytd_vs_register_comparison:
+    flip_sign applied to the YTD side only for Sales/Debit Note, to match
+    SalesDNRegisterRow.invoice_value's own already-positive convention;
+    Credit Note/Receipt/Journal compare raw-to-raw.
+
+    Callers must pass only ONE branch's own rows on both sides (ytd_rows
+    from parse_manual_ytd_voucher_report, already scoped to the branch_id
+    it was parsed with; sales_dn_rows/cn_rows/rj_rows should be that same
+    branch's own register history) - this function does no branch
+    filtering of its own, unlike the live path, which relies on branch_id
+    being part of its own richer key instead.
+    """
+    sales_dn_amounts_raw, sales_dn_dates, sales_dn_labels = _sales_dn_amounts_by_voucher(sales_dn_rows)
+    cn_amounts, cn_dates, cn_labels = _cn_amounts_by_voucher(cn_rows)
+    rj_amounts, rj_dates, rj_labels = _rj_amounts_by_voucher(rj_rows)
+
+    def _register_side(voucher_type: str) -> tuple[dict[_BranchVoucherKey, Decimal], dict[_BranchVoucherKey, date]]:
+        if voucher_type in _SALES_DN_TYPES:
+            return sales_dn_amounts_raw, sales_dn_dates
+        if voucher_type in _CREDIT_NOTE_TYPES:
+            return cn_amounts, cn_dates
+        if voucher_type in _RECEIPT_JOURNAL_TYPES:
+            return rj_amounts, rj_dates
+        raise ValueError(f"No register owns voucher_type {voucher_type!r}")
+
+    ytd_amounts_by_type: dict[str, dict[_BranchVoucherKey, Decimal]] = {}
+    ytd_row_by_type_key: dict[tuple[str, _BranchVoucherKey], ManualYtdVoucherRow] = {}
+    for row in ytd_rows:
+        by_key = ytd_amounts_by_type.setdefault(row.voucher_type, {})
+        key = (row.branch_id, row.voucher_number)
+        amount = flip_sign(row.amount) if row.voucher_type in _SALES_DN_TYPES else row.amount
+        by_key[key] = by_key.get(key, Decimal("0.00")) + amount
+        ytd_row_by_type_key.setdefault((row.voucher_type, key), row)
+
+    rows: list[ManualYtdVsRegisterRow] = []
+    seen_type_keys: set[tuple[str, _BranchVoucherKey]] = set()
+
+    for voucher_type, by_key in ytd_amounts_by_type.items():
+        register_amounts, _register_dates = _register_side(voucher_type)
+        for key, ytd_amount in by_key.items():
+            seen_type_keys.add((voucher_type, key))
+            register_amount = register_amounts.get(key)
+            if register_amount is None:
+                status = MISSING_FROM_REGISTERS
+            elif is_match(ytd_amount, register_amount):
+                status = MATCH
+            else:
+                status = AMOUNT_MISMATCH
+            ytd_row = ytd_row_by_type_key[(voucher_type, key)]
+            branch_id, voucher_number = key
+            rows.append(
+                ManualYtdVsRegisterRow(
+                    branch_id=branch_id,
+                    voucher_type=voucher_type,
+                    voucher_number=voucher_number,
+                    voucher_date=ytd_row.voucher_date,
+                    ytd_amount=ytd_amount,
+                    register_amount=register_amount,
+                    status=status,
+                )
+            )
+
+    for key, register_amount in sales_dn_amounts_raw.items():
+        voucher_type = sales_dn_labels[key]
+        if (voucher_type, key) in seen_type_keys:
+            continue
+        seen_type_keys.add((voucher_type, key))
+        branch_id, voucher_number = key
+        rows.append(
+            ManualYtdVsRegisterRow(
+                branch_id=branch_id, voucher_type=voucher_type, voucher_number=voucher_number,
+                voucher_date=sales_dn_dates[key], ytd_amount=None, register_amount=register_amount,
+                status=EXTRA_IN_REGISTERS,
+            )
+        )
+    for key, register_amount in cn_amounts.items():
+        if ("Credit Note", key) in seen_type_keys:
+            continue
+        seen_type_keys.add(("Credit Note", key))
+        branch_id, voucher_number = key
+        rows.append(
+            ManualYtdVsRegisterRow(
+                branch_id=branch_id, voucher_type="Credit Note", voucher_number=voucher_number,
+                voucher_date=cn_dates[key], ytd_amount=None, register_amount=register_amount,
+                status=EXTRA_IN_REGISTERS,
+            )
+        )
+    for key, register_amount in rj_amounts.items():
+        voucher_type = rj_labels[key]
+        if (voucher_type, key) in seen_type_keys:
+            continue
+        seen_type_keys.add((voucher_type, key))
+        branch_id, voucher_number = key
+        rows.append(
+            ManualYtdVsRegisterRow(
+                branch_id=branch_id, voucher_type=voucher_type, voucher_number=voucher_number,
+                voucher_date=rj_dates[key], ytd_amount=None, register_amount=register_amount,
+                status=EXTRA_IN_REGISTERS,
+            )
+        )
+
+    return rows
