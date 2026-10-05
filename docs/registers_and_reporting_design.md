@@ -1936,18 +1936,52 @@ resolves former open item 1.
     SundryDebtorVoucherCollection.xml`) - 166 real vouchers parse and
     build rows correctly. Full suite green (619 tests) at this point.
 
-    **Still to come, per the agreed build order**: the new YTD Data report
-    tile (full register view, sideways Register comparison, Match/
-    Mismatch column - client's explicit design), Check 1's actual
-    comparison logic, Check 2's redefinition (Opening + Registers vs TB,
-    replacing the raw-voucher re-sum), the guided workflow chaining
-    extraction → combined cross-check pop-up → branch-total confirmation →
-    inline snapshot recording or correction routing, and the audited
-    correction actions (exclude/add/correct a voucher, extending the
-    existing Pre-MIS adjustment and drift-incorporation patterns - client
-    explicitly rejected silent edit/delete of original voucher data, since
-    that is the exact failure class this whole system was built to
-    prevent).
+    **Phase 2 built and tested**: Check 1's actual comparison logic
+    (`ar_mis.ytd_debtor_cross_check.compute_ytd_vs_register_comparison`)
+    and the new "TB vs Registers — YTD Debtor Vouchers" report tile
+    (`/reports/ytd-debtor-vouchers`). Identity is always (voucher_type
+    category, branch_id, voucher_number, party_id) - voucher_number is
+    scoped per TYPE (a Sales "1" and a Receipt "1" are unrelated) AND per
+    BRANCH (the same cross-branch collision class item 49 already fixed in
+    `compute_invoice_position` - different branches commonly reuse the
+    same Tally numbering independently). Two real bugs caught and fixed
+    while building this, both confirmed by test before being declared
+    real:
+
+    - `SalesDNRegisterRow.note_type`'s own stored value is "Invoice"
+      (`NoteType.INVOICE`), but the YTD pull's own categorization
+      (`VoucherType.SALES`) is "Sales" - without normalizing one to the
+      other, every genuinely matching Sales voucher would have shown as
+      "Extra in Registers" purely because the two sides' type labels never
+      compared equal, never because anything was actually wrong.
+    - The matching key initially had no `branch_id` at all - the exact
+      same collision class item 49 fixed elsewhere, reintroduced here by
+      not learning that lesson the first time. Caught before shipping, not
+      after a real client report.
+
+    Four possible outcomes per voucher, shown as the table's Match/
+    Mismatch column: `Match`, `Amount Mismatch` (both sides have it, the
+    amounts differ), `Missing from Registers` (Tally's own list has it,
+    the registers don't), `Extra in Registers` (a register has it, Tally's
+    own independent list doesn't) - covering both directions of the
+    client's original ask. The tile defaults to the most recent pull on or
+    before the chosen date (a pull is a whole point-in-time snapshot, never
+    interpolated) and uses the same search/filter/subtotal table-tools
+    convention every other register/report already has. Batch-action
+    checkboxes are present in the markup but have no action wired up yet -
+    deliberately deferred to the Phase 6 correction actions, since there's
+    nothing to batch-apply until those exist. Full suite green (633 tests)
+    at this point.
+
+    **Still to come, per the agreed build order**: Check 2's redefinition
+    (Opening + Registers vs TB, replacing the raw-voucher re-sum), the
+    guided workflow chaining extraction → combined cross-check pop-up →
+    branch-total confirmation → inline snapshot recording or correction
+    routing, and the audited correction actions (exclude/add/correct a
+    voucher, extending the existing Pre-MIS adjustment and drift-
+    incorporation patterns - client explicitly rejected silent edit/delete
+    of original voucher data, since that is the exact failure class this
+    whole system was built to prevent).
 
 ## Deferred to a later version (not rejected, not in scope now)
 

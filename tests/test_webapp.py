@@ -4344,3 +4344,66 @@ def test_checker_cannot_incorporate_a_finding(roleless_client):
         follow_redirects=True,
     )
     assert b"available for your role" in resp.data
+
+
+def test_ytd_debtor_voucher_report_shows_match_and_missing_rows(client):
+    # Section 4.2's "TB vs Registers" cross-check (item 56) - a matched
+    # voucher and one missing from the registers, in the same pull.
+    from ar_mis.models import NoteType, SalesDNRegisterRow, YtdDebtorVoucherRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_ytd_debtor_voucher_rows([
+        YtdDebtorVoucherRow(
+            branch_id="KOL", as_of=date(2026, 4, 7), voucher_date=date(2026, 4, 1), voucher_type="Sales",
+            raw_voucher_type_name="Sales", voucher_number="1", party_id="ACME", amount=Decimal("1000.00"),
+        ),
+        YtdDebtorVoucherRow(
+            branch_id="KOL", as_of=date(2026, 4, 7), voucher_date=date(2026, 4, 2), voucher_type="Receipt",
+            raw_voucher_type_name="Rcpt", voucher_number="9", party_id="KAY DEE", amount=Decimal("5000.00"),
+        ),
+    ])
+    store.append_sales_dn_row(SalesDNRegisterRow(
+        branch_id="KOL", invoice_date=date(2026, 4, 1), note_type=NoteType.INVOICE, voucher_number="1",
+        bill_allocation_reference="1", party_id="ACME", taxable_value=Decimal("1000.00"),
+        cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"), invoice_value=Decimal("1000.00"),
+        due_date=date(2026, 5, 1),
+    ))
+    store.close()
+
+    resp = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
+    assert resp.status_code == 200
+    assert b"ACME" in resp.data
+    assert b"KAY DEE" in resp.data
+    assert b">Match<" in resp.data
+    assert b"Missing from Registers" in resp.data
+
+
+def test_ytd_debtor_voucher_report_falls_back_to_latest_pull_on_or_before_as_of(client):
+    from ar_mis.models import YtdDebtorVoucherRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_ytd_debtor_voucher_rows([
+        YtdDebtorVoucherRow(
+            branch_id="KOL", as_of=date(2026, 4, 7), voucher_date=date(2026, 4, 1), voucher_type="Sales",
+            raw_voucher_type_name="Sales", voucher_number="1", party_id="ACME", amount=Decimal("1000.00"),
+        ),
+    ])
+    store.close()
+
+    resp = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-30")
+    assert resp.status_code == 200
+    assert b"as of 2026-04-07" in resp.data
+    assert b"ACME" in resp.data
+
+
+def test_ytd_debtor_voucher_report_shows_message_when_no_pull_recorded_yet(client):
+    resp = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
+    assert resp.status_code == 200
+    assert b"No YTD Sundry-Debtors voucher pull has been recorded" in resp.data
+
+
+def test_reports_home_links_to_ytd_debtor_voucher_report(client):
+    resp = client.get("/reports")
+    assert b"/reports/ytd-debtor-vouchers" in resp.data

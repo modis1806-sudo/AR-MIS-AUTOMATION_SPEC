@@ -63,6 +63,12 @@
   </div>
 
   <div class="card">
+    <h2>TB vs Registers — YTD Debtor Vouchers</h2>
+    <p>An independent, Tally-sourced list of every voucher that touched a Sundry Debtor, compared side by side against what the three master registers actually captured — voucher-wise, so a missing voucher is caught directly, not inferred from a total that happens to still tie out.</p>
+    <a class="btn" href="{{ url_for('ytd_debtor_voucher_report') }}">Open TB vs Registers</a>
+  </div>
+
+  <div class="card">
     <h2>Pre-MIS Adjustment Register</h2>
     <p>Every party that ever carried a Pre-MIS balance — original seed, every logged adjustment, current balance. Pre-MIS Outstanding never moves except through a deliberate, audited action; this is that audit trail.</p>
     <a class="btn" href="{{ url_for('pre_mis_register_report') }}">Open Pre-MIS Adjustment Register</a>

@@ -51,6 +51,7 @@ from ar_mis.drift_correction import (
 from ar_mis.pipeline import process_branch_data
 from ar_mis.pre_mis_register import compute_pre_mis_register
 from ar_mis.reconciliation import isolate_drift
+from ar_mis.ytd_debtor_cross_check import MATCH, compute_ytd_vs_register_comparison
 from ar_mis.reconciliation_report import (
     compute_concentration_risk,
     compute_latest_per_party,
@@ -2252,6 +2253,46 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return send_file(
             buf, as_attachment=True, download_name=f"Unreconciled_Parties_{to_date.isoformat()}.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    @app.route("/reports/ytd-debtor-vouchers")
+    def ytd_debtor_voucher_report():
+        """Section 4.2's "TB vs Registers" cross-check (docs/registers_and_
+        reporting_design.md item 56) - Check 1 of the client's own two-
+        check redesign. Compares the live Sundry-Debtors-scoped voucher
+        pull (an independent second read of what Tally itself says touched
+        a Sundry Debtor) against what the three master registers actually
+        captured - voucher-wise, never bill-wise or invoice-level.
+
+        `as_of` scopes to the most recent pull on or before that date
+        (same latest-per-party-style reduction already used elsewhere in
+        this app) - a pull is a whole snapshot taken at one point in time,
+        not something to interpolate between. If no pull has ever been
+        recorded on or before `as_of`, the table is simply empty with a
+        message, never silently falls back to a different scope.
+        """
+        as_of = _parse_as_of()
+        store = get_store()
+        all_pulls = store.all_ytd_debtor_voucher_rows()
+        eligible_as_of_dates = sorted({r.as_of for r in all_pulls if r.as_of <= as_of})
+        pull_as_of = eligible_as_of_dates[-1] if eligible_as_of_dates else None
+        ytd_rows = [r for r in all_pulls if r.as_of == pull_as_of] if pull_as_of else []
+        sales_dn_rows = store.all_sales_dn_rows()
+        cn_rows = store.all_credit_note_rows()
+        rj_rows = store.all_receipt_journal_rows()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+
+        rows = compute_ytd_vs_register_comparison(ytd_rows, sales_dn_rows, cn_rows, rj_rows)
+        rows.sort(key=lambda r: (r.status == MATCH, r.branch_id, r.voucher_type, r.voucher_number))
+        summary = {
+            "total": len(rows),
+            "matched": sum(1 for r in rows if r.status == MATCH),
+            "mismatched": sum(1 for r in rows if r.status != MATCH),
+        }
+        return render_template(
+            "ytd_debtor_voucher_report.html", rows=rows, as_of=as_of.isoformat(),
+            pull_as_of=pull_as_of.isoformat() if pull_as_of else None, freshness=freshness, summary=summary,
         )
 
     @app.route("/reports/concentration-risk")

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}TB vs Registers — YTD Debtor Vouchers{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+{% include "_back_to_reports.html" %}
+<h1>TB vs Registers — YTD Debtor Vouchers</h1>
+<p class="subtitle">An independent second read of what Tally itself says touched a Sundry Debtor — pulled straight from Tally, scoped at the source, never built from this app's own registers — shown side by side with what the three master registers actually captured. Voucher-wise, never bill-wise: if a voucher is missing, the whole voucher is missing, not just one line of it.</p>
+
+{% include "_freshness.html" %}
+
+<form class="as-of-form" method="get">
+  <div>
+    <label for="as_of">Show position as of</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of }}">
+  </div>
+  <button class="btn secondary" type="submit">Apply</button>
+</form>
+
+{% if pull_as_of %}
+<p class="subtitle" style="margin-top:-8px;">Showing the most recent pull on or before {{ as_of }} — taken as of {{ pull_as_of }}.</p>
+{% else %}
+<p class="subtitle" style="margin-top:-8px; color:#b91c1c;">No YTD Sundry-Debtors voucher pull has been recorded on or before {{ as_of }} yet — nothing to compare.</p>
+{% endif %}
+
+<div class="kpi-grid" style="margin-bottom:20px;">
+  <div class="kpi-tile">
+    <div class="kpi-label">Total vouchers compared</div>
+    <div class="kpi-value">{{ summary.total }}</div>
+    <div class="kpi-caption">Union of both sides — every voucher either Tally's own list or the registers show.</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Matched</div>
+    <div class="kpi-value" style="color:#166534;">{{ summary.matched }}</div>
+    <div class="kpi-caption">Same voucher, same amount, on both sides.</div>
+  </div>
+  <div class="kpi-tile">
+    <div class="kpi-label">Mismatched</div>
+    <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.mismatched else 'color:#166534;' }}">{{ summary.mismatched }}</div>
+    <div class="kpi-caption">Missing from the Registers, extra in the Registers, or present on both sides with a different amount — every row below says which.</div>
+  </div>
+</div>
+
+{% if rows %}
+<div class="table-tools" data-tt="ytdvsreg">
+  <input type="search" data-tt-search placeholder="Search voucher no., party...">
+  <span data-tt-filters></span>
+  <button type="button" class="btn secondary" data-tt-clear>Clear filters</button>
+  <span class="tt-count" data-tt-count></span>
+  <span class="tt-selected" data-tt-selected-count>0 selected</span>
+  <span class="tt-count">Tally (YTD) total of these rows: <strong data-tt-sum="ytdvsreg:ytd_amount">0.00</strong></span>
+  <span class="tt-count">Register total of these rows: <strong data-tt-sum="ytdvsreg:register_amount">0.00</strong></span>
+</div>
+{% endif %}
+<div class="table-scroll">
+<table data-tt-table="ytdvsreg">
+  <thead>
+    <tr>
+      <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
+      <th data-tt-filter data-tt-col="branch">Branch</th>
+      <th data-tt-filter data-tt-col="voucher_type">Voucher Type</th>
+      <th>Voucher No.</th>
+      <th>Party</th>
+      <th>Voucher Date</th>
+      <th>Tally (YTD pull)</th>
+      <th>Registers</th>
+      <th data-tt-filter data-tt-col="status">Match / Mismatch</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr data-tt-row {% if row.status != 'Match' %}style="background:#fef2f2;"{% endif %}>
+      <td><input type="checkbox" data-tt-row-select value="{{ row.branch_id }}|{{ row.voucher_type }}|{{ row.voucher_number }}|{{ row.party_id }}"></td>
+      <td data-tt-col="branch">{{ row.branch_id }}</td>
+      <td data-tt-col="voucher_type">{{ row.voucher_type }}</td>
+      <td>{{ row.voucher_number }}</td>
+      <td>{{ row.party_id }}</td>
+      <td>{{ row.voucher_date or "" }}</td>
+      <td data-tt-col="ytd_amount" data-value="{{ row.ytd_amount or 0 }}">{{ row.ytd_amount|inr }}</td>
+      <td data-tt-col="register_amount" data-value="{{ row.register_amount or 0 }}">{{ row.register_amount|inr }}</td>
+      <td data-tt-col="status">
+        {% if row.status == 'Match' %}<span class="pill ok">Match</span>
+        {% else %}<span class="pill fail">{{ row.status }}</span>{% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="empty">Nothing to compare for this date yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
