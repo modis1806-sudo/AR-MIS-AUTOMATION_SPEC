@@ -27,6 +27,7 @@ from ar_mis.models import (
     SalesDNRegisterRow,
     Voucher,
     VoucherType,
+    YtdDebtorVoucherRow,
 )
 
 # Confirmed against real client data (fixtures/real_samples/SalesReg.xml):
@@ -420,6 +421,56 @@ def build_receipt_journal_register_rows(
             ]
         all_rows.extend(rows)
     return all_rows
+
+
+def build_ytd_debtor_voucher_rows(
+    voucher: Voucher,
+    tracked_party_names: set[str],
+    as_of: date,
+) -> list[YtdDebtorVoucherRow]:
+    """Section 4.2's "TB vs Registers" cross-check source rows, from the
+    live Sundry-Debtors-scoped pull (TallyClient.fetch_sundry_debtor_vouchers)
+    - never from this app's own three master registers, which is the whole
+    point: an independent second read of what Tally itself says touched a
+    Sundry Debtor, to compare against what the registers actually captured.
+
+    One row per (voucher, debtor leg), net-summed per party - NOT one row
+    per bill allocation. The client's own explicit correction: this check
+    is voucher-wise, never bill-wise, so a Receipt/Journal voucher with
+    several bill-allocation lines against the same party collapses to one
+    net amount here, unlike ReceiptJournalRegisterRow which deliberately
+    keeps bill-level granularity for invoice matching this check doesn't
+    do at all.
+
+    A voucher touching two or more tracked debtors (the same real scenario
+    already fixed in build_receipt_journal_register_rows - a debtor-to-
+    debtor reallocation Journal) produces one row per debtor, each
+    carrying only that debtor's own net amount - never one party's name
+    borrowed for the whole voucher.
+    """
+    matched_entries = [e for e in voucher.entries if e.party_ledger_name in tracked_party_names]
+    if not matched_entries:
+        return []
+
+    amounts_by_party: dict[str, Decimal] = {}
+    for entry in matched_entries:
+        amounts_by_party[entry.party_ledger_name] = (
+            amounts_by_party.get(entry.party_ledger_name, Decimal("0.00")) + entry.amount_as_extracted
+        )
+
+    return [
+        YtdDebtorVoucherRow(
+            branch_id=voucher.branch_id,
+            as_of=as_of,
+            voucher_date=voucher.voucher_date,
+            voucher_type=voucher.voucher_type.value,
+            raw_voucher_type_name=voucher.raw_voucher_type_name,
+            voucher_number=voucher.voucher_number,
+            party_id=party_ledger_name,
+            amount=amount,
+        )
+        for party_ledger_name, amount in amounts_by_party.items()
+    ]
 
 
 def _replace_classification(

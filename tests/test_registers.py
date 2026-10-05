@@ -14,6 +14,7 @@ from ar_mis.models import (
     RegisterClassification,
     Voucher,
     VoucherType,
+    YtdDebtorVoucherRow,
 )
 from ar_mis.parsers import parse_voucher_collection
 from ar_mis.registers import (
@@ -21,6 +22,7 @@ from ar_mis.registers import (
     build_credit_note_register_row,
     build_receipt_journal_register_rows,
     build_sales_dn_register_row,
+    build_ytd_debtor_voucher_rows,
     classify_tax_ledger,
     compute_ageing_bucket,
     compute_collection_efficiency,
@@ -519,6 +521,92 @@ def test_receipt_journal_touching_two_tracked_debtors_attributes_each_line_to_it
     assert len(rows) == 2
     by_party = {r.party_id: r.amount for r in rows}
     assert by_party == {"Joy Ray": Decimal("-2160.00"), "Manoj Lal": Decimal("2160.00")}
+
+
+def test_build_ytd_debtor_voucher_rows_sums_to_one_row_per_party_not_per_bill_allocation():
+    # Client's own explicit correction: this check is voucher-wise, never
+    # bill-wise. A Receipt with two bill allocations against the SAME
+    # party must collapse to one net row here, unlike
+    # ReceiptJournalRegisterRow which deliberately keeps bill-level rows.
+    voucher = Voucher(
+        voucher_type=VoucherType.RECEIPT,
+        voucher_date=date(2025, 4, 1),
+        voucher_number="1",
+        branch_id="B1",
+        party_ledger_name="SHIV ELECTRICAL",
+        entries=[
+            LedgerEntry(party_ledger_name="SHIV ELECTRICAL", amount_as_extracted=Decimal("150000.00")),
+            LedgerEntry(party_ledger_name="SHIV ELECTRICAL", amount_as_extracted=Decimal("110000.00")),
+            LedgerEntry(party_ledger_name="HDFC BANK", amount_as_extracted=Decimal("-260000.00")),
+        ],
+    )
+    rows = build_ytd_debtor_voucher_rows(voucher, {"SHIV ELECTRICAL"}, as_of=date(2025, 4, 7))
+    assert len(rows) == 1
+    assert rows[0] == YtdDebtorVoucherRow(
+        branch_id="B1",
+        as_of=date(2025, 4, 7),
+        voucher_date=date(2025, 4, 1),
+        voucher_type="Receipt",
+        raw_voucher_type_name="",
+        voucher_number="1",
+        party_id="SHIV ELECTRICAL",
+        amount=Decimal("260000.00"),
+    )
+
+
+def test_build_ytd_debtor_voucher_rows_touching_two_tracked_debtors_gets_one_row_each():
+    # Same real scenario as build_receipt_journal_register_rows' own fix
+    # (a debtor-to-debtor reallocation Journal) - each debtor's own leg
+    # must appear as its own row, never one party's name borrowed for the
+    # whole voucher.
+    voucher = Voucher(
+        voucher_type=VoucherType.JOURNAL,
+        voucher_date=date(2026, 4, 1),
+        voucher_number="JV24",
+        branch_id="B1",
+        party_ledger_name="Joy Ray",
+        entries=[
+            LedgerEntry(party_ledger_name="Joy Ray", amount_as_extracted=Decimal("-2160.00")),
+            LedgerEntry(party_ledger_name="Manoj Lal", amount_as_extracted=Decimal("2160.00")),
+        ],
+    )
+    rows = build_ytd_debtor_voucher_rows(voucher, {"Joy Ray", "Manoj Lal"}, as_of=date(2026, 4, 7))
+    assert len(rows) == 2
+    by_party = {r.party_id: r.amount for r in rows}
+    assert by_party == {"Joy Ray": Decimal("-2160.00"), "Manoj Lal": Decimal("2160.00")}
+
+
+def test_build_ytd_debtor_voucher_rows_returns_nothing_when_no_leg_touches_a_tracked_debtor():
+    voucher = Voucher(
+        voucher_type=VoucherType.JOURNAL,
+        voucher_date=date(2026, 4, 1),
+        voucher_number="JV1",
+        branch_id="B1",
+        party_ledger_name="Some Vendor",
+        entries=[
+            LedgerEntry(party_ledger_name="Some Vendor", amount_as_extracted=Decimal("-500.00")),
+            LedgerEntry(party_ledger_name="Freight Charges", amount_as_extracted=Decimal("500.00")),
+        ],
+    )
+    assert build_ytd_debtor_voucher_rows(voucher, {"Joy Ray", "Manoj Lal"}, as_of=date(2026, 4, 7)) == []
+
+
+def test_fetch_sundry_debtor_vouchers_real_sample_builds_rows_for_every_tracked_party():
+    # End-to-end against the real, unmodified live response (CHARZE
+    # INDUSTRIES) confirmed by TallyClient.fetch_sundry_debtor_vouchers -
+    # every one of its 166 vouchers must produce at least one row once run
+    # through the builder with its real party names tracked.
+    raw = (FIXTURES / "SundryDebtorVoucherCollection.xml").read_text(encoding="utf-8")
+    vouchers = parse_voucher_collection(raw, branch_id="CHZ")
+    assert len(vouchers) == 166
+    tracked_party_names = {p for v in vouchers for p in (v.party_ledger_name,) if p}
+    all_rows = [
+        row
+        for voucher in vouchers
+        for row in build_ytd_debtor_voucher_rows(voucher, tracked_party_names, as_of=date(2025, 4, 7))
+    ]
+    assert len(all_rows) >= 166  # at least one row per voucher, more if a voucher touches 2+ debtors
+    assert all(row.branch_id == "CHZ" for row in all_rows)
 
 
 def test_receipt_journal_two_tracked_debtors_each_get_their_own_classification():

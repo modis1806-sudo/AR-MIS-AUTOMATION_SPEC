@@ -397,6 +397,49 @@ class ReceiptJournalRegisterRow:
     narration: str = ""
 
 
+@dataclass(frozen=True)
+class YtdDebtorVoucherRow:
+    """Section 4.2's "TB vs Registers" cross-check (docs/registers_and_
+    reporting_design.md) — one row per (voucher, debtor leg) pair from the
+    live Sundry-Debtors-scoped voucher pull (see
+    ar_mis.tally_client.TallyClient.fetch_sundry_debtor_vouchers), built
+    and persisted independently of the three master registers.
+
+    A voucher touching two or more tracked debtors (the same real case
+    already fixed in build_receipt_journal_register_rows — a debtor-to-
+    debtor reallocation Journal) produces one row per debtor leg here too,
+    each carrying only its own entry's own party and amount — never one
+    row with a single party borrowed for the whole voucher.
+
+    `voucher_type` is the categorized AR type (VoucherType.value — Sales/
+    Credit Note/Debit Note/Receipt/Journal), not Tally's own raw voucher
+    type name (which varies per client, e.g. "CREDIT NOTE NEW", "Journal
+    NEW" — confirmed against real CHARZE INDUSTRIES data). `raw_voucher_
+    type_name` keeps that original string too, since it's useful context
+    for a human reviewing a mismatch even though matching logic never uses
+    it. `amount` is this one entry's own raw amount_as_extracted — the
+    same sign convention the three registers already use (never flip_sign,
+    which is specific to the rollforward/reconciliation path) — so this
+    row's amount is directly comparable to a register row's own amount
+    field without any conversion.
+
+    This table exists purely to answer "does this voucher exist, voucher-
+    wise" (the client's own explicit correction: never bill-wise, never
+    invoice-level) — it carries no classification, no bill reference, no
+    ageing. Comparing it against the three registers is a separate,
+    later step (Section 4.2's actual Check 1), not this dataclass's job.
+    """
+
+    branch_id: str
+    as_of: date
+    voucher_date: date
+    voucher_type: str
+    raw_voucher_type_name: str
+    voucher_number: str
+    party_id: str
+    amount: Decimal
+
+
 @dataclass
 class InvoiceFollowUp:
     """The one genuinely mutable/editable record in the registers design

@@ -1807,6 +1807,148 @@ resolves former open item 1.
     restructuring it to one row per allocation first, a bigger, separate
     change not undertaken without its own concrete example.
 
+56. **NEW, in progress: TB Cross-Check redesign — "TB vs Registers" — Phase
+    1 (live Sundry-Debtors-scoped voucher pull) built and tested.** Client
+    declared TB Cross-Check their "Holy Gita" - the one place to tell
+    whether they or the system missed something - and asked for it to
+    become "TB vs REGISTERS", explicitly at branch-and-party level, never
+    invoice-level (a first proposal to switch the comparison basis to
+    `compute_invoice_position`'s invoice-level matching was explicitly
+    rejected).
+
+    Root cause, confirmed by re-reading the actual code rather than
+    assumed: `aggregate_party_movements` (today's TB Cross-Check basis)
+    and `_build_and_persist_registers` both read the SAME raw vouchers
+    independently, with different exclusion rules. A voucher excluded from
+    the Registers (e.g. the old "touches multiple tracked debtors"
+    exclusion, item 55) was STILL counted by `aggregate_party_movements`,
+    which has no exclusion logic at all - so TB Cross-Check could show
+    "Reconciled: Yes" for a party even when a real voucher never made it
+    into any register. TB Cross-Check was proving "our raw pull from Tally
+    adds up to Tally's own total", never "the Registers correctly captured
+    everything" - two different guarantees, and the client's own real
+    Joy Ray/Manoj Lal case is live proof of the gap.
+
+    Client's own correction, confirmed: the real fix isn't inventing a new
+    data source, it's recognizing this app already has one - the existing
+    "drift findings" feature's YTD full-pull cross-check (`isolate_drift`,
+    `ytd_voucher_xml` manual-upload slot) - but it compares against
+    `voucher_log`, which has the exact same blind spot as `aggregate_
+    party_movements` (logs every voucher touching a tracked party
+    regardless of register exclusion). The real design (client's own,
+    after several rounds of "no, you got it wrong" corrections):
+
+    - **Check 1**: compare the three Registers against an independent,
+      Sundry-Debtors-only voucher-wise list from Tally - voucher-wise, not
+      bill-wise (client's explicit correction: "if a voucher is missing,
+      all constituents are missing" - no invoice-level matching needed).
+      A voucher missing from the Registers, or present in the Registers
+      but absent from this independent list, is the gap this check exists
+      to catch.
+    - **Check 2**: TB Cross-Check itself rebuilt so its "our side" number
+      comes from Customer Master Opening Balance + what's actually sitting
+      in the Registers right now - never a fresh re-sum of raw vouchers.
+      Only meaningful once Check 1 shows the Registers are complete -
+      Check 1 is the gate, Check 2 sits on top of it. Client's own sharp
+      observation, confirmed correct: since both checks now ultimately
+      read the Registers, a real register gap shows up in BOTH checks at
+      once - a discrepancy in only one would itself be a red flag about
+      the checks' own logic, not just the data.
+    - Client's standing principle for this whole app, stated explicitly:
+      any reconciliation must be between two datasets ALREADY separately
+      stored in the tool - never one side silently recomputed in the
+      background from data that was pulled but never formally captured.
+
+    **The data-source question - "how does the system even get a Sundry-
+    Debtors-only voucher list" - took real, live back-and-forth to settle,
+    documented here because every dead end taught something:**
+
+    - Client's own real export (Tally: Sundry Debtors → Ctrl+H → Voucher
+      view) confirmed the right GRANULARITY (voucher-wise, one row per
+      voucher, no bill detail) but is a "Display Report" shape (flat
+      `DSPVCH*` tags) - confirmed elsewhere in this doc as something
+      Tally's UI export can produce but the live HTTP gateway cannot.
+    - Client explicitly rejected "pull the whole company and filter
+      client-side" (Path A) on real performance grounds - wasteful for a
+      company with real transaction volume, and this app has already been
+      burned once by assuming pulls scale (`_VOUCHER_FETCH_CHUNK_DAYS`).
+    - Three blind `REPORTNAME` guesses against a live Tally (CHARZE
+      INDUSTRIES, real client data) - "Group Vouchers", "Ledger Vouchers"
+      with `SVCURRENTGROUP`, "Ledger Vouchers" with `SVCURRENTLEDGER` set
+      to one real customer - all returned a completely empty
+      `<ENVELOPE></ENVELOPE>`, no error. Confirmed these REPORTNAMEs
+      simply don't exist in this Tally installation; guessing report
+      names from general Tally knowledge without TDL documentation or
+      live access is not a reliable methodology, and this was explicitly
+      stopped after three misses rather than continued indefinitely.
+    - **What actually worked, confirmed live**: a TDL `COLLECTION` of
+      `TYPE=Voucher` filtered with two official, documented TDL functions
+      - `$$FilterCount:AllLedgerEntries:<filter> > 0` and
+      `$$IsLedOfGrp:$LedgerName:$$GroupSundryDebtors` (the latter correct
+      even if the group has been renamed). Live result: 166 vouchers for
+      a 7-day range, every single one Sales/Receipt/Credit Note/Journal -
+      zero Purchase/Payment/Contra/Stock Journal/anything else leaked
+      through, confirming the filter genuinely scopes at the source.
+    - Confirmed limitation: this COLLECTION's own requested field list
+      (Date/VoucherTypeName/VoucherNumber/PartyLedgerName) is ignored -
+      Tally returns the full native Voucher object instead (same shape
+      `voucher_export_request` already gets), and within that,
+      `BILLALLOCATIONS.LIST`'s own NAME/BILLTYPE sub-fields come back
+      empty for 604 of 606 real lines - only bare AMOUNT survives. Fine
+      for this check's actual requirement (voucher existence, never bill-
+      level), but this must NOT replace `voucher_export_request`'s full-
+      company pull, which register-building genuinely needs real bill
+      references from.
+    - Confirmed, usefully: the known "nested LIST fields hang" bug (see
+      `voucher_export_request`'s own docstring) did NOT reproduce here
+      despite full nested detail being present - the real cause of that
+      hang is volume, not nested fields per se; 166 real-world-scoped
+      vouchers stayed well clear of whatever threshold a whole company's
+      history crosses.
+    - Side-finding, unrelated to this check but real: two bill allocations
+      in the live response carried `BILLTYPE="On Account"` - a value this
+      app's matching logic (`_ALLOCATED_BILL_TYPES`/`_UNAPPLIED_BILL_TYPE`)
+      doesn't yet recognize at all. Flagged for separate follow-up, not
+      fixed here.
+    - Separately confirmed and fixed while building this: Tally's own
+      voucher export, for a company with User Defined Fields configured,
+      emits tags like `<UDF:_UDF_788538654.LIST>` - a bare colon in the
+      tag name with no xmlns declaration, which crashes ElementTree
+      ("unbound prefix") outright. `ar_mis.parsers._sanitize_xml` now
+      strips these namespace-looking prefixes before parsing (nothing in
+      this app ever looks up a UDF field by name, so mangling it is
+      harmless) - the first real voucher pull carrying UDF fields would
+      otherwise have failed to parse at all.
+
+    **Phase 1 built and tested** (the live pull itself, wired in and
+    persisted - comparison logic against the Registers is Phase 3, not yet
+    built): `ar_mis.xml_requests.sundry_debtor_voucher_export_request`,
+    `TallyClient.fetch_sundry_debtor_vouchers` (chunked the same defensive
+    way as `fetch_vouchers`, confirmed safe only for a 7-day window so
+    far), the new `YtdDebtorVoucherRow` model and `ar_mis.registers.
+    build_ytd_debtor_voucher_rows` (one row per voucher per debtor leg,
+    net-summed - never per bill allocation, and correctly splits a voucher
+    touching 2+ tracked debtors into one row each, same fix as item 55),
+    and a new `ytd_debtor_voucher` storage table (schema v14) keyed by
+    branch + as_of + voucher + party, so a later reporting date's pull is
+    never collapsed with an earlier one. Tested end-to-end against the
+    real, unmodified live response (`fixtures/real_samples/
+    SundryDebtorVoucherCollection.xml`) - 166 real vouchers parse and
+    build rows correctly. Full suite green (619 tests) at this point.
+
+    **Still to come, per the agreed build order**: the new YTD Data report
+    tile (full register view, sideways Register comparison, Match/
+    Mismatch column - client's explicit design), Check 1's actual
+    comparison logic, Check 2's redefinition (Opening + Registers vs TB,
+    replacing the raw-voucher re-sum), the guided workflow chaining
+    extraction → combined cross-check pop-up → branch-total confirmation →
+    inline snapshot recording or correction routing, and the audited
+    correction actions (exclude/add/correct a voucher, extending the
+    existing Pre-MIS adjustment and drift-incorporation patterns - client
+    explicitly rejected silent edit/delete of original voucher data, since
+    that is the exact failure class this whole system was built to
+    prevent).
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

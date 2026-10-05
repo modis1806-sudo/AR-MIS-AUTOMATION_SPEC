@@ -24,6 +24,7 @@ from ar_mis.models import (
     VoucherType,
     WeeklyMovementRow,
     WeeklySnapshotRow,
+    YtdDebtorVoucherRow,
 )
 from ar_mis.reconciliation import DriftFinding
 from ar_mis.storage import SCHEMA_VERSION, Store
@@ -745,6 +746,73 @@ def test_credit_note_row_round_trips_and_resolves_classification(store):
     resolved = store.all_credit_note_rows()[0]
     assert resolved.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
     assert resolved.reason == "Confirmed pre-MIS reference"
+
+
+# ---- Section 4.2's "TB vs Registers" cross-check source rows -------------
+
+
+def test_ytd_debtor_voucher_rows_round_trip(store):
+    row = YtdDebtorVoucherRow(
+        branch_id="B1", as_of=date(2025, 4, 7), voucher_date=date(2025, 4, 1),
+        voucher_type="Receipt", raw_voucher_type_name="Rcpt", voucher_number="1",
+        party_id="SHIV ELECTRICAL", amount=Decimal("260000.00"),
+    )
+    store.append_ytd_debtor_voucher_rows([row])
+    assert store.all_ytd_debtor_voucher_rows() == [row]
+
+
+def test_ytd_debtor_voucher_rows_filter_by_branch_and_as_of(store):
+    row_b1_week1 = YtdDebtorVoucherRow(
+        branch_id="B1", as_of=date(2025, 4, 7), voucher_date=date(2025, 4, 1),
+        voucher_type="Sales", raw_voucher_type_name="Sale", voucher_number="1",
+        party_id="ACME", amount=Decimal("100.00"),
+    )
+    row_b1_week2 = YtdDebtorVoucherRow(
+        branch_id="B1", as_of=date(2025, 4, 14), voucher_date=date(2025, 4, 8),
+        voucher_type="Sales", raw_voucher_type_name="Sale", voucher_number="2",
+        party_id="ACME", amount=Decimal("200.00"),
+    )
+    row_b2 = YtdDebtorVoucherRow(
+        branch_id="B2", as_of=date(2025, 4, 7), voucher_date=date(2025, 4, 1),
+        voucher_type="Sales", raw_voucher_type_name="Sale", voucher_number="1",
+        party_id="ACME", amount=Decimal("300.00"),
+    )
+    store.append_ytd_debtor_voucher_rows([row_b1_week1, row_b1_week2, row_b2])
+
+    assert store.all_ytd_debtor_voucher_rows(branch_id="B1") == [row_b1_week1, row_b1_week2]
+    assert store.all_ytd_debtor_voucher_rows(branch_id="B1", as_of=date(2025, 4, 7)) == [row_b1_week1]
+    assert len(store.all_ytd_debtor_voucher_rows()) == 3
+
+
+def test_ytd_debtor_voucher_rows_same_voucher_different_as_of_are_not_duplicates(store):
+    # A later run's pull for a different reporting date is a legitimately
+    # separate snapshot, never collapsed with an earlier one under the
+    # same (branch, voucher, party) key - only re-running the SAME as_of
+    # (e.g. a chunk-boundary overlap) should be silently deduplicated.
+    row_week1 = YtdDebtorVoucherRow(
+        branch_id="B1", as_of=date(2025, 4, 7), voucher_date=date(2025, 4, 1),
+        voucher_type="Sales", raw_voucher_type_name="Sale", voucher_number="1",
+        party_id="ACME", amount=Decimal("100.00"),
+    )
+    row_week2 = YtdDebtorVoucherRow(
+        branch_id="B1", as_of=date(2025, 4, 14), voucher_date=date(2025, 4, 1),
+        voucher_type="Sales", raw_voucher_type_name="Sale", voucher_number="1",
+        party_id="ACME", amount=Decimal("100.00"),
+    )
+    store.append_ytd_debtor_voucher_rows([row_week1])
+    store.append_ytd_debtor_voucher_rows([row_week2])
+    assert len(store.all_ytd_debtor_voucher_rows()) == 2
+
+
+def test_ytd_debtor_voucher_rows_reextraction_of_same_as_of_is_deduplicated(store):
+    row = YtdDebtorVoucherRow(
+        branch_id="B1", as_of=date(2025, 4, 7), voucher_date=date(2025, 4, 1),
+        voucher_type="Sales", raw_voucher_type_name="Sale", voucher_number="1",
+        party_id="ACME", amount=Decimal("100.00"),
+    )
+    store.append_ytd_debtor_voucher_rows([row])
+    store.append_ytd_debtor_voucher_rows([row])  # chunk-boundary overlap, re-pull, etc.
+    assert len(store.all_ytd_debtor_voucher_rows()) == 1
 
 
 def test_resolve_credit_note_classification_raises_for_unknown_row(store):

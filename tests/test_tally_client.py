@@ -154,6 +154,82 @@ def test_fetch_vouchers_chunks_a_wide_range_and_concatenates_results():
     assert "20260415" in requested_ranges[1] and "20260420" in requested_ranges[1]
 
 
+# ---- Section 4.2's "TB vs Registers" cross-check source ------------------
+#
+# fixtures/real_samples/SundryDebtorVoucherCollection.xml is the actual,
+# unmodified live response confirmed against CHARZE INDUSTRIES (real
+# client data) for the new TDL filter request (sundry_debtor_voucher_
+# export_request - $$FilterCount:AllLedgerEntries + $$IsLedOfGrp +
+# $$GroupSundryDebtors). 166 vouchers for a 7-day range, every one
+# Sales/Receipt/Credit Note/Journal - zero Purchase/Payment/Contra/
+# anything else, confirming the scoping genuinely happens at the source.
+REAL_SAMPLES = Path(__file__).parent.parent / "fixtures" / "real_samples"
+
+
+def test_fetch_sundry_debtor_vouchers_returns_only_ar_relevant_types():
+    branch = BranchConfig(
+        branch_id="CHZ", branch_name="Charze", tally_company_name="CHARZE INDUSTRIES PRIVATE LIMITED - From 1-Apr-25"
+    )
+    raw = (REAL_SAMPLES / "SundryDebtorVoucherCollection.xml").read_text(encoding="utf-8")
+    client = _client_with_stubbed_response(branch, raw)
+    vouchers = client.fetch_sundry_debtor_vouchers(date(2025, 4, 1), date(2025, 4, 7))
+
+    assert len(vouchers) == 166
+    assert all(v.branch_id == "CHZ" for v in vouchers)
+    # Real confirmed live result: only these four categories ever appear -
+    # proof the TDL filter scoped at the source, this app never had to
+    # discard an irrelevant voucher type (Purchase/Payment/Contra/...)
+    # from this particular response.
+    from ar_mis.models import VoucherType
+
+    assert {v.voucher_type for v in vouchers} <= {
+        VoucherType.SALES,
+        VoucherType.RECEIPT,
+        VoucherType.CREDIT_NOTE,
+        VoucherType.JOURNAL,
+    }
+
+
+def test_fetch_sundry_debtor_vouchers_issues_one_request_for_a_normal_weekly_range():
+    branch = BranchConfig(branch_id="CHZ", branch_name="Charze", tally_company_name="Charze Industries")
+    raw = (REAL_SAMPLES / "SundryDebtorVoucherCollection.xml").read_text(encoding="utf-8")
+    call_count = 0
+
+    def fake_post(xml_request):
+        nonlocal call_count
+        call_count += 1
+        return raw
+
+    client = TallyClient(branch=branch)
+    client._post = fake_post  # type: ignore[method-assign]
+    client.fetch_sundry_debtor_vouchers(date(2025, 4, 1), date(2025, 4, 7))
+    assert call_count == 1
+
+
+def test_fetch_sundry_debtor_vouchers_chunks_a_wide_range_and_concatenates_results():
+    branch = BranchConfig(branch_id="CHZ", branch_name="Charze", tally_company_name="Charze Industries")
+    sd_raw = (REAL_SAMPLES / "SundryDebtorVoucherCollection.xml").read_text(encoding="utf-8")
+    sales_raw = (FIXTURES / "voucher_collection_sales.xml").read_text()
+    responses = [sd_raw, sales_raw]
+    requested_ranges: list[str] = []
+
+    def fake_post(xml_request):
+        requested_ranges.append(xml_request)
+        return responses[len(requested_ranges) - 1]
+
+    client = TallyClient(branch=branch)
+    client._post = fake_post  # type: ignore[method-assign]
+    # A 20-day range with a 14-day chunk size must split into exactly two
+    # requests, same chunking discipline as fetch_vouchers - this request
+    # has only been confirmed safe for a 7-day window, not a full YTD range.
+    vouchers = client.fetch_sundry_debtor_vouchers(date(2025, 4, 1), date(2025, 4, 20))
+
+    assert len(requested_ranges) == 2
+    assert len(vouchers) == 166 + 2  # SD fixture's 166 + the Sales fixture's 2
+    assert "20250401" in requested_ranges[0] and "20250414" in requested_ranges[0]
+    assert "20250415" in requested_ranges[1] and "20250420" in requested_ranges[1]
+
+
 def test_default_timeout_is_generous_enough_for_a_real_chunk():
     # Confirmed via live-Tally diagnostic: a single 15-day chunk can
     # legitimately take close to a minute against a busy company. The old

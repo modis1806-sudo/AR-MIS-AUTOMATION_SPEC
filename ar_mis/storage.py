@@ -43,6 +43,7 @@ from ar_mis.models import (
     VoucherType,
     WeeklyMovementRow,
     WeeklySnapshotRow,
+    YtdDebtorVoucherRow,
 )
 from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 
@@ -64,7 +65,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -433,6 +434,31 @@ ALTER TABLE register_build_exception ADD COLUMN voucher_type TEXT NOT NULL DEFAU
     # changed.
     13: """
 ALTER TABLE invoice_follow_up ADD COLUMN updated_at TEXT;
+""",
+    # Section 4.2's "TB vs Registers" cross-check (docs/registers_and_
+    # reporting_design.md) - an independent second read of what Tally
+    # itself says touched a Sundry Debtor (TallyClient.fetch_sundry_
+    # debtor_vouchers, scoped at the source, never the whole company's
+    # vouchers filtered down afterward), persisted on its own so it can be
+    # compared against the three master registers rather than trusted as
+    # a one-off in-memory check. UNIQUE includes as_of (not just branch +
+    # voucher + party) because a later run's pull for a different
+    # reporting date is a legitimately separate snapshot, not a duplicate
+    # of an earlier one - only re-running the SAME as_of date (e.g. a
+    # chunk-boundary overlap) should be silently deduplicated.
+    14: """
+CREATE TABLE IF NOT EXISTS ytd_debtor_voucher (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    voucher_date TEXT NOT NULL,
+    voucher_type TEXT NOT NULL,
+    raw_voucher_type_name TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    UNIQUE (branch_id, as_of, voucher_number, party_id)
+);
 """,
 }
 
@@ -1273,6 +1299,54 @@ class Store:
         if cur.rowcount == 0:
             raise ValueError(f"No credit_note_register row for {branch_id}/{voucher_number}/{party_id}")
         self.conn.commit()
+
+    def append_ytd_debtor_voucher_rows(self, rows: Iterable[YtdDebtorVoucherRow]) -> None:
+        for row in rows:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO ytd_debtor_voucher"
+                " (branch_id, as_of, voucher_date, voucher_type, raw_voucher_type_name,"
+                " voucher_number, party_id, amount)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row.branch_id,
+                    row.as_of.isoformat(),
+                    row.voucher_date.isoformat(),
+                    row.voucher_type,
+                    row.raw_voucher_type_name,
+                    row.voucher_number,
+                    row.party_id,
+                    str(row.amount),
+                ),
+            )
+        self.conn.commit()
+
+    def all_ytd_debtor_voucher_rows(
+        self, branch_id: str | None = None, as_of: date | None = None
+    ) -> list[YtdDebtorVoucherRow]:
+        self.conn.row_factory = sqlite3.Row
+        clauses = []
+        params: list[str] = []
+        if branch_id is not None:
+            clauses.append("branch_id=?")
+            params.append(branch_id)
+        if as_of is not None:
+            clauses.append("as_of=?")
+            params.append(as_of.isoformat())
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cur = self.conn.execute(f"SELECT * FROM ytd_debtor_voucher{where} ORDER BY voucher_date", params)
+        return [
+            YtdDebtorVoucherRow(
+                branch_id=r["branch_id"],
+                as_of=date.fromisoformat(r["as_of"]),
+                voucher_date=date.fromisoformat(r["voucher_date"]),
+                voucher_type=r["voucher_type"],
+                raw_voucher_type_name=r["raw_voucher_type_name"],
+                voucher_number=r["voucher_number"],
+                party_id=r["party_id"],
+                amount=Decimal(r["amount"]),
+            )
+            for r in cur.fetchall()
+        ]
 
     def append_receipt_journal_rows(self, rows: Iterable[ReceiptJournalRegisterRow]) -> None:
         for row in rows:

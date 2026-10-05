@@ -53,6 +53,20 @@ _NUMERIC_CHARREF = re.compile(r"&#(\d+);|&#x([0-9a-fA-F]+);")
 # that byte sequence would already have failed to decode.
 _RAW_CONTROL_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
 
+# CONFIRMED against a live TallyPrime instance (CHARZE INDUSTRIES, real
+# client data, the new Section 4.2 Sundry-Debtors-scoped voucher pull): a
+# company with User Defined Fields configured emits tags like
+# `<UDF:_UDF_788538654.LIST>` - a bare colon in the tag name with no xmlns
+# declaration anywhere in the document. ElementTree treats `:` as XML
+# namespace syntax and raises "unbound prefix" rather than just reading it
+# as a literal tag name (which is clearly Tally's own intent - this isn't
+# real namespacing, just a naming convention for custom fields). None of
+# this app's parsing ever looks up a UDF field by name, so mangling it
+# harmlessly (replacing the colon) is enough to let the document parse at
+# all - the first confirmed real voucher pull to carry UDF fields crashed
+# outright without this.
+_NAMESPACE_PREFIXED_TAG = re.compile(r"(</?)([A-Za-z_][\w.:]*)")
+
 
 def _is_valid_xml_codepoint(codepoint: int) -> bool:
     """XML 1.0's legal character ranges (spec section 2.2) - anything
@@ -134,10 +148,15 @@ def categorize_voucher_type(raw_voucher_type_name: str) -> VoucherType | None:
     return None
 
 
+def _strip_tag_namespace(match: re.Match) -> str:
+    return match.group(1) + match.group(2).replace(":", "_")
+
+
 def _sanitize_xml(raw: str) -> str:
     without_illegal_charrefs = _NUMERIC_CHARREF.sub(_strip_illegal_charref, raw)
     without_raw_control_chars = _RAW_CONTROL_CHAR.sub("", without_illegal_charrefs)
-    return _BARE_AMPERSAND.sub("&amp;", without_raw_control_chars)
+    without_namespace_prefixes = _NAMESPACE_PREFIXED_TAG.sub(_strip_tag_namespace, without_raw_control_chars)
+    return _BARE_AMPERSAND.sub("&amp;", without_namespace_prefixes)
 
 
 def _parse_tally_date(value: str) -> date:

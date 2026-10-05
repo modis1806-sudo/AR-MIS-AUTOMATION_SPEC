@@ -24,6 +24,7 @@ from ar_mis.parsers import (
 )
 from ar_mis.xml_requests import (
     list_of_companies_request,
+    sundry_debtor_voucher_export_request,
     voucher_export_request,
     ytd_sundry_debtors_request,
 )
@@ -181,3 +182,25 @@ class TallyClient:
     def fetch_ytd_sundry_debtors(self, fy_start: date, as_of: date) -> dict[str, Decimal]:
         raw = self._post(ytd_sundry_debtors_request(self.branch.tally_company_name, fy_start, as_of))
         return parse_ledger_closing_balances(raw)
+
+    def fetch_sundry_debtor_vouchers(self, from_date: date, to_date: date) -> list[Voucher]:
+        """Section 4.2's "TB vs Registers" cross-check source - every
+        voucher that touches the Sundry Debtors group, scoped at the
+        source (see sundry_debtor_voucher_export_request's own docstring
+        for the live confirmation that this genuinely excludes everything
+        else, rather than this app pulling the whole company and filtering
+        down afterward).
+
+        Chunked the same defensive way as fetch_vouchers() - this request
+        shape has only been confirmed safe for a 7-day window against a
+        real Tally instance, not a full YTD range, and this codebase has
+        already been burned once by assuming a small range generalizes to
+        a large one (see _VOUCHER_FETCH_CHUNK_DAYS's own comment).
+        """
+        all_vouchers: list[Voucher] = []
+        for chunk_from, chunk_to in _date_chunks(from_date, to_date, _VOUCHER_FETCH_CHUNK_DAYS):
+            raw = self._post(
+                sundry_debtor_voucher_export_request(self.branch.tally_company_name, chunk_from, chunk_to)
+            )
+            all_vouchers.extend(parse_voucher_collection(raw, self.branch.branch_id))
+        return all_vouchers

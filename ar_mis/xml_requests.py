@@ -101,6 +101,104 @@ def voucher_export_request(
 </ENVELOPE>"""
 
 
+def sundry_debtor_voucher_export_request(
+    company_name: str,
+    from_date: date,
+    to_date: date,
+) -> str:
+    """Section 4.2's new "TB vs Registers" cross-check (docs/registers_and_
+    reporting_design.md): a voucher-wise pull scoped AT THE SOURCE to only
+    vouchers touching the Sundry Debtors group - never the whole company's
+    vouchers filtered down afterward, which is what voucher_export_request
+    above does and what the client explicitly pushed back on as wasteful
+    for a company with real transaction volume.
+
+    CONFIRMED against a live TallyPrime instance (CHARZE INDUSTRIES, real
+    client data): a plain REPORTNAME-based request (tried "Group Vouchers",
+    "Ledger Vouchers" with SVCURRENTGROUP, "Ledger Vouchers" with
+    SVCURRENTLEDGER set to one real customer) returned a completely empty
+    `<ENVELOPE></ENVELOPE>` every time, no error - meaning none of those
+    REPORTNAMEs are recognized report names in this Tally installation, not
+    a scoping problem. What DOES work, confirmed live, is a TDL Collection
+    of TYPE=Voucher with a FILTER formula built from two official, documented
+    TDL functions: `$$FilterCount:AllLedgerEntries:<filter> > 0` (examine a
+    voucher's own ledger entries, count how many satisfy a per-entry filter)
+    and `$$IsLedOfGrp:$LedgerName:$$GroupSundryDebtors` (does this one entry's
+    ledger belong to the Sundry Debtors group - `$$GroupSundryDebtors` is
+    Tally's own reserved-group accessor, correct even if the group has been
+    renamed). Live result: 166 vouchers for a 7-day range, every single one
+    Sales/Receipt/Credit Note/Journal - zero Purchase/Payment/Contra/Stock
+    Journal/anything else leaked through, confirming the filter genuinely
+    scopes at the source rather than this app filtering a wider pull
+    afterward.
+
+    One confirmed limitation, not yet solved: this COLLECTION's own
+    NATIVEMETHOD field list (Date/VoucherTypeName/VoucherNumber/
+    PartyLedgerName) is NOT what Tally actually returns - it ignores the
+    requested field list entirely and serializes the full native Voucher
+    object instead (same ALLLEDGERENTRIES.LIST/BILLALLOCATIONS.LIST shape
+    voucher_export_request already gets, parseable by the same
+    parse_voucher_collection with no changes). Within that nested detail,
+    BILLALLOCATIONS.LIST's own NAME/BILLTYPE sub-fields come back empty for
+    the overwhelming majority of lines (604 of 606 in the confirmed live
+    response) - only the bare AMOUNT survives. This is fine for Section
+    4.2's actual requirement (does this voucher exist at all - voucher-wise,
+    never bill-wise, per the client's own explicit correction), but means
+    this request must NOT be used as a drop-in replacement for
+    voucher_export_request's own full-company pull, which register-building
+    genuinely needs real bill references from. Getting BILLALLOCATIONS.LIST's
+    NAME/BILLTYPE populated here too (if even possible) is unexplored,
+    separate follow-on work.
+
+    Also confirmed live: the known "a TDL Collection hangs on nested LIST
+    fields" bug (see voucher_export_request's own docstring) did NOT
+    reproduce here despite this response containing exactly that nested
+    shape. The real cause of that hang is volume, not nested fields per se
+    - 166 vouchers (this request's real-world scope: only what touches
+    Sundry Debtors) stayed well clear of whatever threshold a whole
+    company's full history crosses. Chunked by TallyClient the same
+    defensive way as fetch_vouchers() regardless, since this has only been
+    confirmed safe for a 7-day window, not a full YTD range.
+    """
+    company = escape(company_name)
+    return f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>EXPORT</TALLYREQUEST>
+    <TYPE>COLLECTION</TYPE>
+    <ID>SDVoucherCollection</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVCURRENTCOMPANY>{company}</SVCURRENTCOMPANY>
+        <SVFROMDATE TYPE="Date">{_tally_date(from_date)}</SVFROMDATE>
+        <SVTODATE TYPE="Date">{_tally_date(to_date)}</SVTODATE>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="SDVoucherCollection" ISMODIFY="No" ISFIXED="No" ISINITIALIZE="Yes">
+            <TYPE>Voucher</TYPE>
+            <FILTER>HasSundryDebtor</FILTER>
+            <NATIVEMETHOD>Date</NATIVEMETHOD>
+            <NATIVEMETHOD>VoucherTypeName</NATIVEMETHOD>
+            <NATIVEMETHOD>VoucherNumber</NATIVEMETHOD>
+            <NATIVEMETHOD>PartyLedgerName</NATIVEMETHOD>
+          </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="HasSundryDebtor">
+            $$FilterCount:AllLedgerEntries:IsSundryDebtorEntry > 0
+          </SYSTEM>
+          <SYSTEM TYPE="Formulae" NAME="IsSundryDebtorEntry">
+            $$IsLedOfGrp:$LedgerName:$$GroupSundryDebtors
+          </SYSTEM>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+
+
 def ytd_sundry_debtors_request(company_name: str, fy_start: date, as_of: date) -> str:
     """Export request for the full Sundry Debtors ledger group's closing
     balances as of a specific date, for the Section 4.1/4.2 cross-check.
