@@ -5,11 +5,33 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}AR MIS{% endblock %}</title>
 <style>
+  /* Freight-forwarder / CHA / transportation palette, client's explicit
+     ask to move off the flat generic grey - two brand colors, not one:
+     Ocean Navy (deep sea blue, structural - header/nav/section accents)
+     and Container Teal (the primary action color, buttons/links). A
+     third, Container Rust (warm orange, the color of a real shipping
+     container) marks totals/highlights so they read as a deliberate
+     second accent, not a random indigo left over from the old palette.
+     Pass/fail green/red and the amber/grey freshness-dot semantics are
+     deliberately UNCHANGED - those are universal reconciliation-tool
+     conventions (green=clean, red=mismatch) this app's whole daily use
+     depends on; branding goes into the neutral/structural chrome around
+     them, never into the pass/fail signal itself. */
+  :root {
+    --ocean-900: #0a3d52;
+    --ocean-800: #0d4f68;
+    --teal-600: #0e7490;
+    --teal-700: #0b5c73;
+    --teal-100: #e0f5f7;
+    --teal-050: #eef7f8;
+    --rust-600: #c2410c;
+    --rust-100: #fff1e6;
+  }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin:0; background:#f4f5f7; color:#1f2937; }
-  header { background:#1f2937; color:#fff; padding:16px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin:0; background:var(--teal-050); color:#1f2937; }
+  header { background:var(--ocean-900); color:#fff; padding:16px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
   header a.brand { color:#fff; text-decoration:none; font-weight:700; font-size:16px; }
-  nav a { color:#d1d5db; margin-left:20px; text-decoration:none; font-size:14px; }
+  nav a { color:#bcd6de; margin-left:20px; text-decoration:none; font-size:14px; }
   nav a:hover { color:#fff; }
   main { max-width: 960px; margin: 32px auto; padding: 0 20px; }
   /* Wide pages (the master registers - up to 28 columns) get a much
@@ -20,15 +42,18 @@
      otherwise have fit. Still capped, and still centered, so it doesn't
      stretch edge-to-edge on an ultra-wide monitor. */
   main.wide { max-width: 1600px; }
-  h1 { font-size:22px; margin-bottom:4px; }
+  h1 { font-size:22px; margin-bottom:4px; color:var(--ocean-900); }
+  a { color:var(--teal-600); }
   .subtitle { color:#6b7280; margin-top:0; margin-bottom:24px; font-size:14px; }
-  table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(10,61,82,.08); }
   th, td { text-align:left; padding:10px 14px; border-bottom:1px solid #e5e7eb; font-size:14px; }
-  th { background:#f9fafb; font-weight:600; color:#374151; }
+  th { background:var(--teal-050); font-weight:600; color:var(--ocean-900); }
   tr:last-child td { border-bottom:none; }
-  .btn { display:inline-block; background:#2563eb; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-size:14px; border:none; cursor:pointer; }
-  .btn.secondary { background:#e5e7eb; color:#1f2937; }
-  .card { background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:20px; }
+  .btn { display:inline-block; background:var(--teal-600); color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-size:14px; border:none; cursor:pointer; }
+  .btn:hover { background:var(--teal-700); }
+  .btn.secondary { background:var(--teal-100); color:var(--ocean-900); }
+  .btn.secondary:hover { background:#d4edf0; }
+  .card { background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 3px rgba(10,61,82,.08); margin-bottom:20px; border-top:3px solid var(--teal-600); }
   form label { display:block; font-size:13px; font-weight:600; margin:14px 0 4px; color:#374151; }
   form input, form select { width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; }
   .flash { padding:10px 14px; border-radius:6px; margin-bottom:16px; font-size:14px; }
@@ -41,26 +66,26 @@
   .row-actions button { background:none; border:none; color:#dc2626; cursor:pointer; padding:0; font-size:14px; }
 
   /* Section-grouped nav + role indicator */
-  .topbar { background:#1f2937; color:#fff; }
+  .topbar { background:var(--ocean-900); color:#fff; border-bottom:3px solid var(--rust-600); }
   .topbar-row1 { padding:14px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
   .role-indicator { font-size:12px; color:#9ca3af; }
-  .role-indicator a { color:#93c5fd; text-decoration:none; margin-left:6px; }
+  .role-indicator a { color:#7dd3fc; text-decoration:none; margin-left:6px; }
   nav.grouped { padding:0 24px 12px; display:flex; gap:28px; flex-wrap:wrap; }
-  nav.grouped .nav-group-label { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; margin-bottom:4px; }
-  nav.grouped a { color:#d1d5db; text-decoration:none; font-size:14px; margin-right:14px; white-space:nowrap; }
+  nav.grouped .nav-group-label { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#8fb9c4; margin-bottom:4px; }
+  nav.grouped a { color:#bcd6de; text-decoration:none; font-size:14px; margin-right:14px; white-space:nowrap; }
   nav.grouped a:hover { color:#fff; }
   nav.grouped a.active { color:#fff; font-weight:600; }
 
   /* Freshness indicator */
-  .freshness { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#4b5563; background:#eef2f7; border:1px solid #dbe3ee; border-radius:999px; padding:4px 12px; margin-bottom:20px; }
+  .freshness { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--ocean-900); background:var(--teal-100); border:1px solid #bfe6ea; border-radius:999px; padding:4px 12px; margin-bottom:20px; }
   .freshness .dot { width:8px; height:8px; border-radius:50%; background:#22c55e; flex:none; }
-  .freshness.stale .dot { background:#f59e0b; }
+  .freshness.stale .dot { background:var(--rust-600); }
   .freshness.never .dot { background:#9ca3af; }
 
   .as-of-form { display:flex; align-items:flex-end; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
   .as-of-form label { margin:0; font-size:12px; font-weight:600; color:#374151; }
   .as-of-form input, .as-of-form select { padding:6px 8px; }
-  .table-scroll { overflow-x:auto; background:#fff; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .table-scroll { overflow-x:auto; background:#fff; border-radius:8px; box-shadow:0 1px 3px rgba(10,61,82,.08); }
   .table-scroll table { box-shadow:none; border-radius:0; white-space:nowrap; overflow:visible; }
   /* Freeze the column-header row on every register/report table while
      scrolling - client's explicit ask, applied globally here rather
@@ -79,8 +104,8 @@
      the moment a header wraps to two lines on a narrow column. */
   .table-scroll { max-height:75vh; overflow-y:auto; }
   .table-scroll table thead tr:first-child th { position:sticky; top:0; z-index:2; }
-  .tt-totals-row th { background:#eef2ff; color:#3730a3; font-weight:700; font-variant-numeric:tabular-nums; }
-  .pill.status-active { background:#e0f2fe; color:#075985; }
+  .tt-totals-row th { background:var(--rust-100); color:#9a3412; font-weight:700; font-variant-numeric:tabular-nums; }
+  .pill.status-active { background:var(--teal-100); color:var(--ocean-900); }
   .pill.status-kept { background:#dcfce7; color:#166534; }
   .pill.status-broken { background:#fee2e2; color:#991b1b; }
   .pill.class-matched { background:#f3f4f6; color:#374151; }
@@ -97,13 +122,15 @@
 
   /* KPI dashboard */
   .kpi-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:14px; margin-bottom:20px; }
-  .kpi-tile { background:#fff; border-radius:8px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .kpi-tile { background:#fff; border-radius:8px; padding:16px; box-shadow:0 1px 3px rgba(10,61,82,.08); border-left:3px solid var(--teal-600); }
   .kpi-tile .kpi-label { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
-  .kpi-tile .kpi-value { font-size:22px; font-weight:700; color:#1f2937; }
+  .kpi-tile .kpi-value { font-size:22px; font-weight:700; color:var(--ocean-900); }
   .kpi-tile .kpi-caption { font-size:12px; color:#9ca3af; margin-top:4px; }
-  .kpi-tile.warn .kpi-value { color:#b45309; }
+  .kpi-tile.warn { border-left-color:var(--rust-600); }
+  .kpi-tile.warn .kpi-value { color:var(--rust-600); }
+  .kpi-tile.critical { border-left-color:#b91c1c; }
   .kpi-tile.critical .kpi-value { color:#b91c1c; }
-  .section-heading { font-size:16px; font-weight:700; margin:28px 0 12px; color:#1f2937; }
+  .section-heading { font-size:16px; font-weight:700; margin:28px 0 12px; color:var(--ocean-900); }
   .section-heading:first-of-type { margin-top:0; }
 
   /* Reports home - client's explicit ask: cards in a grid (3-4 per row
