@@ -92,10 +92,11 @@ def process_manual_upload(
             "Refusing to overwrite - a genuine correction needs a deliberate, separate action."
         )
 
+    aliases = store.voucher_type_aliases(branch_id)
     all_vouchers: list[Voucher] = []
     for raw_xml in weekly_voucher_xml.values():
         if raw_xml and raw_xml.strip():
-            all_vouchers.extend(parse_voucher_collection(raw_xml, branch_id))
+            all_vouchers.extend(parse_voucher_collection(raw_xml, branch_id, aliases))
 
     closing_extracted = {
         name: flip_sign(balance) for name, balance in parse_ledger_closing_balances(trial_balance_xml).items()

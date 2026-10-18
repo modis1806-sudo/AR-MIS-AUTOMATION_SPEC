@@ -132,14 +132,35 @@ _CATEGORY_KEYWORDS: list[tuple[VoucherType, str]] = [
 _EXCLUDED_NAME_SUBSTRINGS = ["stock journal"]
 
 
-def categorize_voucher_type(raw_voucher_type_name: str) -> VoucherType | None:
+def categorize_voucher_type(
+    raw_voucher_type_name: str, aliases: dict[str, list[str]] | None = None
+) -> VoucherType | None:
     """Maps a raw Tally VOUCHERTYPENAME to one of the five AR-relevant
     categories, or None if it doesn't match any of them - which is the
     normal, expected outcome for the many voucher types a real company
     has that are irrelevant to debtor movement (Payment, Contra,
     Purchase, Stock Journal, and so on). None is not an error case.
+
+    `aliases` (client's own ask, Store.voucher_type_aliases(branch_id)) is
+    a branch's own exact voucher-type-name list per category, e.g.
+    {"Sales": ["Sales", "Tax Invoice"]}. When given and non-empty, it
+    REPLACES the keyword matching below entirely for this call - exact
+    name match only (case/whitespace insensitive), no substring - which
+    is also the structural fix for a type like "Proforma Sales" that
+    contains the word "sales" without being one: a branch that has set up
+    aliases is explicitly saying "match these names and only these", so a
+    name that isn't on the list is excluded even if it would have matched
+    the global keyword below. A branch with no aliases configured yet
+    (the default for every branch that existed before this feature) gets
+    `aliases` as None or {} and falls through to the keyword matching
+    unchanged - full backward compatibility, opt-in only.
     """
     lowered = raw_voucher_type_name.strip().lower()
+    if aliases:
+        for category, names in aliases.items():
+            if any(lowered == name.strip().lower() for name in names):
+                return VoucherType(category)
+        return None
     if any(excluded in lowered for excluded in _EXCLUDED_NAME_SUBSTRINGS):
         return None
     for category, keyword in _CATEGORY_KEYWORDS:
@@ -223,16 +244,19 @@ def _parse_decimal_amount(raw: str) -> Decimal:
     raise ValueError(f"Could not parse amount {raw!r} as a plain number or a forex display string")
 
 
-def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
+def parse_voucher_collection(
+    raw_xml: str, branch_id: str, aliases: dict[str, list[str]] | None = None
+) -> list[Voucher]:
     """Parses every voucher in the response, keeping only the ones that
     categorize into one of Section 2.1's five AR-relevant types
-    (categorize_voucher_type). A voucher whose type doesn't match any of
-    them (Payment, Contra, Purchase, Stock Journal, ...) is silently
-    skipped - that's the normal case for most of a company's vouchers,
-    not an error. This request is no longer filtered server-side by
-    voucher type (see xml_requests.voucher_export_request), so this
-    function is what actually separates AR-relevant vouchers from
-    everything else in the company's books.
+    (categorize_voucher_type, passed this same `aliases` - see its own
+    docstring). A voucher whose type doesn't match any of them (Payment,
+    Contra, Purchase, Stock Journal, ...) is silently skipped - that's
+    the normal case for most of a company's vouchers, not an error. This
+    request is no longer filtered server-side by voucher type (see
+    xml_requests.voucher_export_request), so this function is what
+    actually separates AR-relevant vouchers from everything else in the
+    company's books.
 
     CONFIRMED against real client data (fixtures/real_samples/): Tally
     does not consistently use one tag name for a voucher's ledger entries.
@@ -274,7 +298,7 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
             continue
 
         raw_voucher_type_name = _text(v_el.find("VOUCHERTYPENAME"))
-        voucher_type = categorize_voucher_type(raw_voucher_type_name)
+        voucher_type = categorize_voucher_type(raw_voucher_type_name, aliases)
         if voucher_type is None:
             continue
 

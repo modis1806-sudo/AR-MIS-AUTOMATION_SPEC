@@ -66,7 +66,7 @@ from ar_mis.register_corrections import RegisterRowCorrection, RegisterRowCorrec
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -486,6 +486,26 @@ CREATE TABLE IF NOT EXISTS register_row_correction (
     corrected_at TEXT NOT NULL
 );
 """,
+    # Branch-specific voucher type name mapping (client's own ask: every
+    # one of this app's five AR-relevant categories - Sales, Debit Note,
+    # Credit Note, Receipt, Journal - was matched against a single global,
+    # hardcoded keyword list (ar_mis.parsers._CATEGORY_KEYWORDS), which is
+    # exactly how a client's "Proforma Sales" voucher type (containing the
+    # substring "sales") got miscategorized as a real Sale. A plain
+    # config table, not an audit log like register_row_correction above -
+    # replaced wholesale on save, same as every other Branch Master field.
+    # No UNIQUE beyond the natural key: a branch is free to list the same
+    # alias under only one category at a time, enforced by the Store
+    # method that writes this table (delete-then-insert per branch), not
+    # by a DB constraint.
+    16: """
+CREATE TABLE IF NOT EXISTS voucher_type_alias (
+    branch_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    alias_name TEXT NOT NULL,
+    PRIMARY KEY (branch_id, category, alias_name)
+);
+""",
 }
 
 
@@ -605,6 +625,47 @@ class Store:
 
     def delete_branch(self, branch_id: str) -> None:
         self.conn.execute("DELETE FROM branch_master WHERE branch_id=?", (branch_id,))
+        self.conn.commit()
+
+    # ---- Voucher Type Aliases (per-branch, user-editable) -----------
+    #
+    # Client's own ask: ar_mis.parsers.categorize_voucher_type's five
+    # categories (Sales, Debit Note, Credit Note, Receipt, Journal) were
+    # matched against one global, hardcoded keyword list - no way for a
+    # Maker to tell this app what a DIFFERENT client's Tally actually
+    # calls its own voucher types without editing source code. An empty
+    # result for a branch means "not configured yet" - ar_mis.parsers'
+    # own exact-match-when-configured, keyword-fallback-otherwise logic
+    # treats that as "use the global keyword list", so every branch
+    # already in production keeps working unchanged until someone
+    # explicitly sets this up.
+
+    def voucher_type_aliases(self, branch_id: str) -> dict[str, list[str]]:
+        cur = self.conn.execute(
+            "SELECT category, alias_name FROM voucher_type_alias WHERE branch_id=? ORDER BY category, alias_name",
+            (branch_id,),
+        )
+        aliases: dict[str, list[str]] = {}
+        for category, alias_name in cur.fetchall():
+            aliases.setdefault(category, []).append(alias_name)
+        return aliases
+
+    def set_voucher_type_aliases(self, branch_id: str, aliases: dict[str, list[str]]) -> None:
+        """Replaces every alias this branch has on record - a plain config
+        table (see its own CREATE TABLE comment), not an audit log, so a
+        wholesale replace on save is correct here, unlike register_row_
+        correction's append-only history.
+        """
+        self.conn.execute("DELETE FROM voucher_type_alias WHERE branch_id=?", (branch_id,))
+        for category, names in aliases.items():
+            for name in names:
+                stripped = name.strip()
+                if not stripped:
+                    continue
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO voucher_type_alias (branch_id, category, alias_name) VALUES (?, ?, ?)",
+                    (branch_id, category, stripped),
+                )
         self.conn.commit()
 
     # ---- Layer 1: customer master ---------------------------------

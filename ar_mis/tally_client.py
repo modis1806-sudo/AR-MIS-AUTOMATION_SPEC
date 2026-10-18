@@ -94,6 +94,13 @@ class CompanyMismatchError(RuntimeError):
 class TallyClient:
     branch: BranchConfig
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    # Client's own ask: a branch's own exact voucher-type-name list per
+    # category (Store.voucher_type_aliases(branch_id)), threaded straight
+    # into every parse_voucher_collection call below. None (the default -
+    # every caller that predates this feature) means "not configured for
+    # this branch yet", which parsers.categorize_voucher_type treats as
+    # "use the global keyword matching", unchanged.
+    voucher_type_aliases: dict[str, list[str]] | None = None
 
     def _post(self, xml_request: str) -> str:
         data = xml_request.encode("utf-8")
@@ -163,7 +170,7 @@ class TallyClient:
         all_vouchers: list[Voucher] = []
         for chunk_from, chunk_to in _date_chunks(from_date, to_date, _VOUCHER_FETCH_CHUNK_DAYS):
             raw = self._post(voucher_export_request(self.branch.tally_company_name, chunk_from, chunk_to))
-            all_vouchers.extend(parse_voucher_collection(raw, self.branch.branch_id))
+            all_vouchers.extend(parse_voucher_collection(raw, self.branch.branch_id, self.voucher_type_aliases))
         return all_vouchers
 
     def fetch_all_voucher_types(
@@ -202,5 +209,5 @@ class TallyClient:
             raw = self._post(
                 sundry_debtor_voucher_export_request(self.branch.tally_company_name, chunk_from, chunk_to)
             )
-            all_vouchers.extend(parse_voucher_collection(raw, self.branch.branch_id))
+            all_vouchers.extend(parse_voucher_collection(raw, self.branch.branch_id, self.voucher_type_aliases))
         return all_vouchers

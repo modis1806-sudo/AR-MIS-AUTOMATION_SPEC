@@ -400,7 +400,7 @@ def test_checker_cannot_reach_branch_delete_week(roleless_client):
 
 
 class FakeTallyClientOK:
-    def __init__(self, branch, timeout_seconds=15.0):
+    def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
         self.branch = branch
 
     def confirm_current_company(self):
@@ -419,7 +419,7 @@ class FakeTallyClientOK:
 
 
 class FakeTallyClientUnreachable:
-    def __init__(self, branch, timeout_seconds=15.0):
+    def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
         self.branch = branch
 
     def confirm_current_company(self):
@@ -434,6 +434,65 @@ def _add_branch(client):
         data={"branch_id": "KOL", "branch_name": "Kolkata", "tally_company_name": "Kolkata HQ",
               "tally_host": "localhost", "tally_port": "9000"},
     )
+
+
+def test_voucher_type_aliases_edit_form_prefills_global_keyword_seed_when_unconfigured(client):
+    _add_branch(client)
+    resp = client.get("/branches/KOL/voucher-types")
+    assert resp.status_code == 200
+    assert b"Voucher Type Names" in resp.data
+    # Nothing saved yet - every category pre-filled with what the old
+    # global keyword list already matches today, not a blank row.
+    assert b'value="Sales"' in resp.data
+    assert b'value="Credit Note"' in resp.data
+    assert b'value="Tax Invoice"' in resp.data
+
+
+def test_voucher_type_aliases_edit_saves_and_is_used_on_next_extraction(client, monkeypatch):
+    _add_branch(client)
+    resp = client.post(
+        "/branches/KOL/voucher-types",
+        data={
+            "alias__Sales__0": "Sales", "alias__Sales__1": "",
+            "alias__Debit Note__0": "Debit Note",
+            "alias__Credit Note__0": "Credit Note",
+            "alias__Receipt__0": "Receipt",
+            "alias__Journal__0": "Journal",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Voucher type names saved" in resp.data
+
+    class _RecordingFakeTallyClient(FakeTallyClientOK):
+        def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
+            super().__init__(branch, timeout_seconds, voucher_type_aliases)
+            _RecordingFakeTallyClient.seen_aliases = voucher_type_aliases
+
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", _RecordingFakeTallyClient)
+    client.post("/test-extraction", data={"branch_id": "KOL", "from_date": "2026-01-01", "to_date": "2026-01-07"})
+    assert _RecordingFakeTallyClient.seen_aliases == {
+        "Sales": ["Sales"], "Debit Note": ["Debit Note"], "Credit Note": ["Credit Note"],
+        "Receipt": ["Receipt"], "Journal": ["Journal"],
+    }
+
+
+def test_voucher_type_aliases_edit_refuses_to_save_an_empty_category(client):
+    _add_branch(client)
+    resp = client.post(
+        "/branches/KOL/voucher-types",
+        data={
+            "alias__Sales__0": "", "alias__Debit Note__0": "Debit Note", "alias__Credit Note__0": "Credit Note",
+            "alias__Receipt__0": "Receipt", "alias__Journal__0": "Journal",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Sales" in resp.data and b"would be saved empty" in resp.data
+    # The refusal must not have written anything - still showing the
+    # unconfigured seed value, not a blank Sales row.
+    resp2 = client.get("/branches/KOL/voucher-types")
+    assert b'value="Sales"' in resp2.data
 
 
 def test_test_extraction_reports_all_passed(client, monkeypatch):
@@ -510,7 +569,7 @@ class FakeTallyClientForCommit:
     elsewhere).
     """
 
-    def __init__(self, branch, timeout_seconds=15.0):
+    def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
         self.branch = branch
 
     def confirm_current_company(self):
@@ -560,7 +619,7 @@ class FakeTallyClientCatchUp:
 
     ytd_balance = Decimal("-3300.00")  # Tally sign: Dr negative
 
-    def __init__(self, branch, timeout_seconds=15.0):
+    def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
         self.branch = branch
 
     def confirm_current_company(self):
@@ -1145,7 +1204,7 @@ def test_customers_list_has_search_filter_and_selection_scaffolding(client):
 
 
 class FakeTallyClientDiscover:
-    def __init__(self, branch, timeout_seconds=15.0):
+    def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
         self.branch = branch
 
     def list_open_companies(self):
@@ -1153,7 +1212,7 @@ class FakeTallyClientDiscover:
 
 
 class FakeTallyClientDiscoverUnreachable:
-    def __init__(self, branch, timeout_seconds=15.0):
+    def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
         self.branch = branch
 
     def list_open_companies(self):

@@ -131,6 +131,24 @@ _RESOLUTION_REASON_BY_TARGET = {
     "current": "Data-entry correction",
 }
 
+# Voucher Type Aliases (client's own ask) - the five AR-relevant
+# categories ar_mis.parsers.categorize_voucher_type already recognizes,
+# in the exact label each one's own corrections/comparisons already use
+# (ar_mis.register_corrections.SALES_DN_TYPES etc.). Seed values are the
+# global keyword list's own known name variants (parsers._CATEGORY_
+# KEYWORDS) - what a branch with nothing configured yet is effectively
+# already matching today, shown as a starting point rather than a blank
+# row a Maker has to guess at.
+VOUCHER_TYPE_ALIAS_CATEGORIES = ["Sales", "Debit Note", "Credit Note", "Receipt", "Journal"]
+_VOUCHER_TYPE_ALIAS_SEED = {
+    "Sales": ["Sales", "Tax Invoice", "Transport Invoice"],
+    "Debit Note": ["Debit Note"],
+    "Credit Note": ["Credit Note"],
+    "Receipt": ["Receipt"],
+    "Journal": ["Journal"],
+}
+_VOUCHER_TYPE_ALIAS_MIN_SLOTS = 5
+
 
 def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     app = Flask(__name__)
@@ -395,6 +413,71 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         return redirect(url_for("branches_list"))
 
+    @app.route("/branches/<branch_id>/voucher-types", methods=["GET", "POST"])
+    @requires_role("maker")
+    def voucher_type_aliases_edit(branch_id):
+        """Client's own ask: ar_mis.parsers.categorize_voucher_type's five
+        categories were matched against one global, hardcoded keyword
+        list - no way to tell this app what a DIFFERENT client's Tally
+        calls its own voucher types (confirmed live: a real CHARZE
+        voucher type literally named "Proforma Sales" matched the global
+        "sales" keyword and was wrongly counted as a real Sale). This
+        page lets a branch set its own exact voucher-type-name list per
+        category instead.
+
+        Every category is always shown pre-filled - either this branch's
+        own stored aliases, or (for a category with nothing stored yet)
+        the names the global keyword list would already match today -
+        never an empty row. Saving switches this branch to EXACT name
+        matching (case/whitespace-insensitive, no more partial/substring
+        matching) for every one of the five categories at once, not just
+        the one a Maker meant to change - so a category saved empty would
+        silently stop capturing that voucher type entirely. Refused
+        server-side for exactly that reason.
+        """
+        store = get_store()
+        branch = store.get_branch(branch_id)
+        if branch is None:
+            store.close()
+            flash(f"No such branch '{branch_id}'.", "error")
+            return redirect(url_for("branches_list"))
+
+        if request.method == "POST":
+            aliases: dict[str, list[str]] = {}
+            empty_categories: list[str] = []
+            for category in VOUCHER_TYPE_ALIAS_CATEGORIES:
+                names = [
+                    v.strip() for key, v in sorted(request.form.items())
+                    if key.startswith(f"alias__{category}__") and v.strip()
+                ]
+                if not names:
+                    empty_categories.append(category)
+                aliases[category] = names
+            if empty_categories:
+                store.close()
+                flash(
+                    "Every category needs at least one name, or that voucher type stops being captured "
+                    f"entirely: {', '.join(empty_categories)} would be saved empty. Fill in a name or leave "
+                    "the pre-filled default as-is.",
+                    "error",
+                )
+                return redirect(url_for("voucher_type_aliases_edit", branch_id=branch_id))
+            store.set_voucher_type_aliases(branch_id, aliases)
+            store.close()
+            flash(f"Voucher type names saved for '{branch.branch_name}'.", "success")
+            return redirect(url_for("branches_list"))
+
+        stored = store.voucher_type_aliases(branch_id)
+        store.close()
+        rows: dict[str, list[str]] = {}
+        for category in VOUCHER_TYPE_ALIAS_CATEGORIES:
+            current = stored.get(category) or list(_VOUCHER_TYPE_ALIAS_SEED[category])
+            slot_count = max(_VOUCHER_TYPE_ALIAS_MIN_SLOTS, len(current))
+            rows[category] = current + [""] * (slot_count - len(current))
+        return render_template(
+            "voucher_type_aliases.html", branch=branch, rows=rows, is_configured=bool(stored),
+        )
+
     @app.route("/branches/<branch_id>/catch-up-party", methods=["GET", "POST"])
     @requires_role("maker")
     def catch_up_party(branch_id):
@@ -501,7 +584,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if seed_summary.skipped:
             return _redisplay(seed_summary.skipped[0])
 
-        client = TallyClient(branch=branch)
+        client = TallyClient(branch=branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
         try:
             client.confirm_current_company()
             all_vouchers = client.fetch_vouchers(from_date, as_of)
@@ -610,7 +693,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             # page against any real voucher-heavy range: a single 15-day
             # chunk can legitimately take close to a minute against a
             # busy company, confirmed via live-Tally diagnostic.
-            client = TallyClient(branch=branch)
+            client = TallyClient(branch=branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
 
             try:
                 client.confirm_current_company()
@@ -718,7 +801,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 **_cross_check_links(None),
             )
 
-        client = TallyClient(branch=branch)
+        client = TallyClient(branch=branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
         chunk_results = []
 
         for c_start, c_end in split_into_chunks(from_date, to_date):

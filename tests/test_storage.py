@@ -670,6 +670,26 @@ def test_branch_master_crud(store):
     assert store.list_branches() == []
 
 
+def test_voucher_type_aliases_round_trip(store):
+    assert store.voucher_type_aliases("KOL") == {}
+    store.set_voucher_type_aliases(
+        "KOL", {"Sales": ["Sales", "Tax Invoice"], "Journal": ["Journal", "Provision Journal"]}
+    )
+    aliases = store.voucher_type_aliases("KOL")
+    assert aliases == {"Sales": ["Sales", "Tax Invoice"], "Journal": ["Journal", "Provision Journal"]}
+    # Scoped per branch - a different branch_id sees nothing.
+    assert store.voucher_type_aliases("CHRZ") == {}
+
+
+def test_voucher_type_aliases_save_replaces_wholesale_and_drops_blanks(store):
+    store.set_voucher_type_aliases("KOL", {"Sales": ["Sales", "Tax Invoice"]})
+    # A later save for the same branch fully replaces the earlier one - a
+    # plain config table, not an append-only audit log.
+    store.set_voucher_type_aliases("KOL", {"Sales": ["Sales"], "Credit Note": ["Credit Note", "  ", ""]})
+    aliases = store.voucher_type_aliases("KOL")
+    assert aliases == {"Sales": ["Sales"], "Credit Note": ["Credit Note"]}
+
+
 def test_voucher_log_dedupes_and_supports_key_lookup(store):
     store.append_voucher_log_entry(
         "KOL", date(2026, 1, 5), "Acme", "Sales", "SB/1", date(2026, 1, 3), Decimal("5000.00")

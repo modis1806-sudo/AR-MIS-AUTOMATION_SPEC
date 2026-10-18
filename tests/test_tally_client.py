@@ -71,6 +71,37 @@ def test_fetch_vouchers_returns_parsed_vouchers():
     assert all(v.branch_id == "KOL" for v in vouchers)
 
 
+def test_fetch_vouchers_respects_branch_voucher_type_aliases():
+    # Client's own ask: a branch with its own exact voucher-type-name
+    # list configured must have that respected end to end, not just at
+    # the parsers.categorize_voucher_type level in isolation.
+    branch = BranchConfig(branch_id="CHRZ", branch_name="Charze", tally_company_name="Charze HQ")
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260411</DATE>
+  <VOUCHERNUMBER>P/0003/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Proforma Sales</VOUCHERTYPENAME>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Shubham Store</LEDGERNAME>
+   <AMOUNT>-150631.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Sales</LEDGERNAME>
+   <AMOUNT>150631.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    client = TallyClient(branch=branch, voucher_type_aliases={"Sales": ["Sales"]})
+    client._post = lambda xml_request: raw  # type: ignore[method-assign]
+    assert client.fetch_vouchers(date(2026, 4, 1), date(2026, 4, 11)) == []
+
+    # Without aliases configured (the default for every existing branch),
+    # the same voucher still matches the old global keyword list.
+    default_client = TallyClient(branch=branch)
+    default_client._post = lambda xml_request: raw  # type: ignore[method-assign]
+    assert len(default_client.fetch_vouchers(date(2026, 4, 1), date(2026, 4, 11))) == 1
+
+
 def test_fetch_all_voucher_types_buckets_from_a_single_fetch():
     from ar_mis.models import VoucherType
 

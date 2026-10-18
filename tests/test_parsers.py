@@ -79,6 +79,42 @@ def test_categorize_voucher_type_does_not_match_bare_invoice():
     assert categorize_voucher_type("Purchase Invoice") is None
 
 
+def test_categorize_voucher_type_with_aliases_matches_exact_name_only():
+    # A branch with aliases configured switches to exact matching - no
+    # more substring matching, even for a name the global keyword list
+    # would otherwise catch.
+    aliases = {"Sales": ["Sales", "Tax Invoice"], "Journal": ["Journal"]}
+    assert categorize_voucher_type("Sales", aliases) == VoucherType.SALES
+    assert categorize_voucher_type("Tax Invoice", aliases) == VoucherType.SALES
+    assert categorize_voucher_type(" sales ", aliases) == VoucherType.SALES  # case/whitespace insensitive
+    assert categorize_voucher_type("Journal", aliases) == VoucherType.JOURNAL
+
+
+def test_categorize_voucher_type_with_aliases_rejects_proforma_sales():
+    # CONFIRMED against real CHARZE INDUSTRIES data: a "Proforma Sales"
+    # voucher type matches the global "sales" keyword via substring, but
+    # must never match a branch's own exact alias list unless that exact
+    # name is explicitly listed.
+    aliases = {"Sales": ["Sales"]}
+    assert categorize_voucher_type("Proforma Sales", aliases) is None
+
+
+def test_categorize_voucher_type_with_aliases_ignores_global_keywords_entirely():
+    # A category simply absent from a branch's configured aliases gets no
+    # fallback to the global keyword list - once aliases exist at all for
+    # a branch, they are the complete answer for every category.
+    aliases = {"Sales": ["Sales"]}
+    assert categorize_voucher_type("Credit Note", aliases) is None
+
+
+def test_categorize_voucher_type_with_no_aliases_configured_falls_back_to_keywords():
+    # None and {} both mean "this branch hasn't set this up yet" - full
+    # backward compatibility with every existing branch.
+    assert categorize_voucher_type("Sales", None) == VoucherType.SALES
+    assert categorize_voucher_type("Sales", {}) == VoucherType.SALES
+    assert categorize_voucher_type("Transport Invoice", {}) == VoucherType.SALES
+
+
 def test_sanitize_xml_fixes_bare_ampersand():
     raw = "<LEDGERNAME>Ramesh & Sons</LEDGERNAME>"
     fixed = _sanitize_xml(raw)
@@ -136,6 +172,40 @@ def test_parse_voucher_collection_keeps_custom_named_ar_types_and_skips_irreleva
     assert by_number["JV/0009"].raw_voucher_type_name == "Provision Journal"
     assert "PAY/0011" not in by_number
     assert "SJ/0004" not in by_number
+
+
+def test_parse_voucher_collection_with_aliases_rejects_proforma_sales_but_keeps_real_sales():
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260411</DATE>
+  <VOUCHERNUMBER>P/0003/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Proforma Sales</VOUCHERTYPENAME>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Shubham Store</LEDGERNAME>
+   <AMOUNT>-150631.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Sales</LEDGERNAME>
+   <AMOUNT>150631.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+ <VOUCHER>
+  <DATE>20260411</DATE>
+  <VOUCHERNUMBER>CIPL/148/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Shubham Store</LEDGERNAME>
+   <AMOUNT>-96686.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Sales</LEDGERNAME>
+   <AMOUNT>96686.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="CHRZ", aliases={"Sales": ["Sales"]})
+    assert len(vouchers) == 1
+    assert vouchers[0].voucher_number == "CIPL/148/26-27"
 
 
 def test_parse_voucher_collection_skips_cancelled_vouchers():

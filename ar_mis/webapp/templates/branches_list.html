@@ -36,6 +36,8 @@
         &nbsp;·&nbsp;
         <a href="{{ url_for('catch_up_party', branch_id=b.branch_id) }}">Catch up a party</a>
         &nbsp;·&nbsp;
+        <a href="{{ url_for('voucher_type_aliases_edit', branch_id=b.branch_id) }}">Voucher Types</a>
+        &nbsp;·&nbsp;
         <form method="post" action="{{ url_for('branch_delete', branch_id=b.branch_id) }}" style="display:inline"
               onsubmit="return confirm('Remove {{ b.branch_name }}?');">
           <button type="submit">Delete</button>

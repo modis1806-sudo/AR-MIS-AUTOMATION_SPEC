@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Voucher Type Names{% endblock %}
+{% block content %}
+<h1>Voucher Type Names — {{ branch.branch_name }}</h1>
+<p class="subtitle">Tell this app exactly what your Tally calls each of the five AR-relevant voucher types - every real deployment names these differently (some run "Tax Invoice" instead of "Sales", others add their own prefixes or series names), and the global default list can't know yours in advance.</p>
+
+<div class="card">
+  <h2 style="margin-top:0;">Before you save</h2>
+  <ul style="padding-left:20px; color:#374151; font-size:14px;">
+    <li><strong>Exact match only, once saved.</strong> Every name below must match a Tally voucher type name exactly (case/whitespace-insensitive) - no partial or substring matching anymore. This is deliberate: it's what stops a voucher type like "Proforma Sales" from being wrongly counted as a real "Sales" just because it contains that word.</li>
+    <li><strong>Every category needs at least one real name.</strong> A category saved with none means this app will never capture that voucher type again for this branch - silently, since there'd be nothing left to match against. The form below won't let you save a blank category.</li>
+    <li>Each row is pre-filled with either what you've already saved here, or - if you've never set this up - the names the old global list already matches today, as a safe starting point. Change only what's actually different in your Tally.</li>
+    <li>If your Tally later adds a new voucher type name (a new series, a renamed type), add it here - it does not get picked up automatically.</li>
+  </ul>
+</div>
+
+<div class="card">
+<form method="post">
+  {% for category in rows %}
+  <div style="margin-bottom:20px;">
+    <label style="font-weight:600;">{{ category }}</label>
+    <p style="font-size:12px;color:#6b7280;margin:2px 0 6px;">Every exact voucher type name in Tally that should count as a {{ category }}.</p>
+    {% for value in rows[category] %}
+    <input name="alias__{{ category }}__{{ loop.index0 }}" value="{{ value }}" placeholder="e.g. {{ category }}" style="width:100%; max-width:420px; padding:6px 8px; margin-bottom:6px;">
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <p style="margin-top:20px;">
+    <button class="btn" type="submit">Save voucher type names</button>
+    <a class="btn secondary" href="{{ url_for('branches_list') }}">Cancel</a>
+  </p>
+</form>
+</div>
+{% endblock %}

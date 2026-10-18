@@ -280,7 +280,8 @@ def build_branch_runner(store: Store, week_ending: date, from_date: date, to_dat
     """
 
     def run_branch(branch: BranchConfig) -> BranchRunOutcome:
-        client = TallyClient(branch=branch)
+        aliases = store.voucher_type_aliases(branch.branch_id)
+        client = TallyClient(branch=branch, voucher_type_aliases=aliases)
         client.confirm_current_company()  # raises CompanyMismatchError/TallyConnectionError
 
         vouchers_by_type = client.fetch_all_voucher_types(from_date, to_date)
