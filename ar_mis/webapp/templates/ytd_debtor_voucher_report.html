@@ -132,6 +132,21 @@
               <input name="corrected_by" placeholder="Your name" style="padding:6px 8px;" required>
               <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Modify</button>
             </form>
+          {% elif row.status == 'Match' and not active %}
+            <details>
+              <summary style="font-size:11px; color:#6b7280; cursor:pointer;">Override (this voucher matches, but you know it shouldn't count)</summary>
+              <form method="post" action="{{ url_for('register_row_correction_submit') }}" style="display:flex; flex-direction:column; gap:6px; margin-top:6px;">
+                <input type="hidden" name="as_of" value="{{ as_of }}">
+                <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
+                <input type="hidden" name="voucher_type" value="{{ row.voucher_type }}">
+                <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
+                <input type="hidden" name="party_id" value="{{ row.party_id }}">
+                <input type="hidden" name="action" value="Exclude">
+                <input name="reason" placeholder="Reason this Match is wrong (e.g. Optional/Proforma voucher, not a real sale)" style="padding:6px 8px;" required>
+                <input name="corrected_by" placeholder="Your name" style="padding:6px 8px;" required>
+                <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Delete</button>
+              </form>
+            </details>
           {% endif %}
           {% if active %}
             <span style="font-size:11px; color:#6b7280;">Reinstate below in Corrections Log — an Exclude that leaves no matching Tally-side voucher drops this row from the table above entirely, so Reinstate always lives there, not here.</span>
