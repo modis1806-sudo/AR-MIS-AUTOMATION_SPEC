@@ -35,7 +35,7 @@ from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree as ET
 
 from ar_mis.models import LedgerEntry, ManualYtdVoucherRow, Voucher, VoucherType
-from ar_mis.registers import classify_tax_ledger, is_round_off_ledger
+from ar_mis.registers import classify_tax_ledger, is_discount_ledger, is_round_off_ledger
 
 _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
 
@@ -261,6 +261,18 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
         if _text(v_el.find("ISCANCELLED")).strip().lower() == "yes":
             continue
 
+        # An Optional voucher is Tally's own provisional/draft marker - it
+        # never posts to any ledger, so it never really happened either,
+        # same reasoning as ISCANCELLED above. CONFIRMED against real
+        # CHARZE INDUSTRIES data: a "PROFORMA SALES" voucher type, marked
+        # (Optional) in Tally's own Day Book, carried a full party debit
+        # and a real SALES ledger line under ALLINVENTORYENTRIES.LIST -
+        # structurally indistinguishable from a genuine posted invoice
+        # once parsed, and silently counted as a real Rs 1,50,631 sale
+        # against a tracked debtor before this check existed.
+        if _text(v_el.find("ISOPTIONAL")).strip().lower() == "yes":
+            continue
+
         raw_voucher_type_name = _text(v_el.find("VOUCHERTYPENAME"))
         voucher_type = categorize_voucher_type(raw_voucher_type_name)
         if voucher_type is None:
@@ -321,10 +333,18 @@ def parse_voucher_collection(raw_xml: str, branch_id: str) -> list[Voucher]:
         # AND their own inventory detail - 154 real vouchers in the same
         # file have both - so unconditionally adding inventory allocations
         # on top of those would double-count revenue).
+        # CONFIRMED against real CHARZE INDUSTRIES data (CIPL/213/26-27):
+        # a Discount Given line is the only non-party, non-tax, non-
+        # round-off entry at top level - it used to read as "this voucher
+        # already has its revenue line", wrongly suppressing the fallback
+        # below and leaving taxable_value built from the discount alone
+        # (Rs 169.49) with the real Rs 13,559.32 Sales amount, which lived
+        # only in ALLINVENTORYENTRIES.LIST, never read at all.
         has_top_level_revenue = any(
             entry.party_ledger_name != party_ledger_name
             and classify_tax_ledger(entry.party_ledger_name) is None
             and not is_round_off_ledger(entry.party_ledger_name)
+            and not is_discount_ledger(entry.party_ledger_name)
             for entry in entries
         )
         if not has_top_level_revenue:

@@ -39,6 +39,7 @@ from ar_mis.registers import (
     compute_unapplied_cash_by_party,
     financial_year_label,
     compute_unapplied_cn_by_party,
+    is_discount_ledger,
     is_round_off_ledger,
     RegisterBuildExceptions,
     credit_note_classification_label,
@@ -100,6 +101,13 @@ def test_is_round_off_ledger():
     assert not is_round_off_ledger("Round Off Charges")
 
 
+def test_is_discount_ledger():
+    assert is_discount_ledger("Discount Given")
+    assert is_discount_ledger(" DISCOUNT ")
+    assert is_discount_ledger("Trade Discount")
+    assert not is_discount_ledger("Sales Revenue")
+
+
 # ---- compute_due_date ----------------------------------------------------
 
 
@@ -150,6 +158,32 @@ def test_build_sales_dn_register_row_round_off_can_reduce_total():
     row = build_sales_dn_register_row(voucher, CUSTOMER, RegisterBuildExceptions())
     assert row.invoice_value == Decimal("1179.00")
     assert row.round_off == Decimal("-1.00")
+
+
+def test_build_sales_dn_register_row_nets_discount_from_taxable_value():
+    # CONFIRMED against a real CHARZE INDUSTRIES voucher (CIPL/213/26-27):
+    # Sales 13559.32 less Discount Given 169.49 must net to 13389.83,
+    # exactly Tally's own Sales Accounts figure for that voucher. Treating
+    # the discount as ordinary revenue (the old behaviour) added it
+    # instead of subtracting it, overstating taxable_value by 2x the
+    # discount.
+    voucher = sales_voucher(
+        [
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-15800.00"), bill_name="INV003", bill_type="New Ref"),
+            LedgerEntry(party_ledger_name="SALES", amount_as_extracted=Decimal("13559.32")),
+            LedgerEntry(party_ledger_name="DISCOUNT GIVEN", amount_as_extracted=Decimal("-169.49")),
+            LedgerEntry(party_ledger_name="OUTPUT CGST 9%", amount_as_extracted=Decimal("1205.08")),
+            LedgerEntry(party_ledger_name="OUTPUT SGST 9%", amount_as_extracted=Decimal("1205.08")),
+            LedgerEntry(party_ledger_name="Round Off", amount_as_extracted=Decimal("0.01")),
+        ],
+        voucher_number="INV003",
+    )
+    row = build_sales_dn_register_row(voucher, CUSTOMER, RegisterBuildExceptions())
+    assert row.taxable_value == Decimal("13389.83")
+    assert row.cgst == Decimal("1205.08")
+    assert row.sgst == Decimal("1205.08")
+    assert row.round_off == Decimal("0.01")
+    assert row.invoice_value == Decimal("15800.00")
 
 
 def test_build_sales_dn_register_row_falls_back_to_voucher_number_when_no_bill_name():

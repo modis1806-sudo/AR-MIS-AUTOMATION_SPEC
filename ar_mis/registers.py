@@ -53,6 +53,21 @@ _TAX_LEDGER_TOKENS = (("cgst", "CGST"), ("sgst", "SGST"), ("igst", "IGST"))
 # displays it (the final adjusting line before the invoice total).
 _ROUND_OFF_LEDGER_NAME = "round off"
 
+# Confirmed against real CHARZE INDUSTRIES data: "DISCOUNT GIVEN" is a
+# real top-level ledger line on an invoice, a genuine reduction of the
+# sale (its own AMOUNT carries the opposite sign to the revenue line it
+# discounts), not revenue in its own right. Matched on containment, not
+# an exact name, the same tolerance classify_tax_ledger already applies -
+# a different deployment may call it "Discount Allowed" or "Trade
+# Discount". Used two places: taxable_value must subtract it rather than
+# add it (see build_sales_dn_register_row), and it must not count as "we
+# already have a real revenue line" in parsers.parse_voucher_collection's
+# own fallback gate - a voucher whose only top-level non-tax, non-
+# round-off entry is a discount line still needs its real Sales amount
+# pulled from ALLINVENTORYENTRIES.LIST, exactly like one with no such
+# entry at all.
+_DISCOUNT_LEDGER_TOKEN = "discount"
+
 # Confirmed against real data: "Advance" carries a real bill reference
 # (money received before the invoice existed) and is matched exactly like
 # "Agst Ref" - only "New Ref" means genuinely unapplied/on-account.
@@ -75,6 +90,10 @@ def classify_tax_ledger(ledger_name: str) -> str | None:
 
 def is_round_off_ledger(ledger_name: str) -> bool:
     return ledger_name.strip().lower() == _ROUND_OFF_LEDGER_NAME
+
+
+def is_discount_ledger(ledger_name: str) -> bool:
+    return _DISCOUNT_LEDGER_TOKEN in ledger_name.strip().lower()
 
 
 def _is_allocated(bill_type: str | None) -> bool:
@@ -166,6 +185,14 @@ def build_sales_dn_register_row(
             igst += magnitude
         elif is_round_off_ledger(entry.party_ledger_name):
             round_off += entry.amount_as_extracted  # signed - can reduce or increase the total
+        elif is_discount_ledger(entry.party_ledger_name):
+            # A genuine reduction of the sale, not additional revenue -
+            # CONFIRMED against real CHARZE data (CIPL/213/26-27): Sales
+            # 13,559.32 less Discount Given 169.49 nets to 13,389.83,
+            # exactly Tally's own Sales Accounts figure for that voucher.
+            # Adding its magnitude here (the old behaviour) overstated
+            # taxable_value by 2x the discount instead of netting it.
+            taxable_value -= magnitude
         else:
             taxable_value += magnitude
 

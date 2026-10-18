@@ -178,6 +178,48 @@ def test_parse_voucher_collection_skips_cancelled_vouchers():
     assert vouchers[0].voucher_number == "SB/0002"
 
 
+def test_parse_voucher_collection_skips_optional_vouchers():
+    # Confirmed against real CHARZE INDUSTRIES data: a "PROFORMA SALES"
+    # voucher (ISOPTIONAL=Yes, shown as "(Optional)" in Tally's own Day
+    # Book) carried a full party debit and a real revenue ledger line,
+    # structurally indistinguishable from a genuine posted Sales invoice -
+    # an Optional voucher never posts to any ledger in Tally and must
+    # never count as AR movement, same reasoning as ISCANCELLED.
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260411</DATE>
+  <VOUCHERNUMBER>P/0003/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Proforma Sales</VOUCHERTYPENAME>
+  <ISOPTIONAL>Yes</ISOPTIONAL>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Shubham Store</LEDGERNAME>
+   <AMOUNT>-150631.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Sales</LEDGERNAME>
+   <AMOUNT>150631.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+ <VOUCHER>
+  <DATE>20260411</DATE>
+  <VOUCHERNUMBER>SB/0002</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <ISOPTIONAL>No</ISOPTIONAL>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Acme Corp</LEDGERNAME>
+   <AMOUNT>-2000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+  <ALLLEDGERENTRIES.LIST>
+   <LEDGERNAME>Sales Revenue</LEDGERNAME>
+   <AMOUNT>2000.00</AMOUNT>
+  </ALLLEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="KOL")
+    assert len(vouchers) == 1
+    assert vouchers[0].voucher_number == "SB/0002"
+
+
 def test_parse_voucher_collection_falls_back_to_inventory_allocations_when_no_offsetting_ledger_entry():
     # Confirmed against real Speedways data: a stock-item invoice can
     # carry only the party's own top-level ledger entry - the real
@@ -213,6 +255,51 @@ def test_parse_voucher_collection_falls_back_to_inventory_allocations_when_no_of
     assert len(entries) == 3
     non_party = [e for e in entries if e.party_ledger_name != "Acme Corp"]
     assert sum(e.amount_as_extracted for e in non_party) == Decimal("100000.00")
+
+
+def test_parse_voucher_collection_falls_back_to_inventory_allocations_when_only_top_level_entry_is_discount():
+    # CONFIRMED against a real CHARZE INDUSTRIES voucher (CIPL/213/26-27):
+    # party + Discount Given + OUTPUT CGST 9% + OUTPUT SGST 9% at top
+    # level, with the real SALES ledger line (13559.32) living only in
+    # ALLINVENTORYENTRIES.LIST. Discount Given used to be mistaken for
+    # "we already have a revenue line", suppressing the inventory
+    # fallback entirely and leaving the real Sales amount unread.
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260410</DATE>
+  <VOUCHERNUMBER>CIPL/213/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>GOURAB ELECTRICALS</PARTYLEDGERNAME>
+  <ALLINVENTORYENTRIES.LIST>
+   <ACCOUNTINGALLOCATIONS.LIST>
+    <LEDGERNAME>SALES</LEDGERNAME>
+    <AMOUNT>13559.32</AMOUNT>
+   </ACCOUNTINGALLOCATIONS.LIST>
+  </ALLINVENTORYENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>GOURAB ELECTRICALS</LEDGERNAME>
+   <AMOUNT>-15800.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>DISCOUNT GIVEN</LEDGERNAME>
+   <AMOUNT>-169.49</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>OUTPUT CGST 9%</LEDGERNAME>
+   <AMOUNT>1205.08</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>OUTPUT SGST 9%</LEDGERNAME>
+   <AMOUNT>1205.08</AMOUNT>
+  </LEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="CHRZ")
+    assert len(vouchers) == 1
+    entries = vouchers[0].entries
+    sales_entries = [e for e in entries if e.party_ledger_name == "SALES"]
+    assert sales_entries, "the real Sales ledger line must be pulled in from inventory allocations"
+    assert sum(e.amount_as_extracted for e in sales_entries) == Decimal("13559.32")
 
 
 def test_parse_voucher_collection_does_not_double_count_when_top_level_entries_are_complete():
