@@ -50,11 +50,11 @@ deliberately kept out of this module.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 
-from ar_mis.models import CreditNoteRegisterRow, ReceiptJournalRegisterRow, SalesDNRegisterRow
+from ar_mis.models import CreditNoteRegisterRow, NoteType, ReceiptJournalRegisterRow, SalesDNRegisterRow
 
 EXCLUDE = "Exclude"
 CORRECT_AMOUNT = "Correct Amount"
@@ -164,4 +164,92 @@ def apply_corrections(
             result[key] = correction.corrected_amount
         # REINSTATE: no override - the raw figure already in `amounts`
         # (if any) stands unchanged.
+    return result
+
+
+# ---- Row-level overlays (AR Snapshot) -------------------------------------
+#
+# Check 1 and Check 2 only ever need a per-voucher TOTAL, so the dict-based
+# apply_corrections above is enough for them. AR Snapshot (ar_mis.dashboard)
+# needs the actual rows - ageing, DSO, overdue buckets and Open AR by FY are
+# all computed per invoice, not from a single summed total - so a correction
+# there has to produce a corrected row, not just an adjusted number. These
+# three functions are that overlay, one per register, applied once up front
+# so every figure downstream (not just Reconciliation Check) sees the same
+# corrected reality Check 1/2 already do.
+
+
+def apply_sales_dn_row_corrections(
+    rows: list[SalesDNRegisterRow],
+    effective: dict[_CorrectionKey, RegisterRowCorrection],
+) -> list[SalesDNRegisterRow]:
+    """EXCLUDE drops the row; CORRECT_AMOUNT replaces invoice_value, the
+    same gross figure sales_dn_amounts already sums for Check 1/2 -
+    taxable_value/cgst/sgst/igst are left as originally extracted (not
+    used by any AR Snapshot figure), so a corrected row's own breakdown
+    columns no longer sum to invoice_value, same as Check 1 already
+    accepts for this correction type.
+    """
+    result: list[SalesDNRegisterRow] = []
+    for row in rows:
+        voucher_type = NoteType.DEBIT_NOTE.value if row.note_type == NoteType.DEBIT_NOTE else "Sales"
+        key = (row.branch_id, voucher_type, row.voucher_number, row.party_id)
+        correction = effective.get(key)
+        if correction is None or correction.action == REINSTATE:
+            result.append(row)
+        elif correction.action == CORRECT_AMOUNT:
+            result.append(replace(row, invoice_value=correction.corrected_amount))
+        # EXCLUDE: row dropped entirely.
+    return result
+
+
+def apply_credit_note_row_corrections(
+    rows: list[CreditNoteRegisterRow],
+    effective: dict[_CorrectionKey, RegisterRowCorrection],
+) -> list[CreditNoteRegisterRow]:
+    """Same shape as apply_sales_dn_row_corrections - CORRECT_AMOUNT
+    replaces cn_amount, the figure cn_amounts already sums for Check 1/2.
+    """
+    result: list[CreditNoteRegisterRow] = []
+    for row in rows:
+        key = (row.branch_id, "Credit Note", row.voucher_number, row.party_id)
+        correction = effective.get(key)
+        if correction is None or correction.action == REINSTATE:
+            result.append(row)
+        elif correction.action == CORRECT_AMOUNT:
+            result.append(replace(row, cn_amount=correction.corrected_amount))
+        # EXCLUDE: row dropped entirely.
+    return result
+
+
+def apply_receipt_journal_row_corrections(
+    rows: list[ReceiptJournalRegisterRow],
+    effective: dict[_CorrectionKey, RegisterRowCorrection],
+) -> list[ReceiptJournalRegisterRow]:
+    """Unlike the other two registers, one Receipt/Journal voucher can be
+    several rows (one per bill-allocation line - see rj_amounts' own
+    collapsing for why). EXCLUDE drops every line for that voucher.
+    CORRECT_AMOUNT keeps only the first line encountered, with its amount
+    replaced by the corrected total, and drops the rest - the same
+    blended, bill-reference-agnostic total rj_amounts already produces
+    for Check 1/2, so a Maker's one corrected figure reads identically
+    everywhere it's used rather than being silently re-split across the
+    original lines it's overriding. The kept line's own target_doc_no is
+    left as-is (not cleared) so it still reads as applied/unapplied
+    correctly for Unapplied Cash purposes in the common case where the
+    voucher had only one bill-allocation line to begin with.
+    """
+    result: list[ReceiptJournalRegisterRow] = []
+    corrected_keys_seen: set[_CorrectionKey] = set()
+    for row in rows:
+        key = (row.branch_id, row.voucher_type, row.voucher_number, row.party_id)
+        correction = effective.get(key)
+        if correction is None or correction.action == REINSTATE:
+            result.append(row)
+        elif correction.action == CORRECT_AMOUNT:
+            if key in corrected_keys_seen:
+                continue
+            corrected_keys_seen.add(key)
+            result.append(replace(row, amount=correction.corrected_amount))
+        # EXCLUDE: row dropped entirely.
     return result

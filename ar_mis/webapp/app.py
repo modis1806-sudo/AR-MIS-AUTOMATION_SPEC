@@ -55,6 +55,9 @@ from ar_mis.register_corrections import (
     EXCLUDE,
     REINSTATE,
     RegisterRowCorrection,
+    apply_credit_note_row_corrections,
+    apply_receipt_journal_row_corrections,
+    apply_sales_dn_row_corrections,
     effective_corrections,
 )
 from ar_mis.ytd_debtor_cross_check import (
@@ -1911,8 +1914,25 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         follow_ups = store.all_invoice_follow_ups()
         tally_closing_by_party = store.latest_weekly_snapshot_closing_by_party(as_of)
+        corrections = [r.correction for r in store.all_register_row_corrections()]
         freshness = _freshness(store.last_extraction_at())
         store.close()
+
+        # Check 1 and Check 2 already read every correction back out
+        # (register_corrections' own docstring); this dashboard is a third
+        # consumer of the same raw registers and was never wired up to do
+        # the same - confirmed live (CHARZE INDUSTRIES): a Correct Amount
+        # on a Receipt's wrongly-signed bill allocation changed what Check
+        # 1 showed but left this report's Reconciliation Check gap
+        # unchanged. Applying the overlay once, here, before anything else
+        # reads these three lists, means every figure below (ageing, DSO,
+        # Reconciliation Check, Unapplied Cash/CN) reflects the same
+        # corrected reality Check 1/2 already do - not just the one bridge
+        # figure a Maker happened to be looking at when they found the gap.
+        effective = effective_corrections(corrections)
+        sales_dn_rows = apply_sales_dn_row_corrections(sales_dn_rows, effective)
+        cn_rows = apply_credit_note_row_corrections(cn_rows, effective)
+        rj_rows = apply_receipt_journal_row_corrections(rj_rows, effective)
 
         sales_dn_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in sales_dn_rows}
         ptp_rate = compute_ptp_kept_rate(follow_ups, sales_dn_by_identity, cn_rows, rj_rows, as_of)
