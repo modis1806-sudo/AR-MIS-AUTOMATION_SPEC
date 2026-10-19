@@ -46,7 +46,7 @@ from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp, PreMisAdjustmen
 from ar_mis.money import to_money
 from ar_mis.drift_correction import (
     DriftFindingAlreadyIncorporated,
-    DriftFindingCorrectionWeekConflict,
+    DriftFindingNotAttributable,
     incorporate_drift_finding,
 )
 from ar_mis.pipeline import process_branch_data
@@ -2659,13 +2659,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     @requires_role("maker")
     def drift_finding_incorporate(finding_id):
         """The actual correction mechanism, per ar_mis.drift_correction's
-        own docstring: replays the finding's original voucher into the
-        registers under a NEW week the Maker picks - never an edit to an
-        already-locked historical week. Requires that party's real,
-        Tally-sourced Sundry Debtors closing balance as of that date, the
-        same trust level as every other closing_extracted figure in this
-        app; a wrong figure here doesn't get silently accepted - it just
-        shows up as a fresh mismatch on the TB Cross-Check sheet.
+        own docstring: builds the finding's original voucher straight
+        into its register. No week_ending, no closing balance - Check 1,
+        the Reconciliation Check gap, and every registers-sourced figure
+        are fixed by the register row alone; nothing else reads this
+        mechanism's output.
         """
         store = get_store()
         finding_record = store.get_drift_finding(finding_id)
@@ -2675,47 +2673,25 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _drift_finding_redirect()
 
         incorporated_by = request.form.get("incorporated_by", "").strip()
-        raw_week_ending = request.form.get("week_ending", "")
-        raw_closing = request.form.get("party_closing_extracted", "").strip()
-
         if not incorporated_by:
             store.close()
             flash("Enter your name to incorporate a finding.", "error")
             return _drift_finding_redirect()
-        try:
-            week_ending = date.fromisoformat(raw_week_ending)
-        except ValueError:
-            store.close()
-            flash("Choose a valid week-ending date for the correction.", "error")
-            return _drift_finding_redirect()
-        try:
-            party_closing_extracted = Decimal(raw_closing)
-        except (InvalidOperation, ValueError):
-            store.close()
-            flash("Enter a valid closing balance for this party.", "error")
-            return _drift_finding_redirect()
-
-        branch = store.get_branch(finding_record.branch_id)
-        branch_name = branch.branch_name if branch else finding_record.branch_id
 
         try:
             result = incorporate_drift_finding(
-                store, finding_record.branch_id, branch_name, finding_record,
-                week_ending, party_closing_extracted, incorporated_by, datetime.now(),
+                store, finding_record.branch_id, finding_record, incorporated_by, datetime.now(),
             )
-        except (DriftFindingAlreadyIncorporated, DriftFindingCorrectionWeekConflict) as exc:
+        except (DriftFindingAlreadyIncorporated, DriftFindingNotAttributable) as exc:
             store.close()
             flash(str(exc), "error")
             return _drift_finding_redirect()
 
         store.close()
-        if result.outcome.failed_parties:
-            flash(
-                f"Voucher incorporated under week ending {week_ending.isoformat()}, but this party still "
-                "shows a difference - see the TB Reconciliation Cross-Check sheet.", "error",
-            )
-        else:
-            flash(f"Voucher incorporated under week ending {week_ending.isoformat()} - reconciled clean.", "success")
+        flash(
+            f"{result.voucher_type} {result.voucher_number} ({result.party_ledger_name}) added to the register.",
+            "success",
+        )
         return _drift_finding_redirect()
 
     @app.route("/reports/ytd-debtor-vouchers/correction", methods=["POST"])

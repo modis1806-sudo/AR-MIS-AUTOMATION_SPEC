@@ -4476,7 +4476,7 @@ def test_reports_home_no_longer_links_to_drift_findings(client):
     assert b"/reports/drift-findings" not in resp.data
 
 
-def test_maker_can_incorporate_a_finding_and_reconcile_clean(client):
+def test_maker_can_incorporate_a_finding(client):
     _seed_drift_finding(client)  # ACME, SB/0099-BACKDATED, 50000.00, dated 2026-03-01
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
@@ -4485,11 +4485,11 @@ def test_maker_can_incorporate_a_finding_and_reconcile_clean(client):
 
     resp = client.post(
         f"/reports/drift-findings/{finding_id}/incorporate",
-        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-12", "party_closing_extracted": "50000.00"},
+        data={"incorporated_by": "AR Manager"},
         follow_redirects=True,
     )
     assert resp.status_code == 200
-    assert b"reconciled clean" in resp.data
+    assert b"added to the register" in resp.data
     # Redirects to Check 1 (there is no standalone Drift Findings page any
     # more) - confirmed by landing back on its own page title.
     assert b"TB vs Registers" in resp.data
@@ -4498,30 +4498,9 @@ def test_maker_can_incorporate_a_finding_and_reconcile_clean(client):
     record = store.all_drift_findings()[0]
     assert record.incorporated is True
     assert record.incorporated_by == "AR Manager"
-    assert record.incorporated_week_ending == date(2026, 9, 12)
     rows = store.all_sales_dn_rows("KOL")
     assert len(rows) == 1
     assert rows[0].invoice_date == date(2026, 3, 1)
-    store.close()
-
-
-def test_incorporate_with_wrong_closing_still_incorporates_but_flags_mismatch(client):
-    _seed_drift_finding(client)
-    from ar_mis.storage import Store
-    store = Store(client.application.config["DB_PATH"])
-    finding_id = store.all_drift_findings()[0].id
-    store.close()
-
-    resp = client.post(
-        f"/reports/drift-findings/{finding_id}/incorporate",
-        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-12", "party_closing_extracted": "999999.00"},
-        follow_redirects=True,
-    )
-    assert b"still shows a difference" in resp.data
-
-    store = Store(client.application.config["DB_PATH"])
-    record = store.all_drift_findings()[0]
-    assert record.incorporated is True  # still incorporated - the voucher is in the system
     store.close()
 
 
@@ -4532,13 +4511,10 @@ def test_incorporate_a_second_time_is_refused(client):
     finding_id = store.all_drift_findings()[0].id
     store.close()
 
-    client.post(
-        f"/reports/drift-findings/{finding_id}/incorporate",
-        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-12", "party_closing_extracted": "50000.00"},
-    )
+    client.post(f"/reports/drift-findings/{finding_id}/incorporate", data={"incorporated_by": "AR Manager"})
     resp = client.post(
         f"/reports/drift-findings/{finding_id}/incorporate",
-        data={"incorporated_by": "AR Manager", "week_ending": "2026-09-19", "party_closing_extracted": "50000.00"},
+        data={"incorporated_by": "AR Manager"},
         follow_redirects=True,
     )
     assert b"already incorporated" in resp.data
@@ -4555,7 +4531,7 @@ def test_checker_cannot_incorporate_a_finding(roleless_client):
 
     resp = roleless_client.post(
         f"/reports/drift-findings/{finding_id}/incorporate",
-        data={"incorporated_by": "Someone", "week_ending": "2026-09-12", "party_closing_extracted": "50000.00"},
+        data={"incorporated_by": "Someone"},
         follow_redirects=True,
     )
     assert b"available for your role" in resp.data
@@ -4815,7 +4791,6 @@ def test_drift_finding_incorporate_redirects_back_to_ytd_report_when_asked(clien
     resp = client.post(
         f"/reports/drift-findings/{finding_id}/incorporate",
         data={
-            "week_ending": "2026-03-15", "party_closing_extracted": "50000.00",
             "incorporated_by": "AR Manager", "return_to": "ytd_debtor_voucher_report", "as_of": "2026-03-15",
         },
     )

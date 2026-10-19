@@ -1837,20 +1837,26 @@ class Store:
         ]
 
     def mark_drift_finding_incorporated(
-        self, finding_id: int, incorporated_by: str, incorporated_at: datetime, week_ending: date
+        self, finding_id: int, incorporated_by: str, incorporated_at: datetime, week_ending: date | None = None
     ) -> None:
-        """Records that a finding's voucher has been replayed into the
-        registers/weekly_snapshot under `week_ending` - see
-        ar_mis.drift_correction.incorporate_drift_finding, the only
-        caller. This flag says the missing voucher is now in the system;
-        it does NOT claim the party now reconciles clean going forward -
-        that's the TB Reconciliation Cross-Check sheet's own, separate
-        signal.
+        """Records that a finding's voucher has been built into its
+        register - see ar_mis.drift_correction.incorporate_drift_finding,
+        the only caller. This flag says the missing voucher is now in the
+        system; it does NOT claim the party now reconciles clean going
+        forward - that's the TB Reconciliation Cross-Check sheet's own,
+        separate signal.
+
+        `week_ending` is a leftover column from this mechanism's earlier,
+        weekly_snapshot-touching design (see drift_correction's own
+        module docstring for why that was dropped) - always None from
+        the current caller, kept nullable rather than dropped outright so
+        a pre-existing row incorporated under the old design still reads
+        back its own real correction week.
         """
         self.conn.execute(
             "UPDATE drift_finding SET incorporated=1, incorporated_by=?, incorporated_at=?,"
             " incorporated_week_ending=? WHERE id=?",
-            (incorporated_by, incorporated_at.isoformat(), week_ending.isoformat(), finding_id),
+            (incorporated_by, incorporated_at.isoformat(), week_ending.isoformat() if week_ending else None, finding_id),
         )
         self.conn.commit()
 

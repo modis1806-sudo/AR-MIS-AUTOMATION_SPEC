@@ -95,12 +95,6 @@
             {% if finding_id %}
             <form method="post" action="{{ url_for('drift_finding_incorporate', finding_id=finding_id) }}" style="display:flex; flex-direction:column; gap:6px;">
               <input type="hidden" name="as_of" value="{{ as_of }}">
-              <label style="font-size:11px; color:#6b7280;">Week ending
-                <input type="date" name="week_ending" style="width:100%; padding:6px 8px;" required>
-              </label>
-              <label style="font-size:11px; color:#6b7280;">{{ row.party_id }}'s Sundry Debtors closing (Tally), as of that date
-                <input type="text" name="party_closing_extracted" placeholder="e.g. 125000.00" style="width:100%; padding:6px 8px;" required>
-              </label>
               <input name="incorporated_by" placeholder="Your name" style="padding:6px 8px;" required>
               <button class="btn" type="submit" style="padding:6px 10px; font-size:12px;">Add to Registers</button>
             </form>
