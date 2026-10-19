@@ -38,6 +38,15 @@
   <input type="date" name="as_of" value="{{ today }}">
   <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">Every Sales, Credit Note, Receipt, and Journal voucher for this party between the Starting Point Date and this date is pulled from Tally and added to the registers in full detail. Defaults to today so nothing recent is missed.</p>
 
+  <details style="margin-top:12px;">
+    <summary style="font-size:13px;color:#374151;cursor:pointer;">Tally reachable at a different host/port right now?</summary>
+    <p style="font-size:12px;color:#6b7280;margin:6px 0 10px;">Leave both blank to use what's saved in Branch Master. Fill in only if Tally's HTTP server is answering on a different port for this session - this does NOT change the branch's saved setting, only this one pull.</p>
+    <label style="font-size:12px;">Tally Host (this run only)</label>
+    <input name="tally_host_override" placeholder="leave blank for the saved value">
+    <label style="font-size:12px;">Tally Port (this run only)</label>
+    <input name="tally_port_override" type="number" placeholder="leave blank for the saved value">
+  </details>
+
   <p style="margin-top:20px;">
     <button class="btn" type="submit">Pull history and reconcile</button>
     <a class="btn secondary" href="{{ url_for('branches_list') }}">Cancel</a>

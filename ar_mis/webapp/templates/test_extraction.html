@@ -23,6 +23,15 @@
   <input name="to_date" type="date" value="{{ default_to }}" required>
   <p style="font-size:12px;color:#6b7280;margin:4px 0 0;">Any range — a day, a month, or a full financial year for a first-time backfill. Used exactly as typed.</p>
 
+  <details style="margin-top:12px;">
+    <summary style="font-size:13px;color:#374151;cursor:pointer;">Tally reachable at a different host/port right now?</summary>
+    <p style="font-size:12px;color:#6b7280;margin:6px 0 10px;">Leave both blank to use what's saved in Branch Master. Fill in only if Tally's HTTP server is answering on a different port for this session than what's saved - this does NOT change the branch's saved setting, only this one run.</p>
+    <label style="font-size:12px;">Tally Host (this run only)</label>
+    <input name="tally_host_override" value="{{ result.tally_host_override if result else '' }}" placeholder="leave blank for the saved value">
+    <label style="font-size:12px;">Tally Port (this run only)</label>
+    <input name="tally_port_override" type="number" value="{{ result.tally_port_override if result else '' }}" placeholder="leave blank for the saved value">
+  </details>
+
   <p style="margin-top:20px;"><button class="btn" type="submit">Run Test</button></p>
 </form>
 {% else %}
@@ -38,6 +47,7 @@
   </h2>
   <p>
     Testing <strong>{{ result.from_date }}</strong> to <strong>{{ result.to_date }}</strong>
+    against <strong>{{ result.branch.gateway_url }}</strong>{% if result.tally_host_override or result.tally_port_override %} <span class="pill status-active">override in effect, not saved to Branch Master</span>{% endif %}
   </p>
   <table>
     <thead><tr><th>Step</th><th>Status</th><th>Detail</th></tr></thead>
@@ -74,6 +84,8 @@
     <input type="hidden" name="branch_id" value="{{ result.branch.branch_id }}">
     <input type="hidden" name="from_date" value="{{ result.from_date }}">
     <input type="hidden" name="to_date" value="{{ result.to_date }}">
+    <input type="hidden" name="tally_host_override" value="{{ result.tally_host_override or '' }}">
+    <input type="hidden" name="tally_port_override" value="{{ result.tally_port_override or '' }}">
     <button class="btn" type="submit">Save this data</button>
   </form>
   {% else %}
@@ -86,6 +98,7 @@
 {% if result and result.mode == "save" %}
 <div class="card">
   <h2 style="margin-top:0;">Saved — {{ result.branch.branch_name }} ({{ result.from_date }} to {{ result.to_date }})</h2>
+  <p style="font-size:12px;color:#6b7280;">Pulled from {{ result.branch.gateway_url }}{% if result.tally_host_override or result.tally_port_override %} (override, not saved to Branch Master){% endif %}</p>
 
   {% for cr in result.chunk_results %}
     {% if cr.status == "skipped" %}

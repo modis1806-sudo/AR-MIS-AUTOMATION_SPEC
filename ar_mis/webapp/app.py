@@ -21,6 +21,7 @@ is actually sitting at the keyboard. That is accepted, not overlooked.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import wraps
@@ -148,6 +149,40 @@ _VOUCHER_TYPE_ALIAS_SEED = {
     "Journal": ["Journal"],
 }
 _VOUCHER_TYPE_ALIAS_MIN_SLOTS = 5
+
+
+def _branch_with_tally_overrides(branch: BranchConfig) -> tuple[BranchConfig, str, str]:
+    """Client's own real-world finding: Tally's HTTP server doesn't
+    necessarily answer on the same port every session (observed live -
+    CHARZE INDUSTRIES moved from :9020 to :9021 between two sessions,
+    nothing in this app's control). Branch Master's own saved host/port
+    stays the default for everything else (Catch Up a Party, Test & Save
+    Extraction's own pre-fill) - this only ever overrides it for the one
+    request that calls this, from optional `tally_host_override`/
+    `tally_port_override` form fields, and never writes the override back
+    to Branch Master. ar_mis.tally_client.TallyClient's own mandatory
+    confirm_current_company() check (Section 2.2) is what actually keeps
+    a wrong port safe to try - a bad guess here fails loudly as a
+    connection or company-mismatch error, never a silent wrong-company
+    pull.
+
+    Returns (possibly-overridden branch, raw host override string, raw
+    port override string) - the two raw strings are threaded back into
+    whatever result dict a template renders, purely so Save can carry
+    forward the exact same override Test just used (never silently
+    reverting to the saved default), the same principle this page
+    already applies to from_date/to_date.
+    """
+    raw_host = request.form.get("tally_host_override", "").strip()
+    raw_port = request.form.get("tally_port_override", "").strip()
+    if raw_host:
+        branch = replace(branch, tally_host=raw_host)
+    if raw_port:
+        try:
+            branch = replace(branch, tally_port=int(raw_port))
+        except ValueError:
+            raise ValueError(f"'{raw_port}' is not a valid port number.") from None
+    return branch, raw_host, raw_port
 
 
 def create_app(db_path: str = "data/ar_mis.db") -> Flask:
@@ -584,7 +619,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if seed_summary.skipped:
             return _redisplay(seed_summary.skipped[0])
 
-        client = TallyClient(branch=branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
+        try:
+            connect_branch, _, _ = _branch_with_tally_overrides(branch)
+        except ValueError as exc:
+            return _redisplay(str(exc))
+        client = TallyClient(branch=connect_branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
         try:
             client.confirm_current_company()
             all_vouchers = client.fetch_vouchers(from_date, as_of)
@@ -687,21 +726,30 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 )
 
             steps: list[tuple[str, bool, str]] = []
-            # Uses TallyClient's default timeout (see tally_client.
-            # DEFAULT_TIMEOUT_SECONDS) - a fixed short timeout here
-            # (an earlier version used 15s) is exactly what broke this
-            # page against any real voucher-heavy range: a single 15-day
-            # chunk can legitimately take close to a minute against a
-            # busy company, confirmed via live-Tally diagnostic.
-            client = TallyClient(branch=branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
-
             try:
-                client.confirm_current_company()
-                steps.append(("Company check", True, f"'{branch.tally_company_name}' is currently loaded"))
-            except CompanyMismatchError as exc:
-                steps.append(("Company check", False, str(exc)))
-            except TallyConnectionError as exc:
-                steps.append(("Connection", False, str(exc)))
+                connect_branch, host_override, port_override = _branch_with_tally_overrides(branch)
+                override_error = None
+            except ValueError as exc:
+                connect_branch, host_override, port_override = branch, "", ""
+                override_error = str(exc)
+
+            if override_error:
+                steps.append(("Company check", False, override_error))
+            else:
+                # Uses TallyClient's default timeout (see tally_client.
+                # DEFAULT_TIMEOUT_SECONDS) - a fixed short timeout here
+                # (an earlier version used 15s) is exactly what broke this
+                # page against any real voucher-heavy range: a single 15-day
+                # chunk can legitimately take close to a minute against a
+                # busy company, confirmed via live-Tally diagnostic.
+                client = TallyClient(branch=connect_branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
+                try:
+                    client.confirm_current_company()
+                    steps.append(("Company check", True, f"'{connect_branch.tally_company_name}' is currently loaded"))
+                except CompanyMismatchError as exc:
+                    steps.append(("Company check", False, str(exc)))
+                except TallyConnectionError as exc:
+                    steps.append(("Connection", False, str(exc)))
 
             all_ok_so_far = all(ok for _, ok, _ in steps)
 
@@ -733,10 +781,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
             result = {
                 "mode": "test",
-                "branch": branch, "steps": steps, "all_ok": all_ok,
+                "branch": connect_branch, "steps": steps, "all_ok": all_ok,
                 "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
                 "chunks": chunks,
                 "any_chunk_new": any(not c["already_recorded"] for c in chunks),
+                "tally_host_override": host_override, "tally_port_override": port_override,
             }
             default_from, default_to = from_date, to_date
 
@@ -801,7 +850,18 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 **_cross_check_links(None),
             )
 
-        client = TallyClient(branch=branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
+        try:
+            connect_branch, host_override, port_override = _branch_with_tally_overrides(branch)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            store.close()
+            default_from, default_to = _default_test_range()
+            return render_template(
+                "test_extraction.html", branches=branches, result=None,
+                default_from=default_from.isoformat(), default_to=default_to.isoformat(),
+                **_cross_check_links(None),
+            )
+        client = TallyClient(branch=connect_branch, voucher_type_aliases=store.voucher_type_aliases(branch_id))
         chunk_results = []
 
         for c_start, c_end in split_into_chunks(from_date, to_date):
@@ -896,12 +956,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         )
         already_recorded = store.has_weekly_movement_for_week(to_date)
         result = {
-            "mode": "save", "branch": branch,
+            "mode": "save", "branch": connect_branch,
             "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
             "chunk_results": chunk_results,
             "any_saved": bool(saved_chunks),
             "overall_reconciled": overall_reconciled,
             "snapshot_already_recorded": already_recorded,
+            "tally_host_override": host_override, "tally_port_override": port_override,
         }
         store.close()
         default_from, default_to = from_date, to_date

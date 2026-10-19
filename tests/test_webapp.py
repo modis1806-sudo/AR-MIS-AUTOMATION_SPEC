@@ -509,6 +509,51 @@ def test_test_extraction_reports_all_passed(client, monkeypatch):
     assert b"2026-01-01" in resp.data and b"2026-01-07" in resp.data
 
 
+def test_test_extraction_port_override_is_used_for_this_run_and_not_saved(client, monkeypatch):
+    # Client's own real finding: Tally's HTTP server doesn't necessarily
+    # answer on the same port every session (CHARZE INDUSTRIES moved from
+    # :9020 to :9021 between two sessions). The override must reach the
+    # actual TallyClient construction, and must never silently rewrite
+    # Branch Master's own saved port.
+    class _RecordingFakeTallyClient(FakeTallyClientOK):
+        last_branch = None
+
+        def __init__(self, branch, timeout_seconds=15.0, voucher_type_aliases=None):
+            super().__init__(branch, timeout_seconds, voucher_type_aliases)
+            _RecordingFakeTallyClient.last_branch = branch
+
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", _RecordingFakeTallyClient)
+    _add_branch(client)  # saved with tally_port "9000"
+    resp = client.post(
+        "/test-extraction",
+        data={
+            "branch_id": "KOL", "from_date": "2026-01-01", "to_date": "2026-01-07",
+            "tally_port_override": "9021",
+        },
+    )
+    assert _RecordingFakeTallyClient.last_branch.tally_port == 9021
+    assert _RecordingFakeTallyClient.last_branch.tally_host == "localhost"
+    assert b"override in effect, not saved to Branch Master" in resp.data
+
+    resp2 = client.get("/branches")
+    assert b"9000" in resp2.data
+    assert b"9021" not in resp2.data
+
+
+def test_test_extraction_port_override_rejects_a_non_numeric_port(client, monkeypatch):
+    monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientOK)
+    _add_branch(client)
+    resp = client.post(
+        "/test-extraction",
+        data={
+            "branch_id": "KOL", "from_date": "2026-01-01", "to_date": "2026-01-07",
+            "tally_port_override": "not-a-port",
+        },
+        follow_redirects=True,
+    )
+    assert b"is not a valid port number" in resp.data
+
+
 def test_test_extraction_accepts_a_full_year_range(client, monkeypatch):
     # No artificial min/max on the range - a first-time backfill needs a
     # full financial year, not just a week.
