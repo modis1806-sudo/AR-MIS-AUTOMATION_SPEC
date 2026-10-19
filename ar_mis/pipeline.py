@@ -41,7 +41,7 @@ from ar_mis.registers import (
     build_receipt_journal_register_rows,
     build_sales_dn_register_row,
 )
-from ar_mis.rollforward import aggregate_party_movements_from_registers, resolve_opening_balances
+from ar_mis.rollforward import aggregate_party_movements_from_registers, resolve_opening_balances_from_registers
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
 from ar_mis.tally_client import TallyClient
@@ -119,7 +119,25 @@ def process_branch_data(
         store, branch_id, all_vouchers
     )
 
-    openings = resolve_opening_balances(store, party_names, branch_id, week_ending)
+    # The opening cutoff must never land AFTER any of this run's own
+    # vouchers - resolve_opening_balances_from_registers reads back
+    # whatever is already in the registers at this point, which (per the
+    # comment above) now includes the rows this exact call just
+    # persisted. Falling back to week_ending here would be wrong for any
+    # run whose own vouchers are dated before it (the normal case): a
+    # voucher would be counted once as this run's own movement AND again
+    # as a "prior" opening component. A caller with no period_start of
+    # its own (rare - every real caller has one) still gets a safe
+    # cutoff: the earliest date actually present in this run's own
+    # vouchers, or week_ending only when there are no vouchers at all to
+    # collide with.
+    if period_start is not None:
+        opening_cutoff = period_start
+    elif all_vouchers:
+        opening_cutoff = min(v.voucher_date for v in all_vouchers)
+    else:
+        opening_cutoff = week_ending
+    openings = resolve_opening_balances_from_registers(store, branch_id, party_names, opening_cutoff)
     movements = aggregate_party_movements_from_registers(
         sales_dn_rows_built, cn_rows_built, rj_rows_built, party_names, openings
     )

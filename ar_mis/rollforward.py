@@ -73,31 +73,40 @@ _TYPE_TO_FIELD = {
 }
 
 
-def resolve_opening_balances(
-    store, party_ledger_names: set[str], branch_id: str, week_ending: date
+def resolve_opening_balances_from_registers(
+    store,
+    branch_id: str,
+    party_ledger_names: set[str],
+    period_start: date,
 ) -> dict[str, Decimal]:
-    """Opening Balance per Section 2.5: a party's first-ever week opens
-    from Layer 1's Pre-MIS Outstanding; every week after opens from the
-    prior week's stored closing_computed. Never the other way round, and
-    never recomputed from scratch against Pre-MIS Outstanding once a
-    prior week exists - that would let the weekly pipeline silently
-    re-derive the one figure Section 2.5 requires to stay fixed.
+    """Opening Balance per Section 2.5, recomputed fresh every run rather
+    than chained off a prior run's own stored closing - the client's own
+    call this session ("why not use simple maths... instead of so much
+    criticality"), after the chained version's real, confirmed failure
+    mode: a backdated correction landing earlier than weeks already on
+    record resolved its opening from the wrong week (the bug that was
+    Store.get_latest_closing's whole reason for existing). There is no
+    chain left to strand, so there's nothing left to get wrong this way.
 
-    `week_ending` is the week THIS call is resolving an opening for -
-    required, not optional, specifically so "prior week" means the
-    latest week strictly BEFORE this one (Store.get_latest_closing's own
-    `before` param), never just "the latest week on record regardless of
-    where this one falls." The two are identical for every ordinary
-    forward-moving weekly run; they diverge exactly for a backdated drift
-    correction inserted earlier than weeks already on record - see
-    get_latest_closing's own docstring for the real, confirmed bug this
-    closes.
+    Opening = Pre-MIS Outstanding + every register movement already on
+    record for that party dated strictly before `period_start` (this
+    run's own window start) - exactly Section 2.4's own
+    Opening+Movements=Closing formula, just evaluated once, from scratch,
+    over whatever history already exists, instead of trusting a running
+    total. Same registers, same aggregate_party_movements_from_registers
+    used for this run's own week's movements below - the only difference
+    is the row set (everything before this run) and the opening handed
+    in (always Pre-MIS, never a prior result).
     """
-    openings: dict[str, Decimal] = {}
-    for party in party_ledger_names:
-        latest = store.get_latest_closing(party, branch_id, before=week_ending)
-        openings[party] = latest if latest is not None else store.get_opening_balance(party, branch_id)
-    return openings
+    prior_sales_dn = [r for r in store.all_sales_dn_rows(branch_id) if r.invoice_date < period_start]
+    prior_cn = [r for r in store.all_credit_note_rows(branch_id) if r.cn_date < period_start]
+    prior_rj = [r for r in store.all_receipt_journal_rows(branch_id) if r.txn_date < period_start]
+
+    pre_mis_openings = {party: store.get_opening_balance(party, branch_id) for party in party_ledger_names}
+    prior_movements = aggregate_party_movements_from_registers(
+        prior_sales_dn, prior_cn, prior_rj, party_ledger_names, pre_mis_openings
+    )
+    return {party: prior_movements[party].closing_computed for party in party_ledger_names}
 
 
 def aggregate_party_movements(

@@ -11,13 +11,12 @@ from ar_mis.models import (
     SalesDNRegisterRow,
     Voucher,
     VoucherType,
-    WeeklySnapshotRow,
 )
 from ar_mis.register_corrections import CORRECT_AMOUNT, EXCLUDE, REINSTATE, RegisterRowCorrection
 from ar_mis.rollforward import (
     aggregate_party_movements,
     aggregate_party_movements_from_registers,
-    resolve_opening_balances,
+    resolve_opening_balances_from_registers,
 )
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
@@ -100,90 +99,91 @@ def test_non_party_ledger_lines_are_excluded():
     assert "Freight Income" not in movements
 
 
-def test_resolve_opening_balances_uses_pre_mis_outstanding_for_first_week(tmp_path):
+def test_resolve_opening_balances_from_registers_uses_pre_mis_outstanding_when_nothing_precedes(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
-    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 5))
+    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 5))
     assert openings == {"Acme": Decimal("100000.00")}
     store.close()
 
 
-def test_resolve_opening_balances_uses_prior_week_closing_after_first_week(tmp_path):
+def test_resolve_opening_balances_from_registers_sums_every_movement_type_before_period_start(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Acme",
-            branch_id="KOL",
-            week_ending=date(2026, 1, 5),
-            opening=Decimal("100000.00"),
-            sales=Decimal("20000.00"),
-            credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"),
-            receipts=Decimal("-15000.00"),
-            journals=Decimal("0.00"),
-            closing_computed=Decimal("105000.00"),
-            closing_extracted=Decimal("105000.00"),
-            reconciled=True,
-            difference=Decimal("0.00"),
+    store.append_sales_dn_row(
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 1, 1), note_type=NoteType.INVOICE,
+            voucher_number="SB/1", bill_allocation_reference="SB/1", party_id="Acme",
+            taxable_value=Decimal("20000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("20000.00"), due_date=date(2026, 2, 1),
         )
     )
-    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 12))
-    # Must use last week's closing (105000), not re-seed from the
-    # Pre-MIS Outstanding baseline (100000) now that a prior week exists.
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 1, 3), voucher_type="Receipt", voucher_number="RCT/1",
+                party_id="Acme", amount=Decimal("15000.00"),
+            )
+        ]
+    )
+    # Pre-MIS 100000 + sales 20000 - receipt 15000 (raw Cr +15000, flipped
+    # to -15000) = 105000 - no weekly_snapshot row involved anywhere.
+    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 6))
     assert openings == {"Acme": Decimal("105000.00")}
     store.close()
 
 
-def test_resolve_opening_balances_ignores_a_later_week_for_a_backdated_correction(tmp_path):
-    # CONFIRMED against a real CHARZE INDUSTRIES incident: a backdated
-    # drift correction's week_ending (2026-01-05, the voucher's own real
-    # date) was inserted AFTER a later week (2026-01-12) was already on
-    # record. Resolving its opening must look at what existed BEFORE
-    # 2026-01-05 (nothing - Pre-MIS Outstanding), never at 2026-01-12's
-    # closing just because it happens to be the latest row overall.
+def test_resolve_opening_balances_from_registers_excludes_rows_on_or_after_period_start(tmp_path):
+    # The CHARZE INDUSTRIES incident this replaces: a backdated voucher's
+    # own real date can land earlier than register rows already on
+    # record for later dates. There's no chain left to confuse - this is
+    # a plain date filter, so a row on or after `period_start` must never
+    # be swept into an earlier period's opening.
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Acme", branch_id="KOL", week_ending=date(2026, 1, 12),
-            opening=Decimal("100000.00"), sales=Decimal("20000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("-15000.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("105000.00"), closing_extracted=Decimal("105000.00"),
-            reconciled=True, difference=Decimal("0.00"),
+    store.append_sales_dn_row(
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 1, 12), note_type=NoteType.INVOICE,
+            voucher_number="SB/2", bill_allocation_reference="SB/2", party_id="Acme",
+            taxable_value=Decimal("20000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("20000.00"), due_date=date(2026, 2, 12),
         )
     )
-    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 5))
+    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 5))
     assert openings == {"Acme": Decimal("100000.00")}
+    # The boundary itself is exclusive: a row dated exactly on period_start
+    # is this period's own movement, not a prior-period opening component.
+    openings_on_boundary = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 12))
+    assert openings_on_boundary == {"Acme": Decimal("100000.00")}
     store.close()
 
 
-def test_resolve_opening_balances_uses_closest_prior_week_for_a_backdated_correction_between_two_others(tmp_path):
-    # Same shape, but with a real prior week to roll forward from instead
-    # of Pre-MIS Outstanding - the correction must pick the closest week
-    # strictly before it (2026-01-05), never the latest one overall
-    # (2026-01-19).
+def test_resolve_opening_balances_from_registers_is_unaffected_by_insertion_order(tmp_path):
+    # Structurally re-proves the CHARZE bug can't recur: resolving an
+    # earlier period's opening is a pure sum-by-date over whatever's on
+    # record, regardless of which register row was appended first - a
+    # later-appended but earlier-dated (backdated) row is included
+    # exactly like any other, and a later-dated row already on record
+    # has no way to leak backwards into it.
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Acme", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("100000.00"), sales=Decimal("20000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("120000.00"), closing_extracted=Decimal("120000.00"),
-            reconciled=True, difference=Decimal("0.00"),
+    store.append_sales_dn_row(
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 1, 19), note_type=NoteType.INVOICE,
+            voucher_number="SB/LATER", bill_allocation_reference="SB/LATER", party_id="Acme",
+            taxable_value=Decimal("30000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("30000.00"), due_date=date(2026, 2, 19),
         )
     )
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Acme", branch_id="KOL", week_ending=date(2026, 1, 19),
-            opening=Decimal("120000.00"), sales=Decimal("30000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("150000.00"), closing_extracted=Decimal("150000.00"),
-            reconciled=True, difference=Decimal("0.00"),
+    store.append_sales_dn_row(
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 1, 1), note_type=NoteType.INVOICE,
+            voucher_number="SB/BACKDATED", bill_allocation_reference="SB/BACKDATED", party_id="Acme",
+            taxable_value=Decimal("20000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("20000.00"), due_date=date(2026, 2, 1),
         )
     )
-    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 12))
+    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 6))
     assert openings == {"Acme": Decimal("120000.00")}
     store.close()
 

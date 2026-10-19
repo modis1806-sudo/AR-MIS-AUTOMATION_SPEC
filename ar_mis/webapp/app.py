@@ -812,15 +812,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         A big range is saved one ar_mis.config.split_into_chunks piece at
         a time, in chronological order - required, not just tidy: each
-        chunk's opening balance rolls forward from the immediately
-        preceding chunk's own just-saved closing
-        (rollforward.resolve_opening_balances), so processing out of
-        order or skipping ahead past a failure would silently corrupt
-        every later chunk's opening. A chunk that already has recorded
-        data is skipped (first one in wins, same conflict rule Manual
-        Upload enforces) without stopping the run; a genuine extraction
-        failure on one chunk DOES stop the run, rather than risk building
-        every later chunk's opening on top of a gap.
+        chunk's opening balance is recomputed fresh from whatever's
+        already in the registers before its own start date
+        (rollforward.resolve_opening_balances_from_registers), which by
+        construction includes every preceding chunk's own just-saved
+        rows - so processing out of order or skipping ahead past a
+        failure would still silently miss real movement from the gap. A
+        chunk that already has recorded data is skipped (first one in
+        wins, same conflict rule Manual Upload enforces) without
+        stopping the run; a genuine extraction failure on one chunk DOES
+        stop the run, rather than risk building every later chunk's
+        opening on top of a gap.
         """
         store = get_store()
         branches = store.list_branches()

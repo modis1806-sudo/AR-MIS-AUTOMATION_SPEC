@@ -889,51 +889,6 @@ class Store:
         )
         self.conn.commit()
 
-    def get_latest_closing(self, party_id: str, branch_id: str, before: date | None = None) -> Decimal | None:
-        """Most recent weekly_snapshot.closing_extracted for this party/
-        branch, or None if no prior week exists yet. This - not
-        pre_mis_outstanding - is the correct Opening Balance for every
-        week after the first: Section 2.5 fixes the Pre-MIS Outstanding
-        baseline itself against weekly recalculation, it does not mean
-        every week's roll-forward re-seeds from that one figure. Week 1
-        opens from Pre-MIS Outstanding; every week after opens from the
-        prior week's closing, exactly like a standard roll-forward bridge.
-
-        Deliberately `closing_extracted` (Tally's own stated truth), not
-        `closing_computed` (this app's own workings) - client's explicit
-        decision: since a party is no longer blocked from having its data
-        written when it fails to reconcile (see process_branch_data), an
-        unresolved difference must not silently compound week after week
-        by rolling forward from our own possibly-wrong math. When a party
-        DID reconcile, the two figures are identical by definition, so
-        this changes nothing for the common case - it only matters for a
-        party currently showing a difference on the TB Reconciliation
-        Cross-Check sheet.
-
-        `before`, when given, restricts "most recent" to weeks strictly
-        earlier than this date - CONFIRMED a real, silent bug without it
-        (CHARZE INDUSTRIES, live): a backdated drift correction inserted a
-        week_ending chronologically BEFORE weeks already on record (the
-        normal, expected shape of a genuinely backdated voucher), and
-        without this filter the plain "most recent week_ending overall"
-        query handed back a LATER week's closing as if it were the
-        opening for this earlier one - weeks of unrelated movement
-        wrongly folded in as a phantom opening balance, with no error,
-        just a silent reconciliation difference downstream. Every
-        ordinary forward-moving weekly run is unaffected: there, the new
-        week being resolved is always already later than anything on
-        record, so "most recent before it" and "most recent overall" are
-        the same row.
-        """
-        query = "SELECT closing_extracted FROM weekly_snapshot WHERE party_id=? AND branch_id=?"
-        params: list = [party_id, branch_id]
-        if before is not None:
-            query += " AND week_ending < ?"
-            params.append(before.isoformat())
-        query += " ORDER BY week_ending DESC LIMIT 1"
-        row = self.conn.execute(query, params).fetchone()
-        return Decimal(row[0]) if row else None
-
     def get_opening_balance(self, party_id: str, branch_id: str) -> Decimal:
         row = self.conn.execute(
             "SELECT pre_mis_outstanding FROM customer_master WHERE party_id=? AND branch_id=?",
@@ -1073,15 +1028,19 @@ class Store:
         with no way to reextract cleanly.
 
         Deliberately restricted to the branch's OWN latest recorded run,
-        not any arbitrary past one: every run after the first rolls its
-        Opening Balance forward from the immediately preceding run's own
-        closing (get_latest_closing/rollforward.resolve_opening_balances).
-        Deleting an earlier run out from under a later one that's still
-        on record would leave that later run's opening balance dangling -
-        rolled forward from data that no longer exists, with no
-        mechanism here to notice or repair it. Deleting only ever the
-        newest run keeps the chain intact: nothing downstream depends on
-        it yet, since nothing downstream exists yet.
+        not any arbitrary past one. Opening Balance is no longer a chain
+        read dynamically off a prior run's stored closing (rollforward.
+        resolve_opening_balances_from_registers recomputes it fresh from
+        the registers on every run instead) - but each run's own Opening/
+        Closing(Workings) figures are still computed ONCE, at write time,
+        by summing whatever register rows existed then, and frozen into
+        that run's own weekly_snapshot row from then on. Deleting an
+        earlier run's register rows out from under a later one that's
+        still on record would leave that later run's already-stored
+        figures silently stale - baked-in sums over data that no longer
+        exists, with no mechanism here to notice or recompute them.
+        Deleting only ever the newest run avoids that: nothing later
+        depends on it yet, since nothing later exists yet.
 
         sales_dn_register/credit_note_register/receipt_journal_register
         carry no week_ending column of their own (see their own CREATE
@@ -1160,76 +1119,6 @@ class Store:
         )
         self.conn.execute(
             "DELETE FROM weekly_snapshot WHERE branch_id=? AND week_ending=?", (branch_id, w_end_s)
-        )
-        self.conn.commit()
-
-    def delete_drift_correction_week(self, branch_id: str, party_id: str, week_ending: date) -> None:
-        """Undoes one mis-incorporated drift-finding correction (ar_mis.
-        drift_correction.incorporate_drift_finding) - scoped to a single
-        party's single week_ending, never the whole branch's week the way
-        delete_branch_week is.
-
-        delete_branch_week's own "only the latest week" guard does not
-        apply here on purpose: a drift correction's whole point is to add
-        a week_ending chronologically BEFORE weeks already on record (see
-        rollforward.resolve_opening_balances' own docstring) - refusing
-        anything but the latest week would make this method unable to
-        undo the exact case it exists for. Safety instead comes from
-        scoping every delete to this one party AND this one week_ending,
-        never touching any other party's data that might coincidentally
-        share the same week_ending.
-
-        Deliberately does NOT try to repair any OTHER already-recorded
-        week's own figures - this only existed to resolve a wrong
-        Opening Balance for a backdated voucher inserted after fixing
-        that bug, which never touches any other party's or week's
-        already-correct chain. The drift_finding row for this voucher is
-        also deleted, not just reset to incorporated=0: the live
-        detection that first found it (ar_mis.ytd_debtor_cross_check.
-        drift_findings_from_missing_registers) re-finds the identical
-        backdated voucher fresh on the next extraction as long as it is
-        still genuinely missing from the registers, which it is again
-        now that this undo just removed it - no stale "already
-        incorporated, nothing to see here" row left behind to mask that.
-        """
-        w_end_s = week_ending.isoformat()
-        logged_vouchers = self.conn.execute(
-            "SELECT voucher_type, voucher_number FROM voucher_log"
-            " WHERE branch_id=? AND week_ending=? AND party_ledger_name=?",
-            (branch_id, w_end_s, party_id),
-        ).fetchall()
-        for voucher_type, voucher_number in logged_vouchers:
-            if voucher_type in ("Sales", "Debit Note"):
-                self.conn.execute(
-                    "DELETE FROM invoice_follow_up WHERE branch_id=? AND voucher_number=? AND party_id=?",
-                    (branch_id, voucher_number, party_id),
-                )
-                self.conn.execute(
-                    "DELETE FROM sales_dn_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
-                    (branch_id, voucher_number, party_id),
-                )
-            elif voucher_type == "Credit Note":
-                self.conn.execute(
-                    "DELETE FROM credit_note_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
-                    (branch_id, voucher_number, party_id),
-                )
-            elif voucher_type in ("Receipt", "Journal"):
-                self.conn.execute(
-                    "DELETE FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
-                    (branch_id, voucher_number, party_id),
-                )
-
-        self.conn.execute(
-            "DELETE FROM voucher_log WHERE branch_id=? AND week_ending=? AND party_ledger_name=?",
-            (branch_id, w_end_s, party_id),
-        )
-        self.conn.execute(
-            "DELETE FROM drift_finding WHERE branch_id=? AND party_ledger_name=? AND attributed_week=?",
-            (branch_id, party_id, w_end_s),
-        )
-        self.conn.execute(
-            "DELETE FROM weekly_snapshot WHERE branch_id=? AND party_id=? AND week_ending=?",
-            (branch_id, party_id, w_end_s),
         )
         self.conn.commit()
 

@@ -110,11 +110,15 @@ def test_recon_fail_does_not_block_other_parties_in_the_same_branch(store):
     assert voucher_numbers == {"SB/0142", "SB/0200"}
 
 
-def test_next_week_rolls_forward_from_tally_closing_after_a_mismatch(store):
+def test_week_two_opening_comes_from_this_apps_own_registers_not_tallys_stated_closing(store):
     # Week 1: computed 125000 (the sale) but Tally's own YTD closing says
-    # 124000 - a genuine, unresolved 1000 difference. Week 2 must open
-    # from Tally's 124000, not this app's own 125000, so the gap doesn't
-    # silently compound - see Store.get_latest_closing's docstring.
+    # 124000 - a genuine, unresolved 1000 difference. Per the redesign
+    # (client's explicit call this session: recompute fresh from the
+    # registers every time, never chain off a prior run's own stored
+    # closing), Opening Balance is never read back from Tally's stated
+    # figure - week 2 opens from this app's own 125000, so the same 1000
+    # gap shows up again, honestly, instead of being silently absorbed
+    # because Tally's own number happened to "win" once.
     store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
     week1_voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"), voucher_date=date(2026, 4, 6))
     outcome1 = process_branch_data(
@@ -126,11 +130,12 @@ def test_next_week_rolls_forward_from_tally_closing_after_a_mismatch(store):
     outcome2 = process_branch_data(
         store, "KOL", "Kolkata", date(2026, 4, 14), [week2_voucher], {"A & B Transport": Decimal("134000.00")}
     )
-    # 124000 (Tally's week-1 closing) + 10000 (week-2 sale) = 134000 -
-    # reconciles clean, confirming week 2 opened from 124000, not 125000.
-    assert outcome2.failed_parties == []
+    # 125000 (this app's own week-1 workings) + 10000 (week-2 sale) =
+    # 135000 vs Tally's own 134000 - the same real 1000 gap persists,
+    # never silently fixed by trusting last week's Tally figure.
     week2_row = store.weekly_snapshots_for_week(date(2026, 4, 14))[0]
-    assert Decimal(week2_row["opening"]) == Decimal("124000.00")
+    assert Decimal(week2_row["opening"]) == Decimal("125000.00")
+    assert outcome2.failed_parties == ["A & B Transport"]
 
 
 def test_credit_note_in_the_same_run_resolves_against_this_runs_own_sales_row(store):

@@ -8,7 +8,7 @@ from ar_mis.drift_correction import (
     DriftFindingNotAttributable,
     incorporate_drift_finding,
 )
-from ar_mis.models import CustomerMasterRecord, LedgerEntry, NoteType, SalesDNRegisterRow, Voucher, VoucherType
+from ar_mis.models import CustomerMasterRecord, LedgerEntry, Voucher, VoucherType
 from ar_mis.reconciliation import DriftFinding
 from ar_mis.storage import Store
 
@@ -132,47 +132,3 @@ def test_incorporate_refuses_a_journal_touching_no_tracked_debtor(store):
         incorporate_drift_finding(store, "KOL", finding_record, "AR Manager", datetime(2026, 9, 12, 11, 0))
 
 
-def test_delete_drift_correction_week_scoped_to_one_party_and_week(store):
-    # delete_drift_correction_week stays a general-purpose, narrowly-scoped
-    # cleanup tool independent of how a row got there - set up directly via
-    # Store rather than through incorporate_drift_finding, which no longer
-    # touches weekly_snapshot at all.
-    store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("0.00")))
-    store.upsert_customer_master(CustomerMasterRecord("Other Party", "Other Party", "KOL", Decimal("0.00")))
-
-    from ar_mis.models import WeeklySnapshotRow
-
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Acme", branch_id="KOL", week_ending=date(2026, 3, 8),
-            opening=Decimal("0.00"), sales=Decimal("20000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("20000.00"), closing_extracted=Decimal("99999.00"),
-            reconciled=False, difference=Decimal("79999.00"),
-        )
-    )
-    store.append_voucher_log_entry("KOL", date(2026, 3, 8), "Acme", "Sales", "SB/BAD", date(2026, 3, 1), Decimal("20000.00"))
-    store.append_sales_dn_row(
-        SalesDNRegisterRow(
-            branch_id="KOL", invoice_date=date(2026, 3, 1), note_type=NoteType.INVOICE,
-            voucher_number="SB/BAD", bill_allocation_reference="SB/BAD", party_id="Acme",
-            taxable_value=Decimal("20000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"),
-            invoice_value=Decimal("20000.00"), due_date=date(2026, 4, 1),
-        )
-    )
-    # Other party sharing the exact same week_ending - must survive untouched.
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Other Party", branch_id="KOL", week_ending=date(2026, 3, 8),
-            opening=Decimal("0.00"), sales=Decimal("7000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("7000.00"), closing_extracted=Decimal("7000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
-
-    store.delete_drift_correction_week("KOL", "Acme", date(2026, 3, 8))
-
-    assert store.all_sales_dn_rows("KOL") == []
-    other_party_week = store.weekly_snapshots_for_week(date(2026, 3, 8))
-    assert len(other_party_week) == 1 and other_party_week[0]["party_id"] == "Other Party"
