@@ -1163,6 +1163,75 @@ class Store:
         )
         self.conn.commit()
 
+    def delete_drift_correction_week(self, branch_id: str, party_id: str, week_ending: date) -> None:
+        """Undoes one mis-incorporated drift-finding correction (ar_mis.
+        drift_correction.incorporate_drift_finding) - scoped to a single
+        party's single week_ending, never the whole branch's week the way
+        delete_branch_week is.
+
+        delete_branch_week's own "only the latest week" guard does not
+        apply here on purpose: a drift correction's whole point is to add
+        a week_ending chronologically BEFORE weeks already on record (see
+        rollforward.resolve_opening_balances' own docstring) - refusing
+        anything but the latest week would make this method unable to
+        undo the exact case it exists for. Safety instead comes from
+        scoping every delete to this one party AND this one week_ending,
+        never touching any other party's data that might coincidentally
+        share the same week_ending.
+
+        Deliberately does NOT try to repair any OTHER already-recorded
+        week's own figures - this only existed to resolve a wrong
+        Opening Balance for a backdated voucher inserted after fixing
+        that bug, which never touches any other party's or week's
+        already-correct chain. The drift_finding row for this voucher is
+        also deleted, not just reset to incorporated=0: the live
+        detection that first found it (ar_mis.ytd_debtor_cross_check.
+        drift_findings_from_missing_registers) re-finds the identical
+        backdated voucher fresh on the next extraction as long as it is
+        still genuinely missing from the registers, which it is again
+        now that this undo just removed it - no stale "already
+        incorporated, nothing to see here" row left behind to mask that.
+        """
+        w_end_s = week_ending.isoformat()
+        logged_vouchers = self.conn.execute(
+            "SELECT voucher_type, voucher_number FROM voucher_log"
+            " WHERE branch_id=? AND week_ending=? AND party_ledger_name=?",
+            (branch_id, w_end_s, party_id),
+        ).fetchall()
+        for voucher_type, voucher_number in logged_vouchers:
+            if voucher_type in ("Sales", "Debit Note"):
+                self.conn.execute(
+                    "DELETE FROM invoice_follow_up WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                    (branch_id, voucher_number, party_id),
+                )
+                self.conn.execute(
+                    "DELETE FROM sales_dn_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                    (branch_id, voucher_number, party_id),
+                )
+            elif voucher_type == "Credit Note":
+                self.conn.execute(
+                    "DELETE FROM credit_note_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                    (branch_id, voucher_number, party_id),
+                )
+            elif voucher_type in ("Receipt", "Journal"):
+                self.conn.execute(
+                    "DELETE FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                    (branch_id, voucher_number, party_id),
+                )
+
+        self.conn.execute(
+            "DELETE FROM voucher_log WHERE branch_id=? AND week_ending=? AND party_ledger_name=?",
+            (branch_id, w_end_s, party_id),
+        )
+        self.conn.execute(
+            "DELETE FROM drift_finding WHERE branch_id=? AND party_ledger_name=? AND attributed_week=?",
+            (branch_id, party_id, w_end_s),
+        )
+        self.conn.execute(
+            "DELETE FROM weekly_snapshot WHERE branch_id=? AND party_id=? AND week_ending=?",
+            (branch_id, party_id, w_end_s),
+        )
+        self.conn.commit()
 
     def latest_weekly_snapshot_closing_by_party(self, as_of: date) -> dict[tuple[str, str], Decimal]:
         """Per (party_id, branch_id), the closing_extracted from that
