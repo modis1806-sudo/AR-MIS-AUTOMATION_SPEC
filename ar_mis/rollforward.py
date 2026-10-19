@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from ar_mis.money import to_money
@@ -72,17 +73,29 @@ _TYPE_TO_FIELD = {
 }
 
 
-def resolve_opening_balances(store, party_ledger_names: set[str], branch_id: str) -> dict[str, Decimal]:
+def resolve_opening_balances(
+    store, party_ledger_names: set[str], branch_id: str, week_ending: date
+) -> dict[str, Decimal]:
     """Opening Balance per Section 2.5: a party's first-ever week opens
     from Layer 1's Pre-MIS Outstanding; every week after opens from the
     prior week's stored closing_computed. Never the other way round, and
     never recomputed from scratch against Pre-MIS Outstanding once a
     prior week exists - that would let the weekly pipeline silently
     re-derive the one figure Section 2.5 requires to stay fixed.
+
+    `week_ending` is the week THIS call is resolving an opening for -
+    required, not optional, specifically so "prior week" means the
+    latest week strictly BEFORE this one (Store.get_latest_closing's own
+    `before` param), never just "the latest week on record regardless of
+    where this one falls." The two are identical for every ordinary
+    forward-moving weekly run; they diverge exactly for a backdated drift
+    correction inserted earlier than weeks already on record - see
+    get_latest_closing's own docstring for the real, confirmed bug this
+    closes.
     """
     openings: dict[str, Decimal] = {}
     for party in party_ledger_names:
-        latest = store.get_latest_closing(party, branch_id)
+        latest = store.get_latest_closing(party, branch_id, before=week_ending)
         openings[party] = latest if latest is not None else store.get_opening_balance(party, branch_id)
     return openings
 

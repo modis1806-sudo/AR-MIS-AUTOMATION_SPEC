@@ -103,7 +103,7 @@ def test_non_party_ledger_lines_are_excluded():
 def test_resolve_opening_balances_uses_pre_mis_outstanding_for_first_week(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
-    openings = resolve_opening_balances(store, {"Acme"}, "KOL")
+    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 5))
     assert openings == {"Acme": Decimal("100000.00")}
     store.close()
 
@@ -128,10 +128,63 @@ def test_resolve_opening_balances_uses_prior_week_closing_after_first_week(tmp_p
             difference=Decimal("0.00"),
         )
     )
-    openings = resolve_opening_balances(store, {"Acme"}, "KOL")
+    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 12))
     # Must use last week's closing (105000), not re-seed from the
     # Pre-MIS Outstanding baseline (100000) now that a prior week exists.
     assert openings == {"Acme": Decimal("105000.00")}
+    store.close()
+
+
+def test_resolve_opening_balances_ignores_a_later_week_for_a_backdated_correction(tmp_path):
+    # CONFIRMED against a real CHARZE INDUSTRIES incident: a backdated
+    # drift correction's week_ending (2026-01-05, the voucher's own real
+    # date) was inserted AFTER a later week (2026-01-12) was already on
+    # record. Resolving its opening must look at what existed BEFORE
+    # 2026-01-05 (nothing - Pre-MIS Outstanding), never at 2026-01-12's
+    # closing just because it happens to be the latest row overall.
+    store = Store(str(tmp_path / "t.db"))
+    store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="Acme", branch_id="KOL", week_ending=date(2026, 1, 12),
+            opening=Decimal("100000.00"), sales=Decimal("20000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("-15000.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("105000.00"), closing_extracted=Decimal("105000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 5))
+    assert openings == {"Acme": Decimal("100000.00")}
+    store.close()
+
+
+def test_resolve_opening_balances_uses_closest_prior_week_for_a_backdated_correction_between_two_others(tmp_path):
+    # Same shape, but with a real prior week to roll forward from instead
+    # of Pre-MIS Outstanding - the correction must pick the closest week
+    # strictly before it (2026-01-05), never the latest one overall
+    # (2026-01-19).
+    store = Store(str(tmp_path / "t.db"))
+    store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="Acme", branch_id="KOL", week_ending=date(2026, 1, 5),
+            opening=Decimal("100000.00"), sales=Decimal("20000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("120000.00"), closing_extracted=Decimal("120000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    store.append_weekly_snapshot(
+        WeeklySnapshotRow(
+            party_id="Acme", branch_id="KOL", week_ending=date(2026, 1, 19),
+            opening=Decimal("120000.00"), sales=Decimal("30000.00"), credit_notes=Decimal("0.00"),
+            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
+            closing_computed=Decimal("150000.00"), closing_extracted=Decimal("150000.00"),
+            reconciled=True, difference=Decimal("0.00"),
+        )
+    )
+    openings = resolve_opening_balances(store, {"Acme"}, "KOL", date(2026, 1, 12))
+    assert openings == {"Acme": Decimal("120000.00")}
     store.close()
 
 

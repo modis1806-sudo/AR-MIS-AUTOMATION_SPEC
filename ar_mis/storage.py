@@ -889,7 +889,7 @@ class Store:
         )
         self.conn.commit()
 
-    def get_latest_closing(self, party_id: str, branch_id: str) -> Decimal | None:
+    def get_latest_closing(self, party_id: str, branch_id: str, before: date | None = None) -> Decimal | None:
         """Most recent weekly_snapshot.closing_extracted for this party/
         branch, or None if no prior week exists yet. This - not
         pre_mis_outstanding - is the correct Opening Balance for every
@@ -909,12 +909,29 @@ class Store:
         this changes nothing for the common case - it only matters for a
         party currently showing a difference on the TB Reconciliation
         Cross-Check sheet.
+
+        `before`, when given, restricts "most recent" to weeks strictly
+        earlier than this date - CONFIRMED a real, silent bug without it
+        (CHARZE INDUSTRIES, live): a backdated drift correction inserted a
+        week_ending chronologically BEFORE weeks already on record (the
+        normal, expected shape of a genuinely backdated voucher), and
+        without this filter the plain "most recent week_ending overall"
+        query handed back a LATER week's closing as if it were the
+        opening for this earlier one - weeks of unrelated movement
+        wrongly folded in as a phantom opening balance, with no error,
+        just a silent reconciliation difference downstream. Every
+        ordinary forward-moving weekly run is unaffected: there, the new
+        week being resolved is always already later than anything on
+        record, so "most recent before it" and "most recent overall" are
+        the same row.
         """
-        row = self.conn.execute(
-            "SELECT closing_extracted FROM weekly_snapshot WHERE party_id=? AND branch_id=?"
-            " ORDER BY week_ending DESC LIMIT 1",
-            (party_id, branch_id),
-        ).fetchone()
+        query = "SELECT closing_extracted FROM weekly_snapshot WHERE party_id=? AND branch_id=?"
+        params: list = [party_id, branch_id]
+        if before is not None:
+            query += " AND week_ending < ?"
+            params.append(before.isoformat())
+        query += " ORDER BY week_ending DESC LIMIT 1"
+        row = self.conn.execute(query, params).fetchone()
         return Decimal(row[0]) if row else None
 
     def get_opening_balance(self, party_id: str, branch_id: str) -> Decimal:

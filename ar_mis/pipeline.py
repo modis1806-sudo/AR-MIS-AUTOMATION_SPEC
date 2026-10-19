@@ -119,7 +119,7 @@ def process_branch_data(
         store, branch_id, all_vouchers
     )
 
-    openings = resolve_opening_balances(store, party_names, branch_id)
+    openings = resolve_opening_balances(store, party_names, branch_id, week_ending)
     movements = aggregate_party_movements_from_registers(
         sales_dn_rows_built, cn_rows_built, rj_rows_built, party_names, openings
     )
