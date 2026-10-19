@@ -148,6 +148,58 @@ Still outstanding before the first live production run:
 - Validate one branch end-to-end in parallel with the manual process (Section 5
   parallel-run requirement) before removing any manual step.
 
+## Backlog: cloud deployment, multiple concurrent users
+
+Client's stated actual goal for this build is a cloud-hosted server a few
+people can use concurrently — not the single-machine, single-user shape
+this build is in today. Logged here 2026-10-19, specifically **not**
+started — client's own instruction was to log this, not act on it yet.
+
+This directly conflicts with "Deployment target" above, which still says
+not to run this on a public cloud VM. That section reflects the spec's
+original LAN-only framing; reconciling the two (almost certainly: the
+webapp moves to the cloud, something narrower stays on-prem to reach
+Tally — see item 1) is itself part of this work, not a given already
+settled.
+
+What stands between today's build and that goal, roughly in order of how
+much each one blocks everything else:
+
+1. **Tally connectivity.** `TallyClient` talks to Tally's XML/HTTP gateway
+   directly, and that gateway has no authentication of its own — the
+   entire reason "Deployment target" above exists. A cloud-hosted app
+   cannot reach Tally directly; needs a secure private path back into the
+   office LAN (VPN, SSH tunnel, or a small on-prem relay that initiates
+   the connection outward so Tally's own port is never exposed to the
+   internet). Architecturally the biggest piece here — probably its own
+   project, not a config change.
+2. **No real authentication.** The Maker/Checker role picker is a session
+   toggle, not a login — every correction's "who" (e.g.
+   `RegisterRowCorrection.corrected_by`) is attribution a person types in
+   a text box, never a verified identity. Multiple real people sharing
+   this tool needs real accounts before the audit trail this whole system
+   is built around (who/when/why on every correction) means anything with
+   more than one person able to use it.
+3. **Dev server.** `app.run(..., debug=True)` (this module's own
+   `if __name__ == "__main__"` entry point) is Werkzeug's development
+   server, interactive debugger active — fine on localhost-only, a real
+   remote-code-execution risk the moment more than one person can reach
+   it. Needs a production WSGI server (`waitress`, given this runs on
+   Windows) and debug off before anyone else touches it.
+4. **SQLite under concurrent writes.** Workable for one person's
+   sequential actions; unproven under a few people writing at once
+   (corrections, extractions, follow-ups) — real risk of "database is
+   locked" contention, and no backup/replication story for a shared
+   cloud-hosted file today. Not necessarily a rewrite, but a real
+   question to answer deliberately, not assume away.
+5. **No HTTPS.** Fine on a trusted LAN, not fine once this leaves the
+   building.
+
+None of this conflicts with anything already built — register
+corrections, voucher type aliases, and the parsing fixes are all
+data-layer concerns, orthogonal to hosting/auth. Nothing here gets thrown
+away when this is picked up.
+
 ## Layout
 
 Extraction and core reconciliation:
