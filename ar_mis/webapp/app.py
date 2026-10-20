@@ -1353,11 +1353,20 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
 
         lookup = build_bill_reference_lookup(sales_dn_rows)
+        # Line count per voucher (client's own ask, Edit/Delete scope
+        # choice): a Maker deciding between "this line only" and "whole
+        # voucher" needs to know up front whether there's more than one
+        # line to collapse - never left to guess from the table alone.
+        voucher_line_counts: dict[tuple[str, str, str], int] = {}
+        for row in rj_rows:
+            key = (row.branch_id, row.voucher_number, row.party_id)
+            voucher_line_counts[key] = voucher_line_counts.get(key, 0) + 1
         display_rows = [
             {
                 "row": row,
                 "grouping": groupings.get((row.party_id, row.branch_id)),
                 "fields": compute_receipt_journal_display_fields(row, lookup, as_of),
+                "voucher_line_count": voucher_line_counts[(row.branch_id, row.voucher_number, row.party_id)],
             }
             for row in rj_rows
         ]
@@ -1654,6 +1663,79 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    @app.route("/registers/sales-dn/edit", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_row_edit():
+        """Client's explicit redesign this session: a register row is
+        corrected by mutating it directly here, never by a read-time
+        overlay (the retired ar_mis.register_corrections). row_id is the
+        row's own real sales_dn_register.id - Branch+Voucher+Party alone
+        would also work for this register (it's UNIQUE), but id is what
+        Store.edit_sales_dn_row and the audit trail actually key on.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        raw_new_value = request.form.get("new_invoice_value", "").strip()
+        reason = request.form.get("reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to edit.")
+        if not reason:
+            return _redisplay("Enter a reason for this edit.")
+        try:
+            new_value = to_money(Decimal(raw_new_value))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_new_value}' is not a valid invoice value.")
+
+        store = get_store()
+        try:
+            store.edit_sales_dn_row(row_id, new_value, reason, MAKER_ATTRIBUTION, datetime.now())
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Invoice value updated.", "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+    @app.route("/registers/sales-dn/delete", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_row_delete():
+        """Deletes the real row - see Store.delete_sales_dn_row's own
+        docstring for the cascade this triggers (Invoice Follow-Up note
+        removed, any CN/Receipt/Journal that had matched this invoice
+        unmatched back to unapplied).
+        """
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        reason = request.form.get("reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to delete.")
+        if not reason:
+            return _redisplay("Enter a reason for this delete.")
+
+        store = get_store()
+        try:
+            store.delete_sales_dn_row(row_id, reason, MAKER_ATTRIBUTION, datetime.now())
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Invoice deleted. Use the Register Row Audit Log to undo if needed.", "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
     @app.route("/registers/credit-notes")
     def credit_note_register():
         as_of = _parse_as_of()
@@ -1848,6 +1930,67 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(f"{voucher_number} reverted to Pending Review.", "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
+    @app.route("/registers/credit-notes/edit", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_row_edit():
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        raw_new_amount = request.form.get("new_cn_amount", "").strip()
+        reason = request.form.get("reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to edit.")
+        if not reason:
+            return _redisplay("Enter a reason for this edit.")
+        try:
+            new_amount = to_money(Decimal(raw_new_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_new_amount}' is not a valid CN amount.")
+
+        store = get_store()
+        try:
+            store.edit_credit_note_row(row_id, new_amount, reason, MAKER_ATTRIBUTION, datetime.now())
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("CN amount updated.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+    @app.route("/registers/credit-notes/delete", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_row_delete():
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        reason = request.form.get("reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to delete.")
+        if not reason:
+            return _redisplay("Enter a reason for this delete.")
+
+        store = get_store()
+        try:
+            store.delete_credit_note_row(row_id, reason, MAKER_ATTRIBUTION, datetime.now())
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Credit note deleted. Use the Register Row Audit Log to undo if needed.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
     @app.route("/registers/receipts-journals/reclassify", methods=["POST"])
     @requires_role("maker")
     def receipt_journal_reclassify():
@@ -2035,6 +2178,155 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             buf, as_attachment=True, download_name=f"Receipt_Journal_Register_{as_of.isoformat()}.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+    @app.route("/registers/receipts-journals/edit", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_row_edit():
+        """`scope` is the Maker's own explicit choice, never a hardcoded
+        default (client's own call): "line" edits only the one selected
+        bill-allocation line; "voucher" collapses every line of this
+        voucher into one, carrying the new amount - only meaningful when
+        more than one line actually exists.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        raw_new_amount = request.form.get("new_amount", "").strip()
+        reason = request.form.get("reason", "").strip()
+        scope = request.form.get("scope", "")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to edit.")
+        if scope not in ("line", "voucher"):
+            return _redisplay("Choose whether this edit applies to this line only or the whole voucher.")
+        if not reason:
+            return _redisplay("Enter a reason for this edit.")
+        try:
+            new_amount = to_money(Decimal(raw_new_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_new_amount}' is not a valid amount.")
+
+        store = get_store()
+        try:
+            store.edit_receipt_journal_row(
+                row_id, new_amount, reason, MAKER_ATTRIBUTION, datetime.now(), whole_voucher=(scope == "voucher")
+            )
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Amount updated.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/delete", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_row_delete():
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        reason = request.form.get("reason", "").strip()
+        scope = request.form.get("scope", "")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to delete.")
+        if scope not in ("line", "voucher"):
+            return _redisplay("Choose whether this delete applies to this line only or the whole voucher.")
+        if not reason:
+            return _redisplay("Enter a reason for this delete.")
+
+        store = get_store()
+        try:
+            store.delete_receipt_journal_row(
+                row_id, reason, MAKER_ATTRIBUTION, datetime.now(), whole_voucher=(scope == "voucher")
+            )
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Deleted. Use the Register Row Audit Log to undo if needed.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    _REGISTER_LABEL = {
+        "sales_dn": "Sales & DN Register", "credit_note": "Credit Note Register", "receipt_journal": "Receipt & Journal Register",
+    }
+    _AMOUNT_FIELD_BY_REGISTER = {"sales_dn": "invoice_value", "credit_note": "cn_amount", "receipt_journal": "amount"}
+
+    def _audit_entry_display(entry):
+        amount_field = _AMOUNT_FIELD_BY_REGISTER[entry.register]
+        before_amount = (
+            sum(Decimal(r[amount_field]) for r in entry.before) if entry.before else None
+        )
+        after_amount = (
+            sum(Decimal(r[amount_field]) for r in entry.after) if entry.after else None
+        )
+        return {
+            "entry": entry,
+            "register_label": _REGISTER_LABEL[entry.register],
+            "before_amount": before_amount,
+            "after_amount": after_amount,
+        }
+
+    @app.route("/registers/audit-log")
+    def register_row_audit_log():
+        """Client's own ask: a durable audit trail for every Edit/Delete/
+        Undo made on the three master registers, visible to both roles -
+        "so that no one misuses the same." Newest first; an entry already
+        undone, or an UNDO entry itself, has no Undo control of its own
+        (Store.undo_register_row_audit already refuses both, this just
+        keeps the checkbox from ever being offered for either case).
+        """
+        store = get_store()
+        entries = store.all_register_row_audit()
+        store.close()
+        already_undone_ids = {e.undone_of for e in entries if e.undone_of is not None}
+        rows = [_audit_entry_display(e) for e in entries]
+        return render_template(
+            "register_row_audit_log.html", rows=rows, already_undone_ids=already_undone_ids,
+        )
+
+    @app.route("/registers/audit-log/undo", methods=["POST"])
+    @requires_role("maker")
+    def register_row_audit_undo():
+        """Batch counterpart the client explicitly asked for alongside
+        single Undo - "it should be voucher wise or entry wise option
+        available for batch processing as well." Each selected entry is
+        undone independently; one bad id in the batch doesn't block the
+        rest, it's just reported as skipped.
+        """
+        selected = request.form.getlist("audit_ids")
+        if not selected:
+            flash("Select at least one audit entry to undo.", "error")
+            return redirect(url_for("register_row_audit_log"))
+
+        store = get_store()
+        undone_count = 0
+        skipped: list[str] = []
+        for raw_id in selected:
+            try:
+                audit_id = int(raw_id)
+            except ValueError:
+                continue
+            try:
+                store.undo_register_row_audit(audit_id, MAKER_ATTRIBUTION, datetime.now())
+                undone_count += 1
+            except ValueError as exc:
+                skipped.append(f"#{audit_id}: {exc}")
+        store.close()
+        message = f"Undone {undone_count} of {len(selected)} selected."
+        if skipped:
+            message += " Skipped - " + "; ".join(skipped)
+        flash(message, "success" if undone_count else "error")
+        return redirect(url_for("register_row_audit_log"))
 
     @app.route("/reports")
     def reports_home():

@@ -2513,6 +2513,84 @@ resolves former open item 1.
 
     Full suite green (648 tests) at this point.
 
+    **Phase 7b built and tested: the Edit/Delete/Undo UI itself.** Phase 7
+    built the storage layer only; this wires it into the three register
+    pages. A real gap surfaced immediately: SalesDNRegisterRow/
+    CreditNoteRegisterRow/ReceiptJournalRegisterRow carried no `id` field
+    at all, so nothing calling `all_sales_dn_rows()` etc. could ever learn
+    a row's own real `sales_dn_register.id`/`credit_note_register.id`/
+    `receipt_journal_register.id` - exactly what Phase 7's own Store
+    methods require as `row_id`. Fixed by adding `id: int | None =
+    field(default=None, compare=False)` to all three (`compare=False` so
+    a row built directly in a test fixture still equals one read back
+    from storage, confirmed against the one existing test doing exactly
+    that), populated by `all_sales_dn_rows`/`all_credit_note_rows`/
+    `all_receipt_journal_rows` on every read. This matters most for
+    Receipt & Journal: its own UNIQUE constraint is (branch_id,
+    voucher_number, party_id, target_doc_no, amount), so a multi-line
+    voucher's lines share the same (branch, voucher, party) the other two
+    registers' checkboxes already use as identity - only the real row id
+    can target one specific line unambiguously.
+
+    UI shape: considered reusing each page's existing row-select checkbox
+    (already wired to its own batch form - Follow-up on Sales & DN,
+    Resolve on Credit Note/Receipt & Journal) for Edit/Delete too, since
+    the client's own words described exactly that ("since we already do
+    have a check box to select any particular entry"). Rejected once
+    checked against the Receipt & Journal register's own UNIQUE
+    constraint above: that checkbox's value is the (branch, voucher,
+    party) composite key, which cannot disambiguate between two lines of
+    the same voucher - exactly the case a `whole_voucher` choice exists
+    to handle. Built instead as a per-row "Edit / Delete" `<details>`
+    dropdown, matching the pattern this app already uses for Resolve/
+    Revert on the Credit Note and Receipt & Journal pages - each row's own
+    dropdown carries its own real row id, so there's never a selection
+    ambiguity, and a Maker still gets a single Edit control and a single
+    Delete control per row, which is what the client's words actually
+    asked for even if the control reads as a per-row action rather than a
+    page-level batch button. Receipt & Journal's own Edit/Delete forms add
+    the explicit "This line only" / "Whole voucher" radio choice the
+    client's own words required ("Let the user decide, system shall not
+    decide") - never defaulted, both routes reject a missing/invalid
+    `scope` outright; a line count per voucher (`voucher_line_count`,
+    added to `_build_receipt_journal_display_rows`) is shown next to the
+    choice so a Maker isn't guessing whether there's anything to collapse.
+
+    New routes: `sales_dn_row_edit`/`sales_dn_row_delete`, `credit_note_
+    row_edit`/`credit_note_row_delete`, `receipt_journal_row_edit`/
+    `receipt_journal_row_delete` - all maker-only, all requiring a typed
+    reason, all redirecting back to the same `as_of` the Maker was
+    looking at. Attribution is `MAKER_ATTRIBUTION` ("Maker"), not a typed
+    "Your name" box: checked against the rest of the app first, since the
+    client's own parked item 5 ("remove Your Name... use the role of the
+    user instead") implies typed-name boxes exist to be removed - and
+    they mostly already don't. `sales_dn_follow_up_save`/`_batch`, both CN/
+    RJ `reclassify`/`_batch`/`revert_to_pending_review`, and every Pre-MIS
+    adjustment already use the fixed `MAKER_ATTRIBUTION` literal; the only
+    genuine typed-name holdout left in the whole app is Add to Registers'
+    own `incorporated_by` field (parked, untouched). Matching the
+    overwhelming existing convention here, rather than the one holdout,
+    is the reading that doesn't need redoing once item 5 is finally
+    tackled.
+
+    New `/registers/audit-log` page (`register_row_audit_log()`/
+    `register_row_audit_undo()`) - visible to both roles (the client's own
+    words: "keep an audit trail, so that no one misuses the same," not a
+    maker-only secret), newest first, with a per-register-type label, a
+    before/after amount computed in Python (never in the template - the
+    amount column name differs per register: invoice_value/cn_amount/
+    amount), and a checkbox + single "Undo selected" button exactly
+    matching the client's own ask for batch undo ("it should be voucher
+    wise or entry wise option available for batch processing as well").
+    An entry already undone, or an UNDO entry itself, never gets a
+    checkbox at all (Store.undo_register_row_audit already refuses both
+    cases; this just keeps the control from being offered in the first
+    place). Undo is maker-only; the log itself is read-only for a Checker.
+
+    Full suite green (664 tests - 16 new, covering edit/delete/cascade/
+    scope-choice/role-gating/audit-log/single-and-batch-undo) at this
+    point.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

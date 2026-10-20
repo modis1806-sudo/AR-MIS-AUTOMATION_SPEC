@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Register Row Audit Log{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<h1>Register Row Audit Log</h1>
+<p class="subtitle">Every Edit/Delete/Undo ever made on the Sales &amp; DN, Credit Note, and Receipt &amp; Journal Registers, newest first — a real mutation of the register row itself, never a read-time overlay, with this as the durable trail so no one misuses the same. Visible to both roles; only a Maker can Undo.</p>
+
+{% if rows %}
+<form id="audit-undo-form" method="post" action="{{ url_for('register_row_audit_undo') }}" onsubmit="return confirm('Undo every selected entry?');">
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr>
+      <th></th>
+      <th>Register</th><th>Action</th><th>Branch</th><th>Voucher</th><th>Party</th>
+      <th>Before</th><th>After</th><th>Reason</th><th>By</th><th>When</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for d in rows %}
+    {% set entry = d.entry %}
+    <tr>
+      <td>
+        {% if session.role == "maker" and entry.action != "UNDO" and entry.id not in already_undone_ids %}
+        <input type="checkbox" name="audit_ids" value="{{ entry.id }}" form="audit-undo-form">
+        {% endif %}
+      </td>
+      <td>{{ d.register_label }}</td>
+      <td>
+        {{ entry.action }}
+        {% if entry.undone_of %}<span class="pill">of #{{ entry.undone_of }}</span>{% endif %}
+        {% if entry.id in already_undone_ids %}<span class="pill status-active">Undone</span>{% endif %}
+      </td>
+      <td>{{ entry.branch_id }}</td>
+      <td>{{ entry.voucher_number }}</td>
+      <td>{{ entry.party_id }}</td>
+      <td>{{ d.before_amount|inr if d.before_amount is not none else '—' }}</td>
+      <td>{{ d.after_amount|inr if d.after_amount is not none else '—' }}</td>
+      <td>{{ entry.reason }}</td>
+      <td>{{ entry.performed_by }}</td>
+      <td>{{ entry.performed_at.strftime('%d %b %Y, %I:%M %p') }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if session.role == "maker" %}
+<div style="margin-top:12px;">
+  <button class="btn" type="submit" form="audit-undo-form">Undo selected</button>
+</div>
+{% endif %}
+</form>
+{% else %}
+<div class="card empty">No register edits, deletes, or undos recorded yet.</div>
+{% endif %}
+{% endblock %}

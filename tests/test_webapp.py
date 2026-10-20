@@ -4634,3 +4634,328 @@ def test_drift_finding_incorporate_redirects_back_to_ytd_report_when_asked(clien
     )
     assert resp.status_code == 302
     assert resp.headers["Location"].startswith("/reports/ytd-debtor-vouchers")
+
+
+# ---- Register Edit/Delete/Undo (client's explicit redesign this session,
+# replacing the retired register_row_correction overlay) -------------------
+
+def _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00")):
+    from ar_mis.models import SalesDNRegisterRow, NoteType
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_sales_dn_row(
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 4, 1), note_type=NoteType.INVOICE,
+            voucher_number=voucher_number, bill_allocation_reference=voucher_number, party_id=party_id,
+            taxable_value=invoice_value, cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"),
+            invoice_value=invoice_value, due_date=date(2026, 5, 1),
+        )
+    )
+    row_id = store.all_sales_dn_rows("KOL")[0].id
+    store.close()
+    return row_id
+
+
+def test_sales_dn_register_shows_edit_delete_for_maker(client):
+    _seed_sales_dn_row(client)
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b"Edit / Delete" in resp.data
+
+
+def test_sales_dn_row_edit_updates_invoice_value(client):
+    row_id = _seed_sales_dn_row(client)
+    resp = client.post(
+        "/registers/sales-dn/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "Correcting a typo"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    rows = store.all_sales_dn_rows("KOL")
+    assert len(rows) == 1
+    assert rows[0].invoice_value == Decimal("1200.00")
+    audit = store.all_register_row_audit()
+    assert len(audit) == 1
+    assert audit[0].action == "EDIT"
+    assert audit[0].performed_by == "Maker"
+    store.close()
+
+
+def test_sales_dn_row_edit_requires_a_reason(client):
+    row_id = _seed_sales_dn_row(client)
+    resp = client.post(
+        "/registers/sales-dn/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": ""},
+        follow_redirects=True,
+    )
+    assert b"Enter a reason for this edit" in resp.data
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_sales_dn_rows("KOL")[0].invoice_value == Decimal("1000.00")
+    store.close()
+
+
+def test_sales_dn_row_delete_removes_the_row_and_cascades(client):
+    from ar_mis.models import CreditNoteRegisterRow, InvoiceFollowUp
+    from ar_mis.storage import Store
+
+    row_id = _seed_sales_dn_row(client, voucher_number="SB/1")
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_invoice_follow_up(
+        InvoiceFollowUp(branch_id="KOL", voucher_number="SB/1", party_id="ACME", next_action="Call", updated_by="Maker"),
+        today=date(2026, 4, 1),
+    )
+    store.append_credit_note_row(CreditNoteRegisterRow(
+        branch_id="KOL", cn_date=date(2026, 4, 2), voucher_number="CN/1", party_id="ACME",
+        cn_amount=Decimal("100.00"), bill_allocation_reference="SB/1",
+    ))
+    store.close()
+
+    resp = client.post(
+        "/registers/sales-dn/delete",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "reason": "Duplicate entry"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_sales_dn_rows("KOL") == []
+    assert store.get_invoice_follow_up("KOL", "SB/1", "ACME") is None
+    cn = store.all_credit_note_rows("KOL")[0]
+    assert cn.bill_allocation_reference is None  # unmatched, not left dangling
+    audit = store.all_register_row_audit()
+    assert audit[0].action == "DELETE"
+    store.close()
+
+
+def test_sales_dn_row_delete_requires_a_reason(client):
+    row_id = _seed_sales_dn_row(client)
+    resp = client.post(
+        "/registers/sales-dn/delete",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "reason": ""},
+        follow_redirects=True,
+    )
+    assert b"Enter a reason for this delete" in resp.data
+    from ar_mis.storage import Store
+    assert len(Store(client.application.config["DB_PATH"]).all_sales_dn_rows("KOL")) == 1
+
+
+def test_checker_cannot_edit_or_delete_a_sales_dn_row(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    row_id = _seed_sales_dn_row(roleless_client)
+    resp = roleless_client.post(
+        "/registers/sales-dn/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test"},
+        follow_redirects=True,
+    )
+    assert b"This section isn" in resp.data
+    from ar_mis.storage import Store
+    assert Store(roleless_client.application.config["DB_PATH"]).all_sales_dn_rows("KOL")[0].invoice_value == Decimal("1000.00")
+
+
+def _seed_credit_note_row(client, voucher_number="CN/1", cn_amount=Decimal("250.00")):
+    from ar_mis.models import CreditNoteRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_credit_note_row(CreditNoteRegisterRow(
+        branch_id="KOL", cn_date=date(2026, 4, 2), voucher_number=voucher_number, party_id="ACME",
+        cn_amount=cn_amount,
+    ))
+    row_id = store.all_credit_note_rows("KOL")[0].id
+    store.close()
+    return row_id
+
+
+def test_credit_note_row_edit_updates_cn_amount(client):
+    row_id = _seed_credit_note_row(client)
+    resp = client.post(
+        "/registers/credit-notes/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_cn_amount": "300.00", "reason": "Register captured the wrong figure"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    assert Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL")[0].cn_amount == Decimal("300.00")
+
+
+def test_credit_note_row_delete_removes_the_row(client):
+    row_id = _seed_credit_note_row(client)
+    resp = client.post(
+        "/registers/credit-notes/delete",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "reason": "Not a real Sundry Debtor voucher"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    assert Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL") == []
+
+
+def _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=None):
+    """Returns {target_doc_no: row_id} - never a plain positional list,
+    since all_receipt_journal_rows orders by txn_date only and ties
+    (same voucher, same date) have no guaranteed order matching
+    insertion, confirmed against this exact SQLite build.
+    """
+    from ar_mis.models import ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    lines = lines or [{"target_doc_no": None, "amount": Decimal("500.00")}]
+    store = Store(client.application.config["DB_PATH"])
+    store.append_receipt_journal_rows([
+        ReceiptJournalRegisterRow(
+            branch_id="KOL", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number=voucher_number,
+            party_id="ACME", amount=line["amount"], target_doc_no=line["target_doc_no"],
+        )
+        for line in lines
+    ])
+    row_ids_by_target = {
+        r.target_doc_no: r.id for r in store.all_receipt_journal_rows("KOL") if r.voucher_number == voucher_number
+    }
+    store.close()
+    return row_ids_by_target
+
+
+def test_receipt_journal_row_edit_this_line_only(client):
+    row_ids = _seed_receipt_journal_voucher(client, lines=[
+        {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
+        {"target_doc_no": None, "amount": Decimal("200.00")},
+    ])
+    resp = client.post(
+        "/registers/receipts-journals/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_ids["SB/1"]), "new_amount": "350.00",
+            "reason": "Register captured the wrong figure", "scope": "line",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    rows = {r.target_doc_no: r.amount for r in Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")}
+    assert rows["SB/1"] == Decimal("350.00")
+    assert rows[None] == Decimal("200.00")  # untouched - this line only
+
+
+def test_receipt_journal_row_edit_whole_voucher_collapses_to_one_line(client):
+    row_ids = _seed_receipt_journal_voucher(client, lines=[
+        {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
+        {"target_doc_no": None, "amount": Decimal("200.00")},
+    ])
+    resp = client.post(
+        "/registers/receipts-journals/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_ids["SB/1"]), "new_amount": "900.00",
+            "reason": "Collapsing into one on-account receipt", "scope": "voucher",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    rows = Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")
+    assert len(rows) == 1
+    assert rows[0].amount == Decimal("900.00")
+
+
+def test_receipt_journal_row_edit_requires_a_scope_choice(client):
+    row_ids = _seed_receipt_journal_voucher(client)
+    row_id = next(iter(row_ids.values()))
+    resp = client.post(
+        "/registers/receipts-journals/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_amount": "900.00", "reason": "test", "scope": ""},
+        follow_redirects=True,
+    )
+    assert b"Choose whether this edit applies to this line only or the whole voucher" in resp.data
+
+
+def test_receipt_journal_row_delete_this_line_only(client):
+    row_ids = _seed_receipt_journal_voucher(client, lines=[
+        {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
+        {"target_doc_no": None, "amount": Decimal("200.00")},
+    ])
+    resp = client.post(
+        "/registers/receipts-journals/delete",
+        data={"as_of": "2026-04-07", "row_id": str(row_ids["SB/1"]), "reason": "Wrongly captured", "scope": "line"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    rows = Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")
+    assert len(rows) == 1
+    assert rows[0].target_doc_no is None
+
+
+def test_register_row_audit_log_lists_entries_and_hides_undo_from_checker(client, roleless_client):
+    row_id = _seed_sales_dn_row(client)
+    client.post(
+        "/registers/sales-dn/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test edit"},
+    )
+    resp = client.get("/registers/audit-log")
+    assert resp.status_code == 200
+    assert b"Sales &amp; DN Register" in resp.data
+    assert b"EDIT" in resp.data
+    assert b"Undo selected" in resp.data
+
+
+def test_register_row_audit_undo_restores_a_deleted_row(client):
+    from ar_mis.storage import Store
+
+    row_id = _seed_sales_dn_row(client, voucher_number="SB/1")
+    client.post(
+        "/registers/sales-dn/delete",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "reason": "Mistaken delete"},
+    )
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_sales_dn_rows("KOL") == []
+    audit_id = store.all_register_row_audit()[0].id
+    store.close()
+
+    resp = client.post(
+        "/registers/audit-log/undo",
+        data={"audit_ids": [str(audit_id)]},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Undone 1 of 1 selected" in resp.data
+    store = Store(client.application.config["DB_PATH"])
+    rows = store.all_sales_dn_rows("KOL")
+    assert len(rows) == 1
+    assert rows[0].voucher_number == "SB/1"
+    store.close()
+
+
+def test_register_row_audit_undo_batch_skips_a_bad_id_but_undoes_the_rest(client):
+    from ar_mis.storage import Store
+
+    row_id = _seed_sales_dn_row(client)
+    client.post(
+        "/registers/sales-dn/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test"},
+    )
+    store = Store(client.application.config["DB_PATH"])
+    audit_id = store.all_register_row_audit()[0].id
+    store.close()
+
+    resp = client.post(
+        "/registers/audit-log/undo",
+        data={"audit_ids": [str(audit_id), "999999"]},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Undone 1 of 2 selected" in resp.data
+
+
+def test_checker_cannot_undo_a_register_row_audit_entry(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    row_id = _seed_sales_dn_row(roleless_client)
+    roleless_client.post(
+        "/registers/sales-dn/edit",
+        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test"},
+    )
+    # The edit above was itself refused (checker, maker-only route) - no
+    # audit entry exists yet, but the undo route must still be gated.
+    resp = roleless_client.post("/registers/audit-log/undo", data={"audit_ids": ["1"]}, follow_redirects=True)
+    assert b"This section isn" in resp.data

@@ -74,13 +74,13 @@
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
       <th data-tt-filter data-tt-col="branch">Branch</th><th>Date</th><th>Customer</th><th data-tt-filter data-tt-col="grouping">Grouping</th><th>CN Number</th><th>Original Invoice/DN Ref</th>
       <th>Linked Invoice Date</th><th>Linked Invoice Value</th>
-      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th>
+      <th>CN Amount</th><th>Open/Unapplied CN Amount</th><th data-tt-filter data-tt-col="classification">Classification</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th><th>Edit / Delete</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
       <th></th><th></th><th></th><th></th><th></th><th></th>
       <th></th><th></th>
-      <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th>
+      <th data-tt-sum="creditnotes:cn_amount">0.00</th><th data-tt-sum="creditnotes:unapplied_amount">0.00</th><th></th><th></th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -137,6 +137,28 @@
         {% endif %}
       </td>
       <td data-tt-col="unapplied_bucket">{{ d.unapplied_bucket or '—' }}</td>
+      <td>
+        <details>
+          <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Edit / Delete</summary>
+          <div style="margin-top:6px; display:flex; flex-direction:column; gap:8px; min-width:200px;">
+            <form method="post" action="{{ url_for('credit_note_row_edit') }}" style="display:flex; flex-direction:column; gap:4px;">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <input type="hidden" name="row_id" value="{{ row.id }}">
+              <label style="font-size:11px; font-weight:600;">New CN Amount</label>
+              <input type="number" step="0.01" name="new_cn_amount" value="{{ row.cn_amount }}" required>
+              <input name="reason" placeholder="Reason" required>
+              <button class="btn secondary" type="submit" style="padding:4px 10px;">Save edit</button>
+            </form>
+            <form method="post" action="{{ url_for('credit_note_row_delete') }}" style="display:flex; flex-direction:column; gap:4px;"
+                  onsubmit="return confirm('Delete {{ row.voucher_number }}?');">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <input type="hidden" name="row_id" value="{{ row.id }}">
+              <input name="reason" placeholder="Reason" required>
+              <button class="btn" type="submit" style="padding:4px 10px;">Delete</button>
+            </form>
+          </div>
+        </details>
+      </td>
     </tr>
   {% endfor %}
   </tbody>

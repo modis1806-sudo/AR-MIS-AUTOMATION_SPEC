@@ -1412,6 +1412,7 @@ class Store:
                 invoice_value=Decimal(r["invoice_value"]),
                 due_date=date.fromisoformat(r["due_date"]),
                 job_id=r["job_id"],
+                id=r["id"],
             )
             for r in cur.fetchall()
         ]
@@ -1453,6 +1454,7 @@ class Store:
                 bill_allocation_reference=r["bill_allocation_reference"],
                 classification=RegisterClassification(r["classification"]),
                 reason=r["reason"],
+                id=r["id"],
             )
             for r in cur.fetchall()
         ]
@@ -1564,6 +1566,7 @@ class Store:
                 target_doc_no=r["target_doc_no"],
                 classification=RegisterClassification(r["classification"]),
                 narration=r["narration"],
+                id=r["id"],
             )
             for r in cur.fetchall()
         ]

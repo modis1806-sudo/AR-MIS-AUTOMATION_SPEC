@@ -361,6 +361,13 @@ class SalesDNRegisterRow:
     due_date: date
     job_id: str | None = None
     round_off: Decimal = Decimal("0.00")
+    # The row's own sales_dn_register.id - None for a row built directly
+    # (test fixtures, a fresh row not yet persisted), populated by
+    # Store.all_sales_dn_rows() for a row read back from storage. This is
+    # what a register page's Edit/Delete form targets - compare=False so
+    # it never affects equality (existing callers comparing a constructed
+    # row against one read back from storage keep working unchanged).
+    id: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -388,6 +395,9 @@ class CreditNoteRegisterRow:
     bill_allocation_reference: str | None = None
     classification: RegisterClassification = RegisterClassification.CURRENT
     reason: str = ""
+    # The row's own credit_note_register.id - see SalesDNRegisterRow.id's
+    # own docstring for why this is compare=False.
+    id: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -419,6 +429,13 @@ class ReceiptJournalRegisterRow:
     target_doc_no: str | None = None
     classification: RegisterClassification = RegisterClassification.CURRENT
     narration: str = ""
+    # The row's own receipt_journal_register.id - see SalesDNRegisterRow.
+    # id's own docstring for why this is compare=False. This is the one
+    # that matters most: a multi-line Receipt/Journal voucher's lines
+    # share (branch_id, voucher_number, party_id), so this id is the only
+    # way to target one specific line for Edit/Delete rather than the
+    # whole voucher.
+    id: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
