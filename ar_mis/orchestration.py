@@ -55,5 +55,14 @@ class BranchRunOutcome:
     PARTYLEDGERNAME. party_ledger_name is "" when the voucher itself
     carries no usable party hint.
     """
+    pending_review_auto_matched: list[tuple[str, str, str]] = field(default_factory=list)
+    """(register, voucher_number, party_id) 3-tuples promoted this run
+    from Pending Review to Matched because their own reference now
+    resolves against the current Sales & DN Register - a voucher and
+    its own invoice that arrived in different extraction runs, finally
+    reconciled without a human needing to click Resolve by hand (see
+    ar_mis.registers.find_pending_review_rows_now_resolvable). register
+    is "Credit Note" or "Receipt/Journal".
+    """
 
 

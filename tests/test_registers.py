@@ -12,6 +12,7 @@ from ar_mis.models import (
     NoteType,
     ReceiptJournalRegisterRow,
     RegisterClassification,
+    SalesDNRegisterRow,
     Voucher,
     VoucherType,
     YtdDebtorVoucherRow,
@@ -39,6 +40,7 @@ from ar_mis.registers import (
     compute_unapplied_cash_by_party,
     financial_year_label,
     compute_unapplied_cn_by_party,
+    find_pending_review_rows_now_resolvable,
     is_discount_ledger,
     is_round_off_ledger,
     RegisterBuildExceptions,
@@ -1412,3 +1414,102 @@ def test_credit_note_display_fields_for_unresolved_reference():
     fields = compute_credit_note_display_fields(cn, {})
     assert fields.linked_invoice_date is None
     assert fields.linked_invoice_value is None
+
+
+# ---- find_pending_review_rows_now_resolvable (client's own catch:
+# a Pending Review row never got re-evaluated once its own invoice
+# arrived in a LATER extraction run) ----------------------------------
+
+
+def test_recheck_promotes_a_credit_note_once_its_reference_resolves():
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV001",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001")}
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable([cn], [], lookup)
+    assert cn_resolvable == [cn]
+    assert rj_resolvable == []
+
+
+def test_recheck_leaves_a_credit_note_alone_when_still_unresolved():
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV-UNKNOWN",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable([cn], [], {})
+    assert cn_resolvable == []
+    assert rj_resolvable == []
+
+
+def test_recheck_never_touches_a_matched_or_pre_mis_credit_note():
+    matched = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV001",
+        classification=RegisterClassification.CURRENT,
+    )
+    pre_mis = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/02",
+        party_id="ACME", cn_amount=Decimal("300.00"), bill_allocation_reference="INV002",
+        classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001"), ("ACME", "INV002"): _invoice("INV002")}
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable([matched, pre_mis], [], lookup)
+    assert cn_resolvable == []
+
+
+def test_recheck_promotes_a_receipt_journal_voucher_once_every_line_resolves():
+    line1 = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    line2 = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("300.00"), target_doc_no="INV002",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001"), ("ACME", "INV002"): _invoice("INV002")}
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable([], [line1, line2], lookup)
+    assert rj_resolvable == [("9", "ACME")]
+
+
+def test_recheck_does_not_promote_a_voucher_when_only_some_lines_resolve():
+    line1 = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    line2 = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("300.00"), target_doc_no="INV-STILL-UNKNOWN",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001")}
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable([], [line1, line2], lookup)
+    assert rj_resolvable == []
+
+
+def test_recheck_promotes_a_voucher_whose_unapplied_leg_has_no_reference_of_its_own():
+    # The voucher-level invariant (build_receipt_journal_register_rows)
+    # sweeps an on-account leg with no reference at all into Pending
+    # Review too, purely because a sibling line in the same voucher was.
+    # That leg must never block promotion on its own account once the
+    # REAL unresolved line resolves - it never had anything to resolve.
+    applied_line = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    unapplied_leg = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("100.00"), target_doc_no=None,
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001")}
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable(
+        [], [applied_line, unapplied_leg], lookup
+    )
+    assert rj_resolvable == [("9", "ACME")]

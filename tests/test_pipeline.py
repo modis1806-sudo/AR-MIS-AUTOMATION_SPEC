@@ -13,7 +13,7 @@ covered elsewhere.
 from datetime import date, datetime
 from decimal import Decimal
 
-from ar_mis.models import CustomerMasterRecord, LedgerEntry, Voucher, VoucherType
+from ar_mis.models import CustomerMasterRecord, LedgerEntry, RegisterClassification, Voucher, VoucherType
 from ar_mis.orchestration import ExtractionOutcome
 from ar_mis.pipeline import process_branch_data
 from ar_mis.storage import Store
@@ -327,3 +327,32 @@ def test_party_tb_balance_replace_is_scoped_to_its_own_branch(store):
 
     assert {key[0] for key in store.all_party_tb_balances("KOL")} == {"Alpha Traders"}
     assert {key[0] for key in store.all_party_tb_balances("MUM")} == {"Gamma Traders"}
+
+
+def test_a_pending_review_credit_note_auto_matches_once_its_invoice_arrives_in_a_later_run(store):
+    # Client's own real case: CN/185/2627 was extracted before its own
+    # invoice ever reached the register (a later catch-up, in real life),
+    # left stuck on Pending Review with no automatic way back to Matched
+    # even once the invoice existed. This proves process_branch_data's
+    # own second run closes that gap without any manual Resolve.
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    cn_voucher = Voucher(
+        voucher_type=VoucherType.CREDIT_NOTE, voucher_date=date(2026, 5, 14), voucher_number="CN/01",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-200.00"), bill_name="INV001", bill_type="Agst Ref"),
+        ],
+    )
+    outcome1 = process_branch_data(store, "KOL", "Kolkata", date(2026, 5, 16), [cn_voucher], {"ACME": Decimal("200.00")})
+    assert outcome1.pending_review_auto_matched == []
+    cn = store.all_credit_note_rows("KOL")[0]
+    assert cn.classification == RegisterClassification.PENDING_REVIEW
+
+    invoice_voucher = _sales_voucher("INV001", "ACME", Decimal("1000.00"), voucher_date=date(2026, 4, 23))
+    outcome2 = process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 5, 23), [invoice_voucher], {"ACME": Decimal("800.00")}
+    )
+
+    assert outcome2.pending_review_auto_matched == [("Credit Note", "CN/01", "ACME")]
+    cn = store.all_credit_note_rows("KOL")[0]
+    assert cn.classification == RegisterClassification.CURRENT

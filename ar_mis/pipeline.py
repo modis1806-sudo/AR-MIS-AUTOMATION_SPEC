@@ -27,6 +27,7 @@ from ar_mis.models import (
     CreditNoteRegisterRow,
     CustomerMasterRecord,
     ReceiptJournalRegisterRow,
+    RegisterClassification,
     SalesDNRegisterRow,
     Voucher,
     VoucherType,
@@ -39,6 +40,7 @@ from ar_mis.registers import (
     build_credit_note_register_row,
     build_receipt_journal_register_rows,
     build_sales_dn_register_row,
+    find_pending_review_rows_now_resolvable,
 )
 from ar_mis.rollforward import compute_party_closings_as_of
 from ar_mis.sign import flip_sign
@@ -115,6 +117,17 @@ def process_branch_data(
         store, branch_id, all_vouchers
     )
 
+    # Client's own catch, live-testing: a CN/Receipt/Journal classified
+    # Pending Review at ITS OWN extraction time never got re-evaluated
+    # once its own invoice later showed up in a different run (catch-up,
+    # non-chronological backfill, an invoice added after the fact) - it
+    # stayed stuck even once the register's own live Linked Invoice
+    # display already showed it resolving. Run before reconciliation
+    # below, not after, so THIS run's own movements/reconciliation
+    # already reflect whatever just got promoted, not a one-run-stale
+    # picture.
+    pending_review_auto_matched = _recheck_pending_review_rows(store, branch_id)
+
     # Live reconciliation, client's explicit call this session: Tally's
     # own stated closing vs one full recompute from EVERY register row
     # on record for that party through week_ending, done fresh here and
@@ -167,7 +180,37 @@ def process_branch_data(
         failed_parties=[r.party_ledger_name for r in failed],
         new_parties=new_parties,
         register_build_exceptions=register_exceptions.unattributable_party,
+        pending_review_auto_matched=pending_review_auto_matched,
     )
+
+
+def _recheck_pending_review_rows(store: Store, branch_id: str) -> list[tuple[str, str, str]]:
+    """Storage-touching half of registers.find_pending_review_rows_now_
+    resolvable - that function only decides what's now resolvable; this
+    reads the branch's current register state, calls it, and writes the
+    promotion through the same Store methods a human clicking Resolve
+    already uses (resolve_credit_note_classification/resolve_receipt_
+    journal_classification), with a reason that says this was automatic,
+    never a silent change indistinguishable from a human's own Resolve.
+    """
+    lookup = build_bill_reference_lookup(store.all_sales_dn_rows(branch_id))
+    cn_rows = store.all_credit_note_rows(branch_id)
+    rj_rows = store.all_receipt_journal_rows(branch_id)
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable(cn_rows, rj_rows, lookup)
+
+    promoted: list[tuple[str, str, str]] = []
+    reason = "Auto-matched: the reference now points to an invoice tracked in the Sales & DN Register"
+    for row in cn_resolvable:
+        store.resolve_credit_note_classification(
+            branch_id, row.voucher_number, row.party_id, RegisterClassification.CURRENT, reason
+        )
+        promoted.append(("Credit Note", row.voucher_number, row.party_id))
+    for voucher_number, party_id in rj_resolvable:
+        store.resolve_receipt_journal_classification(
+            branch_id, voucher_number, party_id, RegisterClassification.CURRENT
+        )
+        promoted.append(("Receipt/Journal", voucher_number, party_id))
+    return promoted
 
 
 def _build_and_persist_registers(

@@ -526,6 +526,63 @@ def build_bill_reference_lookup(
     return {(row.party_id, row.bill_allocation_reference): row for row in sales_dn_rows}
 
 
+def find_pending_review_rows_now_resolvable(
+    cn_rows: list[CreditNoteRegisterRow],
+    rj_rows: list[ReceiptJournalRegisterRow],
+    lookup: dict[tuple[str, str], SalesDNRegisterRow],
+) -> tuple[list[CreditNoteRegisterRow], list[tuple[str, str]]]:
+    """Client's own live-testing catch: a CN/Receipt/Journal voucher is
+    classified Pending Review exactly once, at its own extraction time,
+    against whatever invoices existed in the register that instant -
+    build_credit_note_register_row/build_receipt_journal_register_rows,
+    above. Nothing ever revisits an already-stored Pending Review row
+    once its own invoice shows up in a LATER run (catch-up, a backfill
+    out of chronological order, an invoice added after the fact via Add
+    to Registers) - it stays stuck, even though the register's own
+    Linked Invoice Date/Value display (built from a live lookup, not the
+    stored classification) already shows it resolving. This is the
+    re-check: called with a FRESH lookup built from the register's
+    current state, it finds every stored Pending Review row that would
+    classify CURRENT if built today - the caller (ar_mis.pipeline) is
+    the one that actually writes the promotion.
+
+    Only ever promotes to CURRENT (Matched) - never to Pre-MIS, which
+    stays a human judgment call made through Resolve exactly as before.
+    A reference that still doesn't resolve is left alone; this never
+    guesses at what an unresolved reference means.
+
+    Receipt & Journal's own voucher-level invariant applies here exactly
+    as it does at build time (see build_receipt_journal_register_rows):
+    a voucher is only promoted as a whole if EVERY one of its own
+    Pending Review lines for that party now resolves - a line with no
+    reference at all (target_doc_no is None, swept into Pending Review
+    only because a sibling line in the same voucher was) never blocks
+    promotion on its own account, since it never had anything to
+    resolve. A partial promotion would recreate the exact phantom-
+    imbalance bug that invariant exists to prevent.
+
+    Returns (CN rows to promote, (voucher_number, party_id) RJ keys to
+    promote) - never mutates anything itself.
+    """
+    cn_resolvable = [
+        row for row in cn_rows
+        if row.classification == RegisterClassification.PENDING_REVIEW
+        and row.bill_allocation_reference is not None
+        and (row.party_id, row.bill_allocation_reference) in lookup
+    ]
+
+    rj_pending_by_voucher: dict[tuple[str, str], list[ReceiptJournalRegisterRow]] = {}
+    for row in rj_rows:
+        if row.classification == RegisterClassification.PENDING_REVIEW:
+            rj_pending_by_voucher.setdefault((row.voucher_number, row.party_id), []).append(row)
+    rj_resolvable = [
+        key for key, rows in rj_pending_by_voucher.items()
+        if all(r.target_doc_no is None or (r.party_id, r.target_doc_no) in lookup for r in rows)
+    ]
+
+    return cn_resolvable, rj_resolvable
+
+
 def compute_unapplied_cash_by_party(
     rows: list[ReceiptJournalRegisterRow],
 ) -> dict[str, Decimal]:
