@@ -448,22 +448,43 @@
       });
     });
 
-    // Client's own catch: scrolling a wide register table horizontally
-    // to reach an open Edit/Delete/Resolve/Revert <details> panel, it's
-    // easy to lose track of which row it belongs to. Highlighting the
-    // row itself for as long as its own panel is open (never more than
-    // one open at a time per row, and this doesn't care how many rows
-    // have one open at once) fixes that with no layout change needed.
+    // Client's own catch: scrolling a wide register table horizontally,
+    // it's easy to lose track of which row is selected or has an open
+    // Edit/Delete/Resolve/Revert panel. A row is highlighted for as long
+    // as EITHER is true - its own row-select checkbox is ticked, or any
+    // of its own <details> panels is open - checked fresh on every
+    // trigger rather than tracked as two separate states.
+    function updateRowHighlight(row) {
+      var checkbox = row.querySelector("[data-tt-row-select]");
+      var checked = !!(checkbox && checkbox.checked);
+      var anyOpen = Array.prototype.some.call(row.querySelectorAll("details"), function (d) {
+        return d.open;
+      });
+      row.classList.toggle("tt-row-highlighted", checked || anyOpen);
+    }
     Array.prototype.forEach.call(table.querySelectorAll("tr[data-tt-row] details"), function (details) {
       var row = details.closest("tr[data-tt-row]");
       if (!row) return;
       details.addEventListener("toggle", function () {
-        var anyOpen = Array.prototype.some.call(row.querySelectorAll("details"), function (d) {
-          return d.open;
-        });
-        row.classList.toggle("tt-row-open-panel", anyOpen);
+        updateRowHighlight(row);
       });
     });
+    Array.prototype.forEach.call(table.querySelectorAll("tr[data-tt-row] [data-tt-row-select]"), function (cb) {
+      var row = cb.closest("tr[data-tt-row]");
+      if (!row) return;
+      cb.addEventListener("change", function () {
+        updateRowHighlight(row);
+      });
+    });
+    // select-all sets .checked directly on every visible row's checkbox
+    // without firing its own "change" event (setting a checkbox's own
+    // checked property programmatically never does) - re-run highlight
+    // for every row it touches, same as a real click would have.
+    if (selectAll) {
+      selectAll.addEventListener("change", function () {
+        rows.forEach(updateRowHighlight);
+      });
+    }
 
     applyFilters();
   }
