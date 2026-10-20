@@ -77,7 +77,7 @@
       <th data-tt-filter data-tt-col="allocation_type">Allocation Type</th><th>Target Doc No.</th><th>Linked Invoice Date</th><th>Linked Invoice Value</th>
       <th>Applied Amount</th><th>Unapplied Balance</th>
       <th data-tt-filter data-tt-col="classification">Classification</th><th>DPD at Application</th><th data-tt-filter data-tt-col="unapplied_bucket">Unapplied Ageing</th><th>Invoice Fin Year</th>
-      <th>Narration</th><th>Edit / Delete</th>
+      <th>Narration</th><th>Edit</th><th>Delete</th>
     </tr>
     <tr class="tt-totals-row" title="Total of whatever rows the search/filters above currently show">
       <th></th>
@@ -86,7 +86,7 @@
       <th></th><th></th><th></th><th></th>
       <th data-tt-sum="receiptjournal:applied_amount">0.00</th><th data-tt-sum="receiptjournal:unapplied_balance">0.00</th>
       <th></th><th></th><th></th><th></th>
-      <th></th><th></th>
+      <th></th><th></th><th></th>
     </tr>
   </thead>
   <tbody>
@@ -151,10 +151,10 @@
       <td>{{ row.narration or '—' }}</td>
       <td>
         <details>
-          <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Edit / Delete</summary>
+          <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Edit</summary>
           <div style="margin-top:6px; display:flex; flex-direction:column; gap:8px; min-width:220px;">
             {% if d.voucher_line_count > 1 %}
-            <div style="font-size:11px; color:#6b7280;">This voucher has {{ d.voucher_line_count }} lines - choose below whether this edit/delete applies to this line only or collapses the whole voucher.</div>
+            <div style="font-size:11px; color:#6b7280;">This voucher has {{ d.voucher_line_count }} lines - choose below whether this edit applies to this line only or collapses the whole voucher.</div>
             {% endif %}
             <form method="post" action="{{ url_for('receipt_journal_row_edit') }}" style="display:flex; flex-direction:column; gap:4px;">
               <input type="hidden" name="as_of" value="{{ as_of }}">
@@ -166,17 +166,34 @@
               <input name="reason" placeholder="Reason" required>
               <button class="btn secondary" type="submit" style="padding:4px 10px;">Save edit</button>
             </form>
-            <form method="post" action="{{ url_for('receipt_journal_row_delete') }}" style="display:flex; flex-direction:column; gap:4px;"
-                  onsubmit="return confirm('Delete {{ row.voucher_number }} - the scope you picked below?');">
-              <input type="hidden" name="as_of" value="{{ as_of }}">
-              <input type="hidden" name="row_id" value="{{ row.id }}">
-              <label style="font-size:11px;"><input type="radio" name="scope" value="line" checked> This line only</label>
-              <label style="font-size:11px;"><input type="radio" name="scope" value="voucher"> Whole voucher</label>
-              <input name="reason" placeholder="Reason" required>
-              <button class="btn" type="submit" style="padding:4px 10px;">Delete</button>
-            </form>
           </div>
         </details>
+      </td>
+      <td>
+        {% if d.voucher_line_count > 1 %}
+        <details>
+          <summary class="btn" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Delete</summary>
+          <form method="post" action="{{ url_for('receipt_journal_row_delete') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:180px;"
+                onsubmit="return confirm('Delete {{ row.voucher_number }} - the scope you picked below?');">
+            <input type="hidden" name="as_of" value="{{ as_of }}">
+            <input type="hidden" name="row_id" value="{{ row.id }}">
+            <div style="font-size:11px; color:#6b7280;">This voucher has {{ d.voucher_line_count }} lines.</div>
+            <label style="font-size:11px;"><input type="radio" name="scope" value="line" checked> This line only</label>
+            <label style="font-size:11px;"><input type="radio" name="scope" value="voucher"> Whole voucher</label>
+            <input name="reason" placeholder="Reason" required>
+            <button class="btn" type="submit" style="padding:4px 10px;">Confirm delete</button>
+          </form>
+        </details>
+        {% else %}
+        <form method="post" action="{{ url_for('receipt_journal_row_delete') }}" style="display:flex; gap:4px; min-width:160px;"
+              onsubmit="return confirm('Delete {{ row.voucher_number }}?');">
+          <input type="hidden" name="as_of" value="{{ as_of }}">
+          <input type="hidden" name="row_id" value="{{ row.id }}">
+          <input type="hidden" name="scope" value="line">
+          <input name="reason" placeholder="Reason" style="width:90px;" required>
+          <button class="btn" type="submit" style="padding:4px 10px;">Delete</button>
+        </form>
+        {% endif %}
       </td>
     </tr>
   {% endfor %}

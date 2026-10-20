@@ -4661,7 +4661,8 @@ def test_sales_dn_register_shows_edit_delete_for_maker(client):
     _seed_sales_dn_row(client)
     resp = client.get("/registers/sales-dn")
     assert resp.status_code == 200
-    assert b"Edit / Delete" in resp.data
+    assert b">Edit<" in resp.data
+    assert b">Delete<" in resp.data
 
 
 def test_sales_dn_row_edit_updates_invoice_value(client):

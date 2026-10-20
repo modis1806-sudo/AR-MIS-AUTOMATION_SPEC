@@ -123,8 +123,12 @@
     // Pending Review row, before it ever gets a data-tt-filter-value) -
     // stripped for the same reason rowSearchText strips it below: a
     // <select>'s own option labels are boilerplate, not this row's data.
+    // <details> (Resolve/Revert/Edit/Delete's own collapsed forms) is
+    // stripped the same way - its placeholder/label text (e.g. "Reason",
+    // "Save edit") is boilerplate present on every row, never this row's
+    // own data, whether the panel is open or still collapsed.
     var clone = cell.cloneNode(true);
-    Array.prototype.forEach.call(clone.querySelectorAll("select"), function (s) {
+    Array.prototype.forEach.call(clone.querySelectorAll("select, details"), function (s) {
       s.parentNode.removeChild(s);
     });
     return clone.textContent.trim();
@@ -141,11 +145,23 @@
   // (if any) already carries the real value and is included below.
   function rowSearchText(row) {
     var clone = row.cloneNode(true);
-    Array.prototype.forEach.call(clone.querySelectorAll("select"), function (s) {
+    // <details> stripped alongside <select> - a row's own collapsed
+    // Resolve/Revert/Edit/Delete panel is boilerplate markup (labels,
+    // placeholders, button text), never this row's own data, and
+    // leaving it in made a search for a word like "reason" match every
+    // single row (a live-caught regression once Edit/Delete's own forms
+    // added that word to every row), plus cloning and scanning it on
+    // every keystroke across a 600+ row table was real, measurable lag.
+    Array.prototype.forEach.call(clone.querySelectorAll("select, details"), function (s) {
       s.parentNode.removeChild(s);
     });
     var text = clone.textContent || "";
     Array.prototype.forEach.call(row.querySelectorAll('input[type="text"], input[type="number"]'), function (el) {
+      // An input living inside a <details> panel is excluded for the
+      // same reason - its current value (e.g. a prefilled "New Invoice
+      // Value") is still that row's own real figure elsewhere in the
+      // visible cells, so nothing is lost, only the duplicate noise.
+      if (el.closest("details")) return;
       text += " " + (el.value || "");
     });
     return text.toLowerCase();
@@ -429,6 +445,23 @@
         if (!window.confirm(message)) {
           evt.preventDefault();
         }
+      });
+    });
+
+    // Client's own catch: scrolling a wide register table horizontally
+    // to reach an open Edit/Delete/Resolve/Revert <details> panel, it's
+    // easy to lose track of which row it belongs to. Highlighting the
+    // row itself for as long as its own panel is open (never more than
+    // one open at a time per row, and this doesn't care how many rows
+    // have one open at once) fixes that with no layout change needed.
+    Array.prototype.forEach.call(table.querySelectorAll("tr[data-tt-row] details"), function (details) {
+      var row = details.closest("tr[data-tt-row]");
+      if (!row) return;
+      details.addEventListener("toggle", function () {
+        var anyOpen = Array.prototype.some.call(row.querySelectorAll("details"), function (d) {
+          return d.open;
+        });
+        row.classList.toggle("tt-row-open-panel", anyOpen);
       });
     });
 
