@@ -35,7 +35,6 @@ from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree as ET
 
 from ar_mis.models import LedgerEntry, ManualYtdVoucherRow, Voucher, VoucherType
-from ar_mis.registers import classify_tax_ledger, is_discount_ledger, is_round_off_ledger
 
 _BARE_AMPERSAND = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
 
@@ -340,38 +339,40 @@ def parse_voucher_collection(
         # real vouchers in one week, one summing 5 x Rs 20000 stock-item
         # allocations to the exact Rs 100000 the party was debited).
         #
-        # Originally gated on "fewer than 2 top-level entries", on the
-        # assumption that party + CGST + SGST at top level meant a
-        # complete picture. CONFIRMED WRONG against a different real
-        # client (CHARZE INDUSTRIES): an item invoice can carry exactly
-        # that 3-entry top-level shape - party, "OUTPUT CGST 9%", "OUTPUT
-        # SGST 9%" - with the actual Sales amount living ONLY inside
-        # inventory allocations, never at top level at all. That count-
-        # based gate never fired for these, silently producing a Taxable
-        # Value of just the tax amounts with the real revenue missing
-        # entirely. The real signal is not how many top-level entries
-        # exist, but whether any of them (besides the party's own leg) is
-        # an actual revenue entry rather than a tax or round-off ledger -
-        # falling back only when none is keeps the original protection
-        # (most real invoices already carry a complete top-level picture
-        # AND their own inventory detail - 154 real vouchers in the same
-        # file have both - so unconditionally adding inventory allocations
-        # on top of those would double-count revenue).
-        # CONFIRMED against real CHARZE INDUSTRIES data (CIPL/213/26-27):
-        # a Discount Given line is the only non-party, non-tax, non-
-        # round-off entry at top level - it used to read as "this voucher
-        # already has its revenue line", wrongly suppressing the fallback
-        # below and leaving taxable_value built from the discount alone
-        # (Rs 169.49) with the real Rs 13,559.32 Sales amount, which lived
-        # only in ALLINVENTORYENTRIES.LIST, never read at all.
-        has_top_level_revenue = any(
-            entry.party_ledger_name != party_ledger_name
-            and classify_tax_ledger(entry.party_ledger_name) is None
-            and not is_round_off_ledger(entry.party_ledger_name)
-            and not is_discount_ledger(entry.party_ledger_name)
-            for entry in entries
+        # Originally gated on "fewer than 2 top-level entries" (CHARZE
+        # INDUSTRIES disproved that - a party+2-tax 3-entry shape with the
+        # real Sales amount only in inventory), then on "does any top-
+        # level entry look like real revenue" (a Discount Given line, and
+        # later a genuine small top-level "Delivery Charges @18%" line
+        # ALONGSIDE an item-only sale - CIPL/213/26-27 and CIPL/1046/26-27,
+        # both real CHARZE INDUSTRIES vouchers - each satisfied that gate
+        # and wrongly suppressed the fallback, the second one leaving
+        # Taxable Value as just the Rs 1,500 delivery charge with the real
+        # Rs 6,01,822.40 item sale never read at all). Three different
+        # real shapes broke three different versions of "does a
+        # top-level entry that looks like revenue exist" - the actual
+        # question was never that.
+        #
+        # The real signal is Tally's own double-entry invariant: on a
+        # genuinely complete voucher, every entry (the party's own leg
+        # included) nets to zero. If the top-level entries alone don't
+        # balance to the party's own debited amount, something is
+        # missing, and the only place anything could be missing is
+        # inventory allocations - added here to fill the gap, never to
+        # replace what's already there, so a genuinely complete top-level
+        # picture (154 real vouchers in the same file carry BOTH a
+        # complete top-level entry AND their own, redundant inventory
+        # detail) is never double-counted: its own residual is already
+        # (near) zero, so nothing is added on top of it.
+        party_total = sum(
+            (e.amount_as_extracted for e in entries if e.party_ledger_name == party_ledger_name),
+            Decimal("0"),
         )
-        if not has_top_level_revenue:
+        other_total = sum(
+            (e.amount_as_extracted for e in entries if e.party_ledger_name != party_ledger_name),
+            Decimal("0"),
+        )
+        if abs(party_total + other_total) > Decimal("0.01"):
             for inv_el in v_el.findall("ALLINVENTORYENTRIES.LIST"):
                 for alloc_el in inv_el.findall("ACCOUNTINGALLOCATIONS.LIST"):
                     ledger_name = _text(alloc_el.find("LEDGERNAME"))

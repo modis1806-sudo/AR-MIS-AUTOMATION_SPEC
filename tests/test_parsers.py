@@ -372,6 +372,59 @@ def test_parse_voucher_collection_falls_back_to_inventory_allocations_when_only_
     assert sum(e.amount_as_extracted for e in sales_entries) == Decimal("13559.32")
 
 
+def test_parse_voucher_collection_falls_back_when_a_genuine_top_level_charge_sits_alongside_an_item_sale():
+    # Live-confirmed real incident (CHARZE INDUSTRIES, Jd Cables Limited,
+    # CIPL/1046/26-27): a genuine top-level "Delivery Charges @18%" line
+    # (Rs 1,500 - a real ancillary charge, not revenue in disguise and
+    # not a discount) sitting ALONGSIDE an item sale whose real Rs
+    # 6,01,822.40 Sales amount lives only in ALLINVENTORYENTRIES.LIST.
+    # The old presence-only gate saw Delivery Charges and concluded "this
+    # voucher already has its revenue line", wrongly suppressing the
+    # fallback and leaving Taxable Value as just the Rs 1,500 charge.
+    raw = """<ENVELOPE>
+ <VOUCHER>
+  <DATE>20260525</DATE>
+  <VOUCHERNUMBER>CIPL/1046/26-27</VOUCHERNUMBER>
+  <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+  <PARTYLEDGERNAME>Jd Cables Limited</PARTYLEDGERNAME>
+  <ALLINVENTORYENTRIES.LIST>
+   <ACCOUNTINGALLOCATIONS.LIST>
+    <LEDGERNAME>SALES</LEDGERNAME>
+    <AMOUNT>601822.40</AMOUNT>
+   </ACCOUNTINGALLOCATIONS.LIST>
+  </ALLINVENTORYENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>Jd Cables Limited</LEDGERNAME>
+   <AMOUNT>-711920.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>Delivery Charges @18%</LEDGERNAME>
+   <AMOUNT>1500.00</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>OUTPUT CGST 9%</LEDGERNAME>
+   <AMOUNT>54299.02</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>OUTPUT SGST 9%</LEDGERNAME>
+   <AMOUNT>54299.02</AMOUNT>
+  </LEDGERENTRIES.LIST>
+  <LEDGERENTRIES.LIST>
+   <LEDGERNAME>ROUND OFF</LEDGERNAME>
+   <AMOUNT>-0.44</AMOUNT>
+  </LEDGERENTRIES.LIST>
+ </VOUCHER>
+</ENVELOPE>"""
+    vouchers = parse_voucher_collection(raw, branch_id="CHRZ")
+    assert len(vouchers) == 1
+    entries = vouchers[0].entries
+    sales_entries = [e for e in entries if e.party_ledger_name == "SALES"]
+    assert sales_entries, "the real Sales ledger line must be pulled in from inventory allocations"
+    assert sum(e.amount_as_extracted for e in sales_entries) == Decimal("601822.40")
+    delivery_entries = [e for e in entries if e.party_ledger_name == "Delivery Charges @18%"]
+    assert sum(e.amount_as_extracted for e in delivery_entries) == Decimal("1500.00")
+
+
 def test_parse_voucher_collection_does_not_double_count_when_top_level_entries_are_complete():
     # A voucher that already has a full ledger-level picture (party + a
     # real revenue leg + tax) commonly ALSO carries inventory detail for
