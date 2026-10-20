@@ -356,3 +356,33 @@ def test_a_pending_review_credit_note_auto_matches_once_its_invoice_arrives_in_a
     assert outcome2.pending_review_auto_matched == [("Credit Note", "CN/01", "ACME")]
     cn = store.all_credit_note_rows("KOL")[0]
     assert cn.classification == RegisterClassification.CURRENT
+
+
+def test_a_receipt_line_auto_matches_independently_of_an_unresolved_sibling_line(store):
+    # Client's own live-testing catch: a Receipt with two Agst Ref lines
+    # against two different invoices, one of which later arrives in the
+    # register and one of which never does - the resolving line must
+    # promote to Matched on its own, never held back by its sibling.
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    receipt_voucher = Voucher(
+        voucher_type=VoucherType.RECEIPT, voucher_date=date(2026, 5, 14), voucher_number="RCPT/01",
+        branch_id="KOL", party_ledger_name="ACME",
+        entries=[
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("500.00"), bill_name="INV001", bill_type="Agst Ref"),
+            LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("300.00"), bill_name="INV-NEVER-ARRIVES", bill_type="Agst Ref"),
+        ],
+    )
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 5, 16), [receipt_voucher], {"ACME": Decimal("800.00")})
+    rows = {r.target_doc_no: r for r in store.all_receipt_journal_rows("KOL")}
+    assert rows["INV001"].classification == RegisterClassification.PENDING_REVIEW
+    assert rows["INV-NEVER-ARRIVES"].classification == RegisterClassification.PENDING_REVIEW
+
+    invoice_voucher = _sales_voucher("INV001", "ACME", Decimal("1000.00"), voucher_date=date(2026, 4, 23))
+    outcome2 = process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 5, 23), [invoice_voucher], {"ACME": Decimal("200.00")}
+    )
+
+    assert outcome2.pending_review_auto_matched == [("Receipt/Journal", "RCPT/01", "ACME")]
+    rows = {r.target_doc_no: r for r in store.all_receipt_journal_rows("KOL")}
+    assert rows["INV001"].classification == RegisterClassification.CURRENT
+    assert rows["INV-NEVER-ARRIVES"].classification == RegisterClassification.PENDING_REVIEW

@@ -410,10 +410,15 @@ def test_receipt_journal_promotes_entire_voucher_to_pending_review():
     )
     rows = build_receipt_journal_register_rows(voucher, {"ACME"}, lookup, RegisterBuildExceptions())
     assert len(rows) == 3
-    # Every line - including the resolved match and the unapplied leg -
-    # must share the most severe classification found anywhere in the
-    # voucher, per item 10's phantom-imbalance fix.
-    assert all(r.classification == RegisterClassification.PENDING_REVIEW for r in rows)
+    by_ref = {r.target_doc_no: r for r in rows}
+    # The invariant is narrower now (client's own live-testing catch): a
+    # REFERENCED line resolves on its own merits, independent of a
+    # sibling's different, unresolved reference - only the UNAPPLIED leg
+    # (no reference of its own to judge) inherits the worst case found
+    # among its referenced siblings.
+    assert by_ref["INV001"].classification == RegisterClassification.CURRENT
+    assert by_ref["UNKNOWN-REF"].classification == RegisterClassification.PENDING_REVIEW
+    assert by_ref[None].classification == RegisterClassification.PENDING_REVIEW  # the unapplied/New Ref leg
 
 
 def test_receipt_journal_all_current_when_every_line_resolves_or_is_unapplied():
@@ -1460,7 +1465,7 @@ def test_recheck_never_touches_a_matched_or_pre_mis_credit_note():
     assert cn_resolvable == []
 
 
-def test_recheck_promotes_a_receipt_journal_voucher_once_every_line_resolves():
+def test_recheck_promotes_every_referenced_line_once_each_resolves():
     line1 = ReceiptJournalRegisterRow(
         branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
         party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
@@ -1473,10 +1478,15 @@ def test_recheck_promotes_a_receipt_journal_voucher_once_every_line_resolves():
     )
     lookup = {("ACME", "INV001"): _invoice("INV001"), ("ACME", "INV002"): _invoice("INV002")}
     cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable([], [line1, line2], lookup)
-    assert rj_resolvable == [("9", "ACME")]
+    assert rj_resolvable == [line1, line2]
 
 
-def test_recheck_does_not_promote_a_voucher_when_only_some_lines_resolve():
+def test_recheck_promotes_a_resolving_line_even_though_its_sibling_still_doesnt():
+    # Client's own live-testing catch: a Receipt with two Agst Ref lines
+    # against two DIFFERENT invoices, one resolved and one not - the
+    # resolved one was wrongly stuck on Pending Review too by the old
+    # all-or-nothing version of this invariant. Each referenced line now
+    # stands on its own reference, never blocked by an unrelated sibling.
     line1 = ReceiptJournalRegisterRow(
         branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
         party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
@@ -1489,15 +1499,16 @@ def test_recheck_does_not_promote_a_voucher_when_only_some_lines_resolve():
     )
     lookup = {("ACME", "INV001"): _invoice("INV001")}
     cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable([], [line1, line2], lookup)
-    assert rj_resolvable == []
+    assert rj_resolvable == [line1]
 
 
 def test_recheck_promotes_a_voucher_whose_unapplied_leg_has_no_reference_of_its_own():
     # The voucher-level invariant (build_receipt_journal_register_rows)
     # sweeps an on-account leg with no reference at all into Pending
-    # Review too, purely because a sibling line in the same voucher was.
-    # That leg must never block promotion on its own account once the
-    # REAL unresolved line resolves - it never had anything to resolve.
+    # Review too, purely because a referenced sibling line in the same
+    # voucher was. That leg must never block promotion on its own
+    # account once the REAL unresolved line resolves - it never had
+    # anything to resolve.
     applied_line = ReceiptJournalRegisterRow(
         branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
         party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
@@ -1512,4 +1523,31 @@ def test_recheck_promotes_a_voucher_whose_unapplied_leg_has_no_reference_of_its_
     cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable(
         [], [applied_line, unapplied_leg], lookup
     )
-    assert rj_resolvable == [("9", "ACME")]
+    assert rj_resolvable == [applied_line, unapplied_leg]
+
+
+def test_recheck_leaves_the_unapplied_leg_pending_while_a_referenced_sibling_still_doesnt_resolve():
+    # The unapplied leg has no reference of its own to judge, so its own
+    # correct state is purely inherited from its referenced siblings'
+    # worst case - it must not promote just because ONE sibling resolved
+    # while another (different invoice) still hasn't.
+    resolved_line = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    unresolved_line = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("300.00"), target_doc_no="INV-STILL-UNKNOWN",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    unapplied_leg = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("100.00"), target_doc_no=None,
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001")}
+    cn_resolvable, rj_resolvable = find_pending_review_rows_now_resolvable(
+        [], [resolved_line, unresolved_line, unapplied_leg], lookup
+    )
+    assert rj_resolvable == [resolved_line]

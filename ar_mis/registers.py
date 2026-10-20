@@ -375,17 +375,29 @@ def build_receipt_journal_register_rows(
     classified using only its own entry's own correct party, never
     another party's name borrowed for it.
 
-    Voucher-level classification invariant (item 10): if ANY line
-    belonging to a given PARTY in this voucher resolves to PENDING_REVIEW
-    or is later confirmed PRE_MIS_ADJUSTMENT, EVERY line of THAT SAME
-    PARTY in this same voucher - including its own on-account/unapplied
-    leg, if it has one - must carry that same classification, or the
-    Unapplied Cash netting (item 9) develops a phantom imbalance from a
-    pre-go-live counterpart this system never captured. Scoped per party,
-    not across the whole voucher, now that one voucher can carry more
-    than one: Party A's own Pending Review doesn't need to drag Party B's
-    own, otherwise-clean lines into review too - their own Unapplied Cash
-    netting is independent of each other.
+    Voucher-level classification invariant (item 10), narrowed by a real
+    live-testing case (client's own: a Receipt with two Agst Ref lines
+    against two DIFFERENT invoices, one resolved, one not - the resolved
+    one was wrongly stuck on Pending Review too): the invariant exists to
+    protect an UNAPPLIED leg (target_doc_no is None) from phantom-
+    counting in the Unapplied Cash total (item 9) while a sibling line's
+    real nature is still unresolved or later confirmed PRE_MIS_ADJUSTMENT
+    - that unapplied leg has no reference of its own to judge, so its own
+    correct classification is purely inherited from its siblings' worst
+    case. It was NEVER meant to couple two lines that each carry their
+    OWN distinct reference - each of those is independently resolvable
+    the instant its own reference is checked, and one sibling's
+    unresolved reference says nothing about a different sibling's
+    already-resolved one. So: if ANY line belonging to a given PARTY in
+    this voucher is PENDING_REVIEW, every UNAPPLIED line (target_doc_no
+    is None) of that same party in this voucher is swept into
+    PENDING_REVIEW too; every REFERENCED line (target_doc_no is not
+    None) keeps whatever classification its own reference resolved to,
+    independent of its siblings. Scoped per party, not across the whole
+    voucher, now that one voucher can carry more than one: Party A's own
+    Pending Review doesn't need to drag Party B's own, otherwise-clean
+    lines into review too - their own Unapplied Cash netting is
+    independent of each other.
     """
     if voucher.voucher_type not in (VoucherType.RECEIPT, VoucherType.JOURNAL):
         raise ValueError(f"build_receipt_journal_register_rows called with {voucher.voucher_type}")
@@ -442,7 +454,7 @@ def build_receipt_journal_register_rows(
             )
         if any(r.classification == RegisterClassification.PENDING_REVIEW for r in rows):
             rows = [
-                r if r.classification == RegisterClassification.PENDING_REVIEW
+                r if (r.classification == RegisterClassification.PENDING_REVIEW or r.target_doc_no is not None)
                 else _replace_classification(r, RegisterClassification.PENDING_REVIEW)
                 for r in rows
             ]
@@ -530,7 +542,7 @@ def find_pending_review_rows_now_resolvable(
     cn_rows: list[CreditNoteRegisterRow],
     rj_rows: list[ReceiptJournalRegisterRow],
     lookup: dict[tuple[str, str], SalesDNRegisterRow],
-) -> tuple[list[CreditNoteRegisterRow], list[tuple[str, str]]]:
+) -> tuple[list[CreditNoteRegisterRow], list[ReceiptJournalRegisterRow]]:
     """Client's own live-testing catch: a CN/Receipt/Journal voucher is
     classified Pending Review exactly once, at its own extraction time,
     against whatever invoices existed in the register that instant -
@@ -552,17 +564,24 @@ def find_pending_review_rows_now_resolvable(
     guesses at what an unresolved reference means.
 
     Receipt & Journal's own voucher-level invariant applies here exactly
-    as it does at build time (see build_receipt_journal_register_rows):
-    a voucher is only promoted as a whole if EVERY one of its own
-    Pending Review lines for that party now resolves - a line with no
-    reference at all (target_doc_no is None, swept into Pending Review
-    only because a sibling line in the same voucher was) never blocks
-    promotion on its own account, since it never had anything to
-    resolve. A partial promotion would recreate the exact phantom-
-    imbalance bug that invariant exists to prevent.
+    as the NARROWED version build_receipt_journal_register_rows now
+    applies at build time (client's own live-testing catch: two Agst Ref
+    lines against two DIFFERENT invoices, one resolved and one not, with
+    the resolved one wrongly stuck on Pending Review by the old all-or-
+    nothing version of this invariant): a REFERENCED line (target_doc_no
+    is not None) promotes independently the instant its own reference
+    resolves, regardless of any sibling. An UNAPPLIED line (target_doc_no
+    is None, swept into Pending Review only because a referenced sibling
+    in the same voucher/party was) has no reference of its own to check,
+    so it only promotes once every one of its referenced siblings has
+    resolved - a partial promotion there would recreate the exact
+    phantom-imbalance bug that invariant exists to prevent.
 
-    Returns (CN rows to promote, (voucher_number, party_id) RJ keys to
-    promote) - never mutates anything itself.
+    Returns (CN rows to promote, RJ rows to promote) - never mutates
+    anything itself. Each RJ row promotes on its own now (never the
+    whole voucher/party group at once the way a human's own Resolve
+    action still does), since two referenced lines can resolve
+    independently of each other.
     """
     cn_resolvable = [
         row for row in cn_rows
@@ -575,10 +594,16 @@ def find_pending_review_rows_now_resolvable(
     for row in rj_rows:
         if row.classification == RegisterClassification.PENDING_REVIEW:
             rj_pending_by_voucher.setdefault((row.voucher_number, row.party_id), []).append(row)
-    rj_resolvable = [
-        key for key, rows in rj_pending_by_voucher.items()
-        if all(r.target_doc_no is None or (r.party_id, r.target_doc_no) in lookup for r in rows)
-    ]
+
+    rj_resolvable: list[ReceiptJournalRegisterRow] = []
+    for pending_rows in rj_pending_by_voucher.values():
+        referenced = [r for r in pending_rows if r.target_doc_no is not None]
+        unapplied = [r for r in pending_rows if r.target_doc_no is None]
+        resolved_refs = [r for r in referenced if (r.party_id, r.target_doc_no) in lookup]
+        still_unresolved_refs = [r for r in referenced if (r.party_id, r.target_doc_no) not in lookup]
+        rj_resolvable.extend(resolved_refs)
+        if unapplied and not still_unresolved_refs:
+            rj_resolvable.extend(unapplied)
 
     return cn_resolvable, rj_resolvable
 

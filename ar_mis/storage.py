@@ -1640,6 +1640,25 @@ class Store:
             for r in cur.fetchall()
         ]
 
+    def promote_receipt_journal_row_to_matched(self, row_id: int) -> None:
+        """Auto-recheck's own row-level promotion (registers.find_pending_
+        review_rows_now_resolvable), NOT a human's own Resolve action -
+        touches ONLY the one row whose own reference now resolves to a
+        tracked invoice. Unlike resolve_receipt_journal_classification
+        below (which deliberately still updates the WHOLE voucher/party
+        group, a human's own judgment call), two referenced lines of the
+        same voucher can now resolve independently of each other (client's
+        own live-testing catch), so sweeping a still-unresolved sibling
+        into Matched here would be a brand new, worse bug.
+        """
+        cur = self.conn.execute(
+            "UPDATE receipt_journal_register SET classification=? WHERE id=?",
+            (RegisterClassification.CURRENT.value, row_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"No receipt_journal_register row with id={row_id}")
+        self.conn.commit()
+
     def resolve_receipt_journal_classification(
         self, branch_id: str, voucher_number: str, party_id: str, classification: RegisterClassification
     ) -> None:
@@ -1647,7 +1666,11 @@ class Store:
         voucher in one statement, never a single line in isolation — a
         split classification within one voucher would recreate the exact
         phantom-imbalance bug this design is meant to close (see
-        ar_mis.registers.build_receipt_journal_register_rows).
+        ar_mis.registers.build_receipt_journal_register_rows). This is a
+        human's own Resolve/Revert judgment call - the narrower, row-level
+        promote_receipt_journal_row_to_matched above is for the automatic
+        recheck only, which deliberately does NOT share this method's
+        whole-group scope any more.
         """
         cur = self.conn.execute(
             "UPDATE receipt_journal_register SET classification=?"

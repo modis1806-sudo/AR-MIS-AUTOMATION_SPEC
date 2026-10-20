@@ -188,10 +188,15 @@ def _recheck_pending_review_rows(store: Store, branch_id: str) -> list[tuple[str
     """Storage-touching half of registers.find_pending_review_rows_now_
     resolvable - that function only decides what's now resolvable; this
     reads the branch's current register state, calls it, and writes the
-    promotion through the same Store methods a human clicking Resolve
-    already uses (resolve_credit_note_classification/resolve_receipt_
-    journal_classification), with a reason that says this was automatic,
-    never a silent change indistinguishable from a human's own Resolve.
+    promotion. CN uses the same Store method a human clicking Resolve
+    already uses (resolve_credit_note_classification), with a reason
+    that says this was automatic, never a silent change indistinguishable
+    from a human's own Resolve. RJ promotes row-by-row via
+    Store.promote_receipt_journal_row_to_matched instead - NOT the
+    whole-voucher-group resolve_receipt_journal_classification a human's
+    own Resolve uses, since two referenced lines of the same voucher can
+    now resolve independently of each other (see find_pending_review_
+    rows_now_resolvable's own docstring).
     """
     lookup = build_bill_reference_lookup(store.all_sales_dn_rows(branch_id))
     cn_rows = store.all_credit_note_rows(branch_id)
@@ -205,11 +210,9 @@ def _recheck_pending_review_rows(store: Store, branch_id: str) -> list[tuple[str
             branch_id, row.voucher_number, row.party_id, RegisterClassification.CURRENT, reason
         )
         promoted.append(("Credit Note", row.voucher_number, row.party_id))
-    for voucher_number, party_id in rj_resolvable:
-        store.resolve_receipt_journal_classification(
-            branch_id, voucher_number, party_id, RegisterClassification.CURRENT
-        )
-        promoted.append(("Receipt/Journal", voucher_number, party_id))
+    for row in rj_resolvable:
+        store.promote_receipt_journal_row_to_matched(row.id)
+        promoted.append(("Receipt/Journal", row.voucher_number, row.party_id))
     return promoted
 
 
