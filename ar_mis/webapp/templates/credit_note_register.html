@@ -67,6 +67,14 @@
     <button class="btn" type="submit">Apply to selected</button>
   </form>
 </details>
+<details class="card" style="margin-bottom:16px;">
+  <summary style="cursor:pointer; font-weight:600;">Batch: delete selected rows</summary>
+  <p style="font-size:12px; color:#6b7280; margin:8px 0;">Deletes every row ticked above, exactly like the per-row Delete button but for a whole filtered range at once. Use the Register Row Audit Log to undo any of these if needed.</p>
+  <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
+    <div><label style="display:block; font-size:12px; font-weight:600;">Reason</label><input type="text" name="delete_reason" form="creditnotes-batch-form" placeholder="Reason" style="width:220px;"></div>
+    <button class="btn" type="submit" form="creditnotes-batch-form" formaction="{{ url_for('credit_note_row_delete_batch') }}">Delete selected</button>
+  </div>
+</details>
 <div class="table-scroll">
 <table data-tt-table="creditnotes">
   <thead>

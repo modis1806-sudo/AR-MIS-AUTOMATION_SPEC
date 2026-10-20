@@ -4995,6 +4995,46 @@ def test_sales_dn_row_delete_requires_a_reason(client):
     assert len(Store(client.application.config["DB_PATH"]).all_sales_dn_rows("KOL")) == 1
 
 
+def test_sales_dn_row_delete_batch_removes_every_selected_row(client):
+    from ar_mis.storage import Store
+
+    _seed_sales_dn_row(client, voucher_number="SB/1")
+    _seed_sales_dn_row(client, voucher_number="SB/2")
+    _seed_sales_dn_row(client, voucher_number="SB/3")
+
+    resp = client.post(
+        "/registers/sales-dn/delete/batch",
+        data={
+            "as_of": "2026-04-07",
+            "selected": ["KOL|SB/1|ACME", "KOL|SB/2|ACME", "KOL|BOGUS/999|ACME"],
+            "delete_reason": "Duplicate batch of entries",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Deleted 2 of 3 selected row(s)" in resp.data
+    assert b"1 skipped (not found or already deleted)" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    remaining = {r.voucher_number for r in store.all_sales_dn_rows("KOL")}
+    audit = store.all_register_row_audit()
+    store.close()
+    assert remaining == {"SB/3"}
+    assert sum(1 for a in audit if a.action == "DELETE") == 2
+
+
+def test_sales_dn_row_delete_batch_requires_a_reason(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1")
+    resp = client.post(
+        "/registers/sales-dn/delete/batch",
+        data={"as_of": "2026-04-07", "selected": ["KOL|SB/1|ACME"], "delete_reason": ""},
+        follow_redirects=True,
+    )
+    assert b"Enter a reason for this batch delete" in resp.data
+    from ar_mis.storage import Store
+    assert len(Store(client.application.config["DB_PATH"]).all_sales_dn_rows("KOL")) == 1
+
+
 def test_checker_cannot_edit_or_delete_a_sales_dn_row(roleless_client):
     roleless_client.post("/choose-role", data={"role": "checker"})
     row_id = _seed_sales_dn_row(roleless_client)
@@ -5044,6 +5084,44 @@ def test_credit_note_row_delete_removes_the_row(client):
     assert resp.status_code == 200
     from ar_mis.storage import Store
     assert Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL") == []
+
+
+def test_credit_note_row_delete_batch_removes_every_selected_row(client):
+    from ar_mis.storage import Store
+
+    _seed_credit_note_row(client, voucher_number="CN/1")
+    _seed_credit_note_row(client, voucher_number="CN/2")
+    _seed_credit_note_row(client, voucher_number="CN/3")
+
+    resp = client.post(
+        "/registers/credit-notes/delete/batch",
+        data={
+            "as_of": "2026-04-07",
+            "selected": ["KOL|CN/1|ACME", "KOL|CN/2|ACME", "KOL|BOGUS/999|ACME"],
+            "delete_reason": "Not real Sundry Debtor vouchers",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Deleted 2 of 3 selected row(s)" in resp.data
+    assert b"1 skipped (not found or already deleted)" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    remaining = {r.voucher_number for r in store.all_credit_note_rows("KOL")}
+    store.close()
+    assert remaining == {"CN/3"}
+
+
+def test_credit_note_row_delete_batch_requires_a_reason(client):
+    _seed_credit_note_row(client, voucher_number="CN/1")
+    resp = client.post(
+        "/registers/credit-notes/delete/batch",
+        data={"as_of": "2026-04-07", "selected": ["KOL|CN/1|ACME"], "delete_reason": ""},
+        follow_redirects=True,
+    )
+    assert b"Enter a reason for this batch delete" in resp.data
+    from ar_mis.storage import Store
+    assert len(Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL")) == 1
 
 
 def _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=None):
@@ -5137,6 +5215,97 @@ def test_receipt_journal_row_delete_this_line_only(client):
     rows = Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")
     assert len(rows) == 1
     assert rows[0].target_doc_no is None
+
+
+def test_receipt_journal_row_delete_batch_removes_every_selected_voucher(client):
+    from ar_mis.storage import Store
+
+    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1")
+    _seed_receipt_journal_voucher(client, voucher_number="RCPT/2")
+    _seed_receipt_journal_voucher(client, voucher_number="RCPT/3")
+
+    resp = client.post(
+        "/registers/receipts-journals/delete/batch",
+        data={
+            "as_of": "2026-04-07",
+            "selected": ["KOL|RCPT/1|ACME", "KOL|RCPT/2|ACME", "KOL|BOGUS/999|ACME"],
+            "delete_reason": "Duplicate batch of vouchers",
+            "delete_scope": "line",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Deleted 2 of 3 selected row(s)" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    remaining = {r.voucher_number for r in store.all_receipt_journal_rows("KOL")}
+    store.close()
+    assert remaining == {"RCPT/3"}
+
+
+def test_receipt_journal_row_delete_batch_skips_an_ambiguous_multi_line_voucher_on_line_scope(client):
+    from ar_mis.storage import Store
+
+    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=[
+        {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
+        {"target_doc_no": None, "amount": Decimal("200.00")},
+    ])
+
+    resp = client.post(
+        "/registers/receipts-journals/delete/batch",
+        data={
+            "as_of": "2026-04-07",
+            "selected": ["KOL|RCPT/1|ACME"],
+            "delete_reason": "test",
+            "delete_scope": "line",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Deleted 0 of 1 selected row(s)" in resp.data
+    assert b"ambiguous multi-line voucher" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    assert len(store.all_receipt_journal_rows("KOL")) == 2  # untouched
+    store.close()
+
+
+def test_receipt_journal_row_delete_batch_whole_voucher_scope_is_not_ambiguous(client):
+    from ar_mis.storage import Store
+
+    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=[
+        {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
+        {"target_doc_no": None, "amount": Decimal("200.00")},
+    ])
+
+    resp = client.post(
+        "/registers/receipts-journals/delete/batch",
+        data={
+            "as_of": "2026-04-07",
+            "selected": ["KOL|RCPT/1|ACME"],
+            "delete_reason": "test",
+            "delete_scope": "voucher",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Deleted 1 of 1 selected row(s)" in resp.data
+
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_receipt_journal_rows("KOL") == []
+    store.close()
+
+
+def test_receipt_journal_row_delete_batch_requires_a_reason(client):
+    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1")
+    resp = client.post(
+        "/registers/receipts-journals/delete/batch",
+        data={"as_of": "2026-04-07", "selected": ["KOL|RCPT/1|ACME"], "delete_reason": "", "delete_scope": "line"},
+        follow_redirects=True,
+    )
+    assert b"Enter a reason for this batch delete" in resp.data
+    from ar_mis.storage import Store
+    assert len(Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")) == 1
 
 
 def test_register_row_audit_log_lists_entries_and_hides_undo_from_checker(client, roleless_client):

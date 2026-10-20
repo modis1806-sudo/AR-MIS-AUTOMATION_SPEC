@@ -1778,6 +1778,57 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash("Invoice deleted. Use the Register Row Audit Log to undo if needed.", "success")
         return redirect(url_for("sales_dn_register", as_of=as_of_raw))
 
+    @app.route("/registers/sales-dn/delete/batch", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_row_delete_batch():
+        """Batch counterpart to sales_dn_row_delete - the client's
+        explicit ask after having to remove a reclassified party's rows
+        one at a time: delete every selected row in a filtered range at
+        once. One bad id in the batch doesn't block the rest, it's just
+        reported as skipped.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+        reason = request.form.get("delete_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to delete.")
+        if not reason:
+            return _redisplay("Enter a reason for this batch delete.")
+
+        store = get_store()
+        rows_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in store.all_sales_dn_rows()}
+
+        identities = set()
+        for identity in selected:
+            parts = identity.split("|", 2)
+            if len(parts) == 3:
+                identities.add(tuple(parts))
+
+        deleted_count = 0
+        skipped_count = 0
+        for branch_id, voucher_number, party_id in identities:
+            row = rows_by_identity.get((branch_id, voucher_number, party_id))
+            if row is None:
+                skipped_count += 1
+                continue
+            try:
+                store.delete_sales_dn_row(row.id, reason, MAKER_ATTRIBUTION, datetime.now())
+            except ValueError:
+                skipped_count += 1
+                continue
+            deleted_count += 1
+        store.close()
+        message = f"Deleted {deleted_count} of {len(identities)} selected row(s)."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not found or already deleted)."
+        flash(message, "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
     @app.route("/registers/credit-notes")
     def credit_note_register():
         as_of = _parse_as_of()
@@ -2059,6 +2110,54 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay(str(exc))
         store.close()
         flash("Credit note deleted. Use the Register Row Audit Log to undo if needed.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+    @app.route("/registers/credit-notes/delete/batch", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_row_delete_batch():
+        """Batch counterpart to credit_note_row_delete - same rationale
+        as sales_dn_row_delete_batch.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+        reason = request.form.get("delete_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to delete.")
+        if not reason:
+            return _redisplay("Enter a reason for this batch delete.")
+
+        store = get_store()
+        rows_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in store.all_credit_note_rows()}
+
+        identities = set()
+        for identity in selected:
+            parts = identity.split("|", 2)
+            if len(parts) == 3:
+                identities.add(tuple(parts))
+
+        deleted_count = 0
+        skipped_count = 0
+        for branch_id, voucher_number, party_id in identities:
+            row = rows_by_identity.get((branch_id, voucher_number, party_id))
+            if row is None:
+                skipped_count += 1
+                continue
+            try:
+                store.delete_credit_note_row(row.id, reason, MAKER_ATTRIBUTION, datetime.now())
+            except ValueError:
+                skipped_count += 1
+                continue
+            deleted_count += 1
+        store.close()
+        message = f"Deleted {deleted_count} of {len(identities)} selected row(s)."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not found or already deleted)."
+        flash(message, "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals/reclassify", methods=["POST"])
@@ -2343,6 +2442,72 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay(str(exc))
         store.close()
         flash("Deleted. Use the Register Row Audit Log to undo if needed.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/delete/batch", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_row_delete_batch():
+        """Batch counterpart to receipt_journal_row_delete - same
+        rationale as sales_dn_row_delete_batch. The chosen scope (this
+        line only / whole voucher) applies uniformly to every selected
+        row, same as the single-row Delete control already offers.
+
+        The row-select checkbox's own value is branch|voucher|party (the
+        same identity receipt_journal_reclassify_batch already keys on),
+        not a row id - two lines of the same voucher/party (e.g. an
+        Agst-Ref leg and its own on-account leg) are indistinguishable
+        from each other by that value alone. That's harmless for "whole
+        voucher" scope (any one of that identity's rows deletes the lot),
+        but "this line only" on an identity with more than one row can't
+        safely guess which one was meant - skipped rather than guessed.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+        reason = request.form.get("delete_reason", "").strip()
+        scope = request.form.get("delete_scope", "")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to delete.")
+        if scope not in ("line", "voucher"):
+            return _redisplay("Choose whether this delete applies to this line only or the whole voucher.")
+        if not reason:
+            return _redisplay("Enter a reason for this batch delete.")
+
+        store = get_store()
+        rows_by_identity: dict[tuple[str, str, str], list] = {}
+        for r in store.all_receipt_journal_rows():
+            rows_by_identity.setdefault((r.branch_id, r.voucher_number, r.party_id), []).append(r)
+
+        identities = set()
+        for identity in selected:
+            parts = identity.split("|", 2)
+            if len(parts) == 3:
+                identities.add(tuple(parts))
+
+        deleted_count = 0
+        skipped_count = 0
+        for branch_id, voucher_number, party_id in identities:
+            rows = rows_by_identity.get((branch_id, voucher_number, party_id), [])
+            if not rows or (scope == "line" and len(rows) > 1):
+                skipped_count += 1
+                continue
+            try:
+                store.delete_receipt_journal_row(
+                    rows[0].id, reason, MAKER_ATTRIBUTION, datetime.now(), whole_voucher=(scope == "voucher")
+                )
+            except ValueError:
+                skipped_count += 1
+                continue
+            deleted_count += 1
+        store.close()
+        message = f"Deleted {deleted_count} of {len(identities)} selected row(s)."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not found, already deleted, or an ambiguous multi-line voucher with 'this line only' selected)."
+        flash(message, "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     _REGISTER_LABEL = {

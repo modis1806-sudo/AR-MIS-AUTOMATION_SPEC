@@ -430,9 +430,19 @@
           var labelCell = row && row.querySelector("[data-tt-row-label]");
           return labelCell ? cellText(labelCell) : "(unlabeled row)";
         });
+        // A batch-delete card's own reason box and scope radios sit in a
+        // sibling <details>, not inside this <form> - still part of its
+        // submission via their own form="..." attribute (same mechanism
+        // the row-select checkboxes already rely on), so they're pulled
+        // in here too, deduped against the form's own descendants.
+        var elements = Array.prototype.slice.call(form.querySelectorAll("input, select"));
+        Array.prototype.forEach.call(document.querySelectorAll('[form="' + formId + '"]'), function (el) {
+          if (elements.indexOf(el) === -1) elements.push(el);
+        });
         var fieldSummary = [];
-        Array.prototype.forEach.call(form.querySelectorAll("input, select"), function (el) {
+        Array.prototype.forEach.call(elements, function (el) {
           if (el.type === "hidden" || el.type === "checkbox" || el.name === "selected" || !el.value) return;
+          if (el.type === "radio" && !el.checked) return;
           fieldSummary.push(el.name + ": " + el.value);
         });
         var shown = labels.slice(0, 20);
