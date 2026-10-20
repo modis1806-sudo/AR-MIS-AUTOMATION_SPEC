@@ -127,8 +127,7 @@ def process_branch_data(
     results = reconcile_all_parties(branch_id, movements, closing_extracted)
     failed = [r for r in results if not r.reconciled]
 
-    for party in party_names:
-        store.upsert_party_tb_balance(party, branch_id, week_ending, closing_extracted[party])
+    store.replace_party_tb_balances_for_branch(branch_id, week_ending, closing_extracted)
 
     for voucher in all_vouchers:
         for entry in voucher.entries:

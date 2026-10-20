@@ -285,3 +285,45 @@ def test_a_cn_voucher_excluded_from_the_register_now_shows_as_a_reconciliation_m
     assert rows["Joy Ray"].reconciled is False
     assert rows["Manoj Lal"].credit_notes == Decimal("0.00")
     assert rows["Manoj Lal"].reconciled is False
+
+
+def test_party_tb_balance_is_fully_replaced_not_upserted_forever(store):
+    # Client's explicit decision this session: a party no longer in this
+    # run's own (always-comprehensive) Sundry Debtors pull must drop out
+    # of party_tb_balance entirely, not keep a frozen stale reading
+    # forever - the real case that caught this, a party reclassified to
+    # Sundry Creditor in Tally stayed "mismatched" in TB Cross-Check
+    # against an ever-more-stale figure with nothing left to reconcile.
+    store.upsert_customer_master(CustomerMasterRecord("Alpha Traders", "Alpha Traders", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("Beta Traders", "Beta Traders", "KOL", Decimal("0.00")))
+
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 7), [],
+        {"Alpha Traders": Decimal("1000.00"), "Beta Traders": Decimal("2000.00")},
+    )
+    balances = store.all_party_tb_balances("KOL")
+    assert {key[0] for key in balances} == {"Alpha Traders", "Beta Traders"}
+
+    # Next week's pull is comprehensive too, but Beta Traders has since
+    # been reclassified away from Sundry Debtor - it's genuinely absent
+    # from this run's own TB pull, not merely untouched.
+    process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 4, 14), [], {"Alpha Traders": Decimal("1500.00")}
+    )
+    balances = store.all_party_tb_balances("KOL")
+    assert {key[0] for key in balances} == {"Alpha Traders"}
+    assert balances[("Alpha Traders", "KOL")].closing_extracted == Decimal("1500.00")
+    assert balances[("Alpha Traders", "KOL")].as_of == date(2026, 4, 14)
+
+
+def test_party_tb_balance_replace_is_scoped_to_its_own_branch(store):
+    # A branch's own full-replace must never touch another branch's
+    # party_tb_balance rows.
+    store.upsert_customer_master(CustomerMasterRecord("Alpha Traders", "Alpha Traders", "KOL", Decimal("0.00")))
+    store.upsert_customer_master(CustomerMasterRecord("Gamma Traders", "Gamma Traders", "MUM", Decimal("0.00")))
+
+    process_branch_data(store, "KOL", "Kolkata", date(2026, 4, 7), [], {"Alpha Traders": Decimal("1000.00")})
+    process_branch_data(store, "MUM", "Mumbai", date(2026, 4, 7), [], {"Gamma Traders": Decimal("2000.00")})
+
+    assert {key[0] for key in store.all_party_tb_balances("KOL")} == {"Alpha Traders"}
+    assert {key[0] for key in store.all_party_tb_balances("MUM")} == {"Gamma Traders"}

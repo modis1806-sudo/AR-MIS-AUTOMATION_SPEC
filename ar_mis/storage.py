@@ -1087,6 +1087,46 @@ class Store:
         )
         self.conn.commit()
 
+    def replace_party_tb_balances_for_branch(
+        self, branch_id: str, as_of: date, closing_extracted: dict[str, Decimal]
+    ) -> None:
+        """Client's explicit decision this session: party_tb_balance stops
+        being upsert-forever for a branch's own extraction runs. The old
+        behavior left a party's TB reading frozen forever the moment
+        Tally stopped reporting them as a Sundry Debtor at all (the
+        client's own real case: a party reclassified to Sundry Creditor
+        kept showing in TB Cross-Check, compared against a frozen, ever-
+        more-stale reading, forever "mismatched" with nothing left to
+        actually reconcile). `closing_extracted` is always a
+        comprehensive read of Tally's current Sundry Debtors group -
+        confirmed true at every real call site (live Test & Save
+        Extraction and Catch-Up both call TallyClient.fetch_ytd_sundry_
+        debtors with no party filter; Manual Upload parses a full
+        Trial Balance export) - so replacing this branch's entire
+        party_tb_balance table with exactly what this run's own pull
+        reported is safe: a party still genuinely a Sundry Debtor
+        reappears in every run's own comprehensive pull; a party that
+        doesn't is no longer one, and dropping its stale reading along
+        with it is correct, not data loss - the registers themselves
+        (append-only, untouched by this) remain the permanent record of
+        what actually happened while that party was tracked.
+
+        Direct Store-level seeding for a single party outside a real
+        extraction run (test fixtures, etc.) should keep using
+        upsert_party_tb_balance instead - this method is specifically
+        process_branch_data's own call, replacing its former per-party
+        upsert loop.
+        """
+        self.conn.execute("DELETE FROM party_tb_balance WHERE branch_id=?", (branch_id,))
+        self.conn.executemany(
+            "INSERT INTO party_tb_balance (party_id, branch_id, as_of, closing_extracted) VALUES (?, ?, ?, ?)",
+            [
+                (party_id, branch_id, as_of.isoformat(), str(amount))
+                for party_id, amount in closing_extracted.items()
+            ],
+        )
+        self.conn.commit()
+
     def all_party_tb_balances(self, branch_id: str | None = None) -> dict[tuple[str, str], "PartyTBBalance"]:
         """Every party's current Tally reading, keyed (party_id,
         branch_id) - the live input to TB Cross-Check, AR Snapshot's

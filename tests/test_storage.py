@@ -134,6 +134,24 @@ def test_all_party_tb_balances_filters_by_branch(store):
     assert set(store.all_party_tb_balances("KOL")) == {("P1", "KOL")}
 
 
+def test_replace_party_tb_balances_for_branch_drops_a_party_absent_from_the_new_pull(store):
+    store.upsert_party_tb_balance("P1", "KOL", date(2026, 1, 5), Decimal("1000.00"))
+    store.upsert_party_tb_balance("P2", "KOL", date(2026, 1, 5), Decimal("2000.00"))
+    store.replace_party_tb_balances_for_branch("KOL", date(2026, 1, 12), {"P1": Decimal("1500.00")})
+    result = store.all_party_tb_balances("KOL")
+    assert set(result) == {("P1", "KOL")}
+    assert result[("P1", "KOL")].closing_extracted == Decimal("1500.00")
+    assert result[("P1", "KOL")].as_of == date(2026, 1, 12)
+
+
+def test_replace_party_tb_balances_for_branch_never_touches_another_branch(store):
+    store.upsert_party_tb_balance("P1", "KOL", date(2026, 1, 5), Decimal("1000.00"))
+    store.upsert_party_tb_balance("P2", "MUM", date(2026, 1, 5), Decimal("2000.00"))
+    store.replace_party_tb_balances_for_branch("KOL", date(2026, 1, 12), {})
+    result = store.all_party_tb_balances()
+    assert set(result) == {("P2", "MUM")}
+
+
 def test_upsert_customer_master_does_not_touch_credit_period_or_grouping_for_existing_party(store):
     store.upsert_customer_master(
         CustomerMasterRecord("P1", "Acme Corp", "KOL", Decimal("0.00"),
