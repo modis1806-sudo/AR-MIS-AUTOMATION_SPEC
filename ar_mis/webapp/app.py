@@ -1769,11 +1769,20 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         party's Pre-MIS Outstanding baseline, and record_pre_mis_adjustment
         is the only sanctioned path to move that figure - or it's a
         genuine data-entry mistake, in which case it's simply marked
-        Current with a note and no balance changes at all. Restricted to
-        rows that are currently Pending Review so this can't be used to
-        flip an already-resolved or ordinary Current row, and so a
+        Current with a note and no balance changes at all.
+
+        Also reachable from an Unapplied CN (CURRENT, no bill reference at
+        all) - client's own later call: in Tally practice, an Unapplied CN
+        is never backdated/edited once recorded, it's only ever netted off
+        by a fresh journal against a specific invoice later - so if one is
+        genuinely Pre-MIS in nature, no such netting entry is ever coming
+        and this is the only way to say so. Only the Pre-MIS target makes
+        sense from Unapplied (it has no reference to "correct" back to
+        Current - it's already Current), so "current" is refused from that
+        starting state. Restricted otherwise to Pending Review, so this
+        can't be used to flip an already-resolved or Matched row, and so a
         double-submit can't double-count the balance adjustment (once
-        resolved, the row is no longer Pending Review).
+        resolved, the row is no longer Pending Review/Unapplied).
         """
         as_of_raw = request.form.get("as_of", "")
         branch_id = request.form.get("branch_id", "")
@@ -1797,9 +1806,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if not rows:
             store.close()
             return _redisplay(f"No credit note found for {voucher_number}.")
-        if rows[0].classification != RegisterClassification.PENDING_REVIEW:
+        is_unapplied = rows[0].classification == RegisterClassification.CURRENT and rows[0].bill_allocation_reference is None
+        if rows[0].classification != RegisterClassification.PENDING_REVIEW and not is_unapplied:
             store.close()
-            return _redisplay(f"{voucher_number} is not Pending Review - nothing to resolve.")
+            return _redisplay(f"{voucher_number} is not Pending Review or Unapplied - nothing to resolve.")
+        if is_unapplied and target != "pre_mis":
+            store.close()
+            return _redisplay(f"{voucher_number} is Unapplied - it can only be resolved to Pre-MIS Adjustment.")
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
@@ -1823,8 +1836,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         explicit ask: resolve every selected Pending Review CN in a
         filtered range at once (e.g. "all 24-25 CNs"), not one at a
         time. Silently skips any selected row that isn't currently
-        Pending Review, since this control only ever means "resolve",
-        never "force a reclassify regardless of current state".
+        Pending Review or Unapplied, and - matching credit_note_
+        reclassify's own single-row rule - also skips an Unapplied row
+        when the batch's own shared target isn't Pre-MIS (its only valid
+        target), rather than forcing it to "current" regardless.
         """
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
@@ -1856,7 +1871,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         skipped_count = 0
         for branch_id, voucher_number, party_id in identities:
             row = rows_by_identity.get((branch_id, voucher_number, party_id))
-            if row is None or row.classification != RegisterClassification.PENDING_REVIEW:
+            is_unapplied = row is not None and row.classification == RegisterClassification.CURRENT and row.bill_allocation_reference is None
+            eligible = row is not None and (row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied)
+            if not eligible or (is_unapplied and target != "pre_mis"):
                 skipped_count += 1
                 continue
             store.resolve_credit_note_classification(branch_id, voucher_number, party_id, new_classification, reason)
@@ -1872,7 +1889,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         message = f"Resolved {resolved_count} of {len(identities)} selected as {new_classification.value}."
         if skipped_count:
-            message += f" {skipped_count} skipped (not Pending Review)."
+            message += f" {skipped_count} skipped (not Pending Review/Unapplied, or Unapplied with a non-Pre-MIS target)."
         flash(message, "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
@@ -1884,14 +1901,23 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         own voucher number - never just the field the client meant to
         filter on) can sweep up a row the client never intended to touch,
         and once resolved there was no way back - Resolve only ever
-        offered on a Pending Review row. This is the correction path:
-        flips the row back to Pending Review, and if it had been
-        confirmed as a Pre-MIS Adjustment, reverses that exact balance
-        move with its own explicit, logged, opposite-sign entry (never a
-        silent rewrite of the original adjustment - same philosophy as
-        record_pre_mis_adjustment's own docstring). A row already Pending
-        Review, or one that's never been resolved at all, has nothing to
-        revert.
+        offered on a Pending Review or Unapplied row. This is the
+        correction path: flips the row back to whichever of those two it
+        actually came from, and if it had been confirmed as a Pre-MIS
+        Adjustment, reverses that exact balance move with its own
+        explicit, logged, opposite-sign entry (never a silent rewrite of
+        the original adjustment - same philosophy as record_pre_mis_
+        adjustment's own docstring).
+
+        Resolving never touches bill_allocation_reference itself (see
+        credit_note_reclassify), so it's still exactly what it always
+        was: None means this row never had a reference to begin with
+        (Unapplied), reverting there, not to Pending Review - reverting
+        a never-referenced CN to "Pending Review" would wrongly imply a
+        mismatched reference exists for someone to resolve. A reference
+        that didn't match a tracked invoice reverts to Pending Review, as
+        before. A row already Pending Review/Unapplied, or one that's
+        never been resolved at all, has nothing to revert.
         """
         as_of_raw = request.form.get("as_of", "")
         branch_id = request.form.get("branch_id", "")
@@ -1911,23 +1937,25 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             store.close()
             return _redisplay(f"No credit note found for {voucher_number}.")
         current = rows[0].classification
-        if current == RegisterClassification.PENDING_REVIEW:
+        is_unapplied = rows[0].bill_allocation_reference is None
+        revert_target = RegisterClassification.CURRENT if is_unapplied else RegisterClassification.PENDING_REVIEW
+        if current == revert_target:
             store.close()
-            return _redisplay(f"{voucher_number} is already Pending Review - nothing to revert.")
+            label = "Unapplied" if is_unapplied else "Pending Review"
+            return _redisplay(f"{voucher_number} is already {label} - nothing to revert.")
 
+        revert_label = "Unapplied" if is_unapplied else "Pending Review"
         if current == RegisterClassification.PRE_MIS_ADJUSTMENT:
             store.record_pre_mis_adjustment(
                 PreMisAdjustment(
                     party_id=party_id, branch_id=branch_id, amount=rows[0].cn_amount,
-                    reason=f"Reversal of CN {voucher_number} Pre-MIS Adjustment (reverted to Pending Review)",
+                    reason=f"Reversal of CN {voucher_number} Pre-MIS Adjustment (reverted to {revert_label})",
                     adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
                 )
             )
-        store.resolve_credit_note_classification(
-            branch_id, voucher_number, party_id, RegisterClassification.PENDING_REVIEW, ""
-        )
+        store.resolve_credit_note_classification(branch_id, voucher_number, party_id, revert_target, "")
         store.close()
-        flash(f"{voucher_number} reverted to Pending Review.", "success")
+        flash(f"{voucher_number} reverted to {revert_label}.", "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
     @app.route("/registers/credit-notes/edit", methods=["POST"])
@@ -1995,11 +2023,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     @requires_role("maker")
     def receipt_journal_reclassify():
         """Same human resolution step as credit_note_reclassify, for a
-        Pending Review Receipt/Journal. All bill-allocation lines of a
-        voucher share one classification (registers.py's voucher-level
-        invariant), so every row matching this identity is already
-        Pending Review together - the full voucher amount across all its
-        lines is what moves into Pre-MIS Outstanding when confirmed.
+        Pending Review Receipt/Journal - also reachable from Unapplied
+        Cash (no reference attempted at all) for the same reason
+        credit_note_reclassify's own docstring explains: an Unapplied
+        voucher is never backdated/edited in Tally practice, only ever
+        netted off by a fresh journal later, so a genuinely Pre-MIS one
+        needs this as its only path. Only the Pre-MIS target is valid
+        from Unapplied. All bill-allocation lines of a voucher share one
+        classification (registers.py's voucher-level invariant), so every
+        row matching this identity is already Pending Review/Unapplied
+        together - the full voucher amount across all its lines is what
+        moves into Pre-MIS Outstanding when confirmed.
         """
         as_of_raw = request.form.get("as_of", "")
         branch_id = request.form.get("branch_id", "")
@@ -2023,9 +2057,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if not rows:
             store.close()
             return _redisplay(f"No receipt or journal found for {voucher_number}.")
-        if rows[0].classification != RegisterClassification.PENDING_REVIEW:
+        is_unapplied = rows[0].classification == RegisterClassification.CURRENT and rows[0].target_doc_no is None
+        if rows[0].classification != RegisterClassification.PENDING_REVIEW and not is_unapplied:
             store.close()
-            return _redisplay(f"{voucher_number} is not Pending Review - nothing to resolve.")
+            return _redisplay(f"{voucher_number} is not Pending Review or Unapplied - nothing to resolve.")
+        if is_unapplied and target != "pre_mis":
+            store.close()
+            return _redisplay(f"{voucher_number} is Unapplied - it can only be resolved to Pre-MIS Adjustment.")
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
@@ -2049,7 +2087,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     def receipt_journal_reclassify_batch():
         """Batch counterpart to receipt_journal_reclassify - same
         rationale as credit_note_reclassify_batch. Silently skips any
-        selected row that isn't currently Pending Review.
+        selected row that isn't currently Pending Review or Unapplied,
+        and also skips an Unapplied one when the batch's own shared
+        target isn't Pre-MIS.
         """
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
@@ -2083,7 +2123,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         skipped_count = 0
         for key in identities:
             rows = rows_by_identity.get(key, [])
-            if not rows or rows[0].classification != RegisterClassification.PENDING_REVIEW:
+            is_unapplied = bool(rows) and rows[0].classification == RegisterClassification.CURRENT and rows[0].target_doc_no is None
+            eligible = bool(rows) and (rows[0].classification == RegisterClassification.PENDING_REVIEW or is_unapplied)
+            if not eligible or (is_unapplied and target != "pre_mis"):
                 skipped_count += 1
                 continue
             branch_id, voucher_number, party_id = key
@@ -2101,7 +2143,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         message = f"Resolved {resolved_count} of {len(identities)} selected as {new_classification.value}."
         if skipped_count:
-            message += f" {skipped_count} skipped (not Pending Review)."
+            message += f" {skipped_count} skipped (not Pending Review/Unapplied, or Unapplied with a non-Pre-MIS target)."
         flash(message, "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
@@ -2109,11 +2151,15 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     @requires_role("maker")
     def receipt_journal_revert_to_pending_review():
         """Same correction path as credit_note_revert_to_pending_review -
-        see its own docstring. The reversal amount is recomputed fresh
-        from the voucher's own current lines (the same sum
-        receipt_journal_reclassify itself used), never looked up from the
-        original adjustment's log entry, so it's correct regardless of
-        how that entry's reason text was worded.
+        see its own docstring, including why the revert target is
+        Unapplied (never Pending Review) when target_doc_no is None - no
+        reference was ever attempted on this voucher, so "Pending Review"
+        would wrongly imply a mismatched one exists to resolve. The
+        reversal amount is recomputed fresh from the voucher's own
+        current lines (the same sum receipt_journal_reclassify itself
+        used), never looked up from the original adjustment's log entry,
+        so it's correct regardless of how that entry's reason text was
+        worded.
         """
         as_of_raw = request.form.get("as_of", "")
         branch_id = request.form.get("branch_id", "")
@@ -2133,9 +2179,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             store.close()
             return _redisplay(f"No receipt or journal found for {voucher_number}.")
         current = rows[0].classification
-        if current == RegisterClassification.PENDING_REVIEW:
+        is_unapplied = rows[0].target_doc_no is None
+        revert_target = RegisterClassification.CURRENT if is_unapplied else RegisterClassification.PENDING_REVIEW
+        revert_label = "Unapplied" if is_unapplied else "Pending Review"
+        if current == revert_target:
             store.close()
-            return _redisplay(f"{voucher_number} is already Pending Review - nothing to revert.")
+            return _redisplay(f"{voucher_number} is already {revert_label} - nothing to revert.")
 
         if current == RegisterClassification.PRE_MIS_ADJUSTMENT:
             total_amount = sum((r.amount for r in rows), Decimal("0.00"))
@@ -2144,16 +2193,14 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     party_id=party_id, branch_id=branch_id, amount=total_amount,
                     reason=(
                         f"Reversal of {rows[0].voucher_type} {voucher_number} Pre-MIS Adjustment"
-                        " (reverted to Pending Review)"
+                        f" (reverted to {revert_label})"
                     ),
                     adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
                 )
             )
-        store.resolve_receipt_journal_classification(
-            branch_id, voucher_number, party_id, RegisterClassification.PENDING_REVIEW
-        )
+        store.resolve_receipt_journal_classification(branch_id, voucher_number, party_id, revert_target)
         store.close()
-        flash(f"{voucher_number} reverted to Pending Review.", "success")
+        flash(f"{voucher_number} reverted to {revert_label}.", "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals")
