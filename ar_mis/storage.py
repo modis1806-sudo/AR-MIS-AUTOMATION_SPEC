@@ -65,7 +65,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -603,6 +603,19 @@ CREATE TABLE IF NOT EXISTS register_row_audit (
     undone_of INTEGER
 );
 """,
+    # Real, pre-existing bug surfaced (not caused) by this session's
+    # Sales & DN Edit expansion: SalesDNRegisterRow.round_off has had a
+    # model field and a UI column since the field was added, but
+    # append_sales_dn_row never wrote it and all_sales_dn_rows never read
+    # it back - every row ever written to storage silently lost its real
+    # Round Off and read back as the dataclass default (0.00) regardless
+    # of what the voucher actually carried. A row written before this
+    # migration has no way to recover its true original Round Off (it
+    # was never captured anywhere, not even transiently) - NULL here
+    # means exactly that "unknown, treat as 0.00 same as it always
+    # displayed", read back via COALESCE at the Python layer, never
+    # backfilled with a guessed number.
+    20: "ALTER TABLE sales_dn_register ADD COLUMN round_off TEXT;",
 }
 
 
@@ -1369,8 +1382,8 @@ class Store:
         self.conn.execute(
             "INSERT OR IGNORE INTO sales_dn_register"
             " (branch_id, invoice_date, note_type, voucher_number, bill_allocation_reference,"
-            " party_id, taxable_value, cgst, sgst, igst, invoice_value, due_date, job_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " party_id, taxable_value, cgst, sgst, igst, invoice_value, due_date, job_id, round_off)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 row.branch_id,
                 row.invoice_date.isoformat(),
@@ -1385,11 +1398,17 @@ class Store:
                 str(row.invoice_value),
                 row.due_date.isoformat(),
                 row.job_id,
+                str(row.round_off),
             ),
         )
         self.conn.commit()
 
     def _sales_dn_row_from_row(self, r) -> SalesDNRegisterRow:
+        # round_off is NULL for any row written before migration 20 (see
+        # its own comment) - its true original value was never captured
+        # anywhere to recover, so this reads back exactly what it always
+        # displayed as: 0.00.
+        round_off_raw = r["round_off"]
         return SalesDNRegisterRow(
             branch_id=r["branch_id"],
             invoice_date=date.fromisoformat(r["invoice_date"]),
@@ -1404,6 +1423,7 @@ class Store:
             invoice_value=Decimal(r["invoice_value"]),
             due_date=date.fromisoformat(r["due_date"]),
             job_id=r["job_id"],
+            round_off=Decimal(round_off_raw) if round_off_raw is not None else Decimal("0.00"),
             id=r["id"],
         )
 
@@ -1604,7 +1624,7 @@ class Store:
 
     _SALES_DN_AUDIT_COLUMNS = [
         "branch_id", "invoice_date", "note_type", "voucher_number", "bill_allocation_reference",
-        "party_id", "taxable_value", "cgst", "sgst", "igst", "invoice_value", "due_date", "job_id",
+        "party_id", "taxable_value", "cgst", "sgst", "igst", "invoice_value", "due_date", "job_id", "round_off",
     ]
     _CREDIT_NOTE_AUDIT_COLUMNS = [
         "branch_id", "cn_date", "voucher_number", "party_id", "cn_amount",

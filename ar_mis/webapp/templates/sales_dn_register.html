@@ -149,28 +149,20 @@
       <td>
         <details>
           <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Edit</summary>
-          <form method="post" action="{{ url_for('sales_dn_row_edit') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:220px;">
+          <form method="post" action="{{ url_for('sales_dn_row_edit') }}" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; max-width:620px;">
             <input type="hidden" name="as_of" value="{{ as_of }}">
             <input type="hidden" name="row_id" value="{{ row.id }}">
-            <div style="font-size:11px; color:#6b7280;">Every field below is pre-filled with its current value - change only the one(s) that are wrong; the rest are left untouched.</div>
-            <label style="font-size:11px; font-weight:600;">Taxable Value</label>
-            <input type="number" step="0.01" name="taxable_value" value="{{ row.taxable_value }}" required>
-            <label style="font-size:11px; font-weight:600;">CGST</label>
-            <input type="number" step="0.01" name="cgst" value="{{ row.cgst }}" required>
-            <label style="font-size:11px; font-weight:600;">SGST</label>
-            <input type="number" step="0.01" name="sgst" value="{{ row.sgst }}" required>
-            <label style="font-size:11px; font-weight:600;">IGST</label>
-            <input type="number" step="0.01" name="igst" value="{{ row.igst }}" required>
-            <label style="font-size:11px; font-weight:600;">Round Off</label>
-            <input type="number" step="0.01" name="round_off" value="{{ row.round_off }}" required>
-            <label style="font-size:11px; font-weight:600;">Invoice Value</label>
-            <input type="number" step="0.01" name="invoice_value" value="{{ row.invoice_value }}" required>
-            <label style="font-size:11px; font-weight:600;">Due Date</label>
-            <input type="date" name="due_date" value="{{ row.due_date }}" required>
-            <label style="font-size:11px; font-weight:600;">Job ID</label>
-            <input name="job_id" value="{{ row.job_id or '' }}">
-            <input name="reason" placeholder="Reason" required>
-            <button class="btn secondary" type="submit" style="padding:4px 10px;">Save edit</button>
+            <div style="flex-basis:100%; font-size:11px; color:#6b7280;">Every field below is pre-filled with its current value - change only the one(s) that are wrong; the rest are left untouched.</div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">Taxable Value</label><input type="number" step="0.01" name="taxable_value" value="{{ row.taxable_value }}" style="width:100px;" required></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">CGST</label><input type="number" step="0.01" name="cgst" value="{{ row.cgst }}" style="width:90px;" required></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">SGST</label><input type="number" step="0.01" name="sgst" value="{{ row.sgst }}" style="width:90px;" required></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">IGST</label><input type="number" step="0.01" name="igst" value="{{ row.igst }}" style="width:90px;" required></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">Round Off</label><input type="number" step="0.01" name="round_off" value="{{ row.round_off }}" style="width:90px;" required></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">Invoice Value</label><input type="number" step="0.01" name="invoice_value" value="{{ row.invoice_value }}" style="width:100px;" required></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">Due Date</label><input type="date" name="due_date" value="{{ row.due_date }}" style="width:140px;" required></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">Job ID</label><input name="job_id" value="{{ row.job_id or '' }}" style="width:90px;"></div>
+            <div><label style="display:block; font-size:11px; font-weight:600;">Reason</label><input name="reason" style="width:160px;" required></div>
+            <button class="btn secondary" type="submit" style="padding:6px 12px;">Save edit</button>
           </form>
         </details>
       </td>

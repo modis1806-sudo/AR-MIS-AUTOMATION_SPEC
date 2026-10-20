@@ -569,6 +569,17 @@ def test_sales_dn_row_round_trips(store):
     assert rows[0] == _sales_dn_row()
 
 
+def test_sales_dn_row_round_off_round_trips(store):
+    # Regression: append_sales_dn_row/all_sales_dn_rows used to silently
+    # drop round_off entirely (no column, no INSERT/SELECT reference at
+    # all) - every row read back always defaulted to 0.00 regardless of
+    # what the voucher actually carried, caught live when Edit tried to
+    # write a column (migration 20) that genuinely didn't exist yet.
+    row = SalesDNRegisterRow(**{**_sales_dn_row().__dict__, "round_off": Decimal("-1.00")})
+    store.append_sales_dn_row(row)
+    assert store.all_sales_dn_rows()[0].round_off == Decimal("-1.00")
+
+
 def test_sales_dn_row_dedupes_on_reextraction(store):
     # Re-extracting an overlapping date range must not duplicate a voucher
     # already recorded - insert the identical row twice.
