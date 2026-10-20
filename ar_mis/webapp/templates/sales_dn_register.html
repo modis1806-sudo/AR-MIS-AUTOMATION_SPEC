@@ -105,10 +105,10 @@
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.invoice_date }}</td>
       <td data-tt-col="type">{{ row.note_type.value }}</td>
-      <td data-tt-row-label>{{ row.voucher_number }}</td>
+      <td data-tt-row-label data-tt-col="voucher_number">{{ row.voucher_number }}</td>
       <td>{{ row.bill_allocation_reference }}</td>
       <td data-tt-col="job_id" data-value="{{ row.job_id or '' }}">{{ row.job_id or '—' }}</td>
-      <td>{{ row.party_id }}</td>
+      <td data-tt-col="party_id">{{ row.party_id }}</td>
       <td data-tt-col="grouping">{{ d.grouping or '—' }}</td>
       <td data-tt-col="taxable_value" data-value="{{ row.taxable_value }}">{{ row.taxable_value|inr }}</td>
       <td data-tt-col="cgst" data-value="{{ row.cgst }}">{{ row.cgst|inr }}</td>
@@ -126,30 +126,20 @@
       <td>{{ pos.days_past_due }}</td>
       <td data-tt-col="bucket">{{ pos.ageing_bucket }}</td>
       <td data-tt-col="notional_interest" data-value="{{ pos.notional_interest }}">{{ pos.notional_interest|inr }}</td>
-      <td><input type="date" form="fu-{{ loop.index }}" name="ptp_date" value="{{ fu.ptp_date if fu and fu.ptp_date else '' }}"></td>
-      <td data-tt-col="ptp_amount"{% if fu and fu.ptp_amount is not none %} data-value="{{ fu.ptp_amount }}"{% endif %}><input type="number" step="0.01" form="fu-{{ loop.index }}" name="ptp_amount" value="{{ fu.ptp_amount if fu and fu.ptp_amount is not none else '' }}" style="width:110px;"></td>
+      <td data-tt-col="ptp_date" data-value="{{ fu.ptp_date if fu and fu.ptp_date else '' }}">{{ fu.ptp_date if fu and fu.ptp_date else '—' }}</td>
+      <td data-tt-col="ptp_amount" data-value="{{ fu.ptp_amount if fu and fu.ptp_amount is not none else '' }}">{{ fu.ptp_amount|inr if fu and fu.ptp_amount is not none else '—' }}</td>
       <td data-tt-col="ptp_status">
         {% if d.ptp_status == 'Kept' %}<span class="pill status-kept">Kept</span>
         {% elif d.ptp_status == 'Broken' %}<span class="pill status-broken">Broken</span>
         {% elif d.ptp_status == 'Active' %}<span class="pill status-active">Active</span>
         {% else %}—{% endif %}
       </td>
-      <td data-tt-col="next_action">
-        <select onchange="document.getElementById('next-action-{{ loop.index }}').value = this.value; this.selectedIndex = 0;" style="font-size:11px; width:100%; display:block; margin-bottom:2px;">
-          <option value="">Quick pick…</option>
-          {% for opt in next_action_options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
-        </select>
-        <input type="text" id="next-action-{{ loop.index }}" form="fu-{{ loop.index }}" name="next_action" value="{{ (fu.next_action if fu else '') or '' }}" style="width:130px;">
-      </td>
-      <td><input type="date" form="fu-{{ loop.index }}" name="expected_collection_date" value="{{ fu.expected_collection_date if fu and fu.expected_collection_date else '' }}"></td>
+      <td data-tt-col="next_action" data-value="{{ (fu.next_action if fu else '') or '' }}" data-tt-filter-value="{{ (fu.next_action if fu else '') or '' }}">{{ (fu.next_action if fu else '') or '—' }}</td>
+      <td data-tt-col="expected_collection_date" data-value="{{ fu.expected_collection_date if fu and fu.expected_collection_date else '' }}">{{ fu.expected_collection_date if fu and fu.expected_collection_date else '—' }}</td>
       <td>
-        <form id="fu-{{ loop.index }}" method="post" action="{{ url_for('sales_dn_follow_up_save') }}" style="display:flex; gap:4px; align-items:center;">
-          <input type="hidden" name="as_of" value="{{ as_of }}">
-          <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
-          <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
-          <input type="hidden" name="party_id" value="{{ row.party_id }}">
-          <button class="btn secondary" type="submit" style="padding:4px 10px;">Save</button>
-        </form>
+        <details data-tt-lazy="salesdn-followup">
+          <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Follow-up</summary>
+        </details>
         {% if fu and fu.updated_at %}
           <div style="font-size:11px; color:#6b7280; margin-top:4px;">Last updated {{ fu.updated_at }}{% if fu.logged_at %} · PTP promised {{ fu.logged_at }}{% endif %}</div>
         {% endif %}
@@ -188,6 +178,26 @@
     <div><label style="display:block; font-size:11px; font-weight:600;">Job ID</label><input name="job_id" data-tt-field="job_id" style="width:90px;"></div>
     <div><label style="display:block; font-size:11px; font-weight:600;">Reason</label><input name="reason" style="width:160px;" required></div>
     <button class="btn secondary" type="submit" style="padding:6px 12px;">Save edit</button>
+  </form>
+</template>
+<datalist id="salesdn-next-action-options">
+  {% for opt in next_action_options %}<option value="{{ opt }}">{% endfor %}
+</datalist>
+<template data-tt-lazy-template="salesdn-followup">
+  <form method="post" action="{{ url_for('sales_dn_follow_up_save') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:200px;">
+    <input type="hidden" name="as_of" value="{{ as_of }}">
+    <input type="hidden" name="branch_id" data-tt-field="branch">
+    <input type="hidden" name="voucher_number" data-tt-field="voucher_number">
+    <input type="hidden" name="party_id" data-tt-field="party_id">
+    <label style="font-size:11px; font-weight:600;">PTP Date</label>
+    <input type="date" name="ptp_date" data-tt-field="ptp_date">
+    <label style="font-size:11px; font-weight:600;">PTP Amount</label>
+    <input type="number" step="0.01" name="ptp_amount" data-tt-field="ptp_amount">
+    <label style="font-size:11px; font-weight:600;">Next Action</label>
+    <input type="text" name="next_action" data-tt-field="next_action" list="salesdn-next-action-options" placeholder="Type or pick from the list">
+    <label style="font-size:11px; font-weight:600;">Expected Collection</label>
+    <input type="date" name="expected_collection_date" data-tt-field="expected_collection_date">
+    <button class="btn secondary" type="submit" style="padding:4px 10px;">Save</button>
   </form>
 </template>
 {% else %}

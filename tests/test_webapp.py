@@ -1862,10 +1862,12 @@ def test_sales_dn_register_next_action_has_a_quick_pick_dropdown(client):
         "Call customer", "Send reminder email", "Escalate to manager",
         "Send legal notice", "Visit customer site", "Awaiting customer response",
     ):
-        assert f'<option value="{option}">{option}</option>'.encode() in resp.data
-    # Still a genuine free-text box underneath - the dropdown is a
-    # convenience, not a restriction to only these six phrases.
+        assert f'<option value="{option}">'.encode() in resp.data
+    # Still a genuine free-text box in the row's own lazy Follow-up panel -
+    # the dropdown (a shared page-level <datalist> now, not a per-row
+    # <select>) is a convenience, not a restriction to only these phrases.
     assert b'name="next_action"' in resp.data
+    assert b'list="salesdn-next-action-options"' in resp.data
 
 
 def test_sales_dn_register_next_action_column_is_filterable(client):
@@ -1873,7 +1875,7 @@ def test_sales_dn_register_next_action_column_is_filterable(client):
     resp = client.get("/registers/sales-dn")
     assert resp.status_code == 200
     assert b'data-tt-filter data-tt-col="next_action"' in resp.data
-    assert b'<td data-tt-col="next_action">' in resp.data
+    assert b'<td data-tt-col="next_action" ' in resp.data
 
 
 def test_sales_dn_follow_up_save_accepts_free_text_next_action_not_in_the_dropdown(client):
@@ -1898,10 +1900,20 @@ def test_sales_dn_follow_up_save_accepts_free_text_next_action_not_in_the_dropdo
     assert fu.next_action == "Something specific to this customer"
 
 
-def test_sales_dn_register_ptp_fields_are_editable_inputs_not_read_only_text(client):
+def test_sales_dn_register_ptp_fields_are_read_only_with_a_lazy_follow_up_edit_panel(client):
+    """Baking a live-editable input into every row for PTP Date/Amount/
+    Next Action/Expected Collection (measured against a 650-row register)
+    was a real contributor to the register's own severe page lag - these
+    four are read-only plain text in the main table now, same treatment
+    as the Edit panel: editing happens behind a per-row "Follow-up"
+    trigger, whose form is built once, on first open, from a single
+    shared page-level <template> - not baked into every row up front.
+    """
     _run_a_real_extraction(client)
     resp = client.get("/registers/sales-dn")
     assert resp.status_code == 200
+    assert b'data-tt-lazy="salesdn-followup"' in resp.data
+    assert b'<template data-tt-lazy-template="salesdn-followup">' in resp.data
     assert b'name="ptp_date"' in resp.data
     assert b'name="ptp_amount"' in resp.data
     assert b'name="next_action"' in resp.data
@@ -3265,11 +3277,12 @@ def test_sales_dn_follow_up_batch_save_applies_to_every_selected_row(client):
     )
     assert resp.status_code == 200
     assert b"Follow-up applied to 2 invoice(s)" in resp.data
-    # "Send reminder email" also appears as a quick-pick <option> on every
-    # row and in the batch panel now, so match the actual saved <input>
-    # specifically (it carries a name= attribute; a dropdown <option>
-    # never does) rather than a blind count of the whole page.
-    assert resp.data.count(b'name="next_action" value="Send reminder email"') == 2
+    # Next Action is read-only plain text on the main table now (editing
+    # moved into the row's own lazy Follow-up panel) - match each row's
+    # own display cell specifically, not the batch panel's own quick-pick
+    # <option value="Send reminder email">Send reminder email</option>,
+    # which also legitimately contains this same text.
+    assert resp.data.count(b'data-tt-col="next_action" data-value="Send reminder email"') == 2
 
 
 def test_sales_dn_follow_up_batch_save_blank_field_preserves_each_rows_own_value(client):
