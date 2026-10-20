@@ -87,8 +87,10 @@ def incorporate_drift_finding(
 
     Undoing a wrong incorporation needs no dedicated recovery path the
     way the old weekly_snapshot-touching version did: it is a plain
-    register row like any other, so ar_mis.register_corrections' own
-    Exclude action (Check 1's own Delete control) removes it cleanly.
+    register row like any other, so the register page's own Delete
+    control (Store.delete_sales_dn_row / delete_credit_note_row /
+    delete_receipt_journal_row, with its register_row_audit trail and
+    Undo) removes it cleanly.
     """
     if finding_record.incorporated:
         raise DriftFindingAlreadyIncorporated(

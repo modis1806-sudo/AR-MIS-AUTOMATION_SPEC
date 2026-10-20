@@ -2445,6 +2445,74 @@ resolves former open item 1.
     net reduction expected and correct, since this phase retires code
     and tests together rather than adding either) at this point.
 
+    **Phase 7 built and tested: the Phase 6b/6c correction overlay is
+    retired, replaced by real register-row mutation.** Live testing
+    against real Tally data this session surfaced two problems with the
+    Phase 6b/6c design above: (1) client's own real Calcutta Electric
+    Corporation/Divyalite case showed TB Cross-Check's Opening had
+    drifted off Tally's true opening once a Journal was legitimately
+    reclassified as a Pre-MIS Adjustment - fixed separately, see
+    `customer_master.original_pre_mis_outstanding` (a frozen, Python-
+    backfilled seed column, migration 18) now feeding `rollforward.
+    compute_party_closings_as_of`'s Opening unconditionally, replacing
+    the living `pre_mis_outstanding` for this one purpose only - both
+    columns stay, each serving its own already-distinct purpose. (2) A
+    Proforma voucher the client tried to "delete" via Check 1's own
+    Exclude action never actually left Sales & DN Register - Exclude was
+    only ever a read-time overlay (`effective_corrections` applied inside
+    `aggregate_party_movements_from_registers`/`compute_ytd_vs_register_
+    comparison`), so the client's own words: "marking as resolved without
+    actually resolving it."
+
+    Client's explicit redesign, after rejecting a "raw register + derived
+    effective register" dual-read alternative as "cumbersome and
+    confusing for the user": Add (an entirely missing voucher) stays
+    exactly where Phase 6a/6c put it - Check 1's own "Add to Registers",
+    still really inserting a new row, confirmed unchanged by this phase.
+    Modify and Delete move to each register's own page instead (Sales &
+    DN / Credit Note / Receipt & Journal Register), as real Edit/Delete
+    buttons next to the existing row-selection checkboxes, mutating the
+    register row directly - never a second overlay read back on top at
+    report time. New `register_row_audit` table (migration 19) replaces
+    `register_row_correction` as the live audit trail (the old table is
+    kept, unread, as permanent history of every correction it ever
+    recorded under the retired design - never dropped); new Store methods
+    `edit_sales_dn_row`/`delete_sales_dn_row`/`edit_credit_note_row`/
+    `delete_credit_note_row`/`edit_receipt_journal_row`/
+    `delete_receipt_journal_row`/`undo_register_row_audit`, each writing
+    one audit entry (`before`/`after`, always a list of full row dicts
+    even for a single-row register, so a whole-voucher action is still
+    one entry) and supporting Undo. Deleting a matched Sales/DN invoice
+    cascades: unmatches any CN/Receipt/Journal row that referenced it
+    (falls back to unapplied) and removes its Invoice Follow-Up note;
+    Undo restores only the invoice row itself, deliberately not the
+    follow-up note or the unmatched references. Receipt/Journal Edit/
+    Delete takes an explicit `whole_voucher` choice rather than a
+    hardcoded default, per the client's own instruction: "Let the user
+    decide, system shall not decide what a user should have done."
+
+    `rollforward.aggregate_party_movements_from_registers`/`compute_
+    party_closings_as_of` and `ytd_debtor_cross_check.compute_ytd_vs_
+    register_comparison` all dropped their `corrections` parameter
+    outright - the register rows passed in are now already the corrected
+    reality, nothing left to apply on top. `ytd_debtor_voucher_report`'s
+    own template lost its Delete/Modify forms and Corrections Log
+    section; Extra in Registers and Amount Mismatch rows now just point
+    the Maker at the voucher's own register page. `ar_mis/register_
+    corrections.py` deleted outright (module and its own dedicated test
+    file) once nothing imported from it any more.
+
+    Explicitly parked for a later session, per the client's own scoping
+    instruction ("confirm on the 1st 3 points for this run and park
+    others for later"): why YTD Drift shows already-matched rows with no
+    action needed; replacing every free-text "Your Name" field app-wide
+    with session-role-based attribution; categorical cards for Register
+    Exceptions Review and YTD Drift in place of one comprehensive line-
+    wise table; de-duplicating `register_build_exception`/`drift_finding`
+    so an unresolved finding isn't re-logged every run.
+
+    Full suite green (648 tests) at this point.
+
 ## Deferred to a later version (not rejected, not in scope now)
 
 - **Operational collections workflow** — using the application for day-to-day

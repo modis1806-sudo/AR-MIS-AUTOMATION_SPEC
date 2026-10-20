@@ -68,20 +68,23 @@ from ar_mis.models import (
 )
 from ar_mis.money import is_match
 from ar_mis.reconciliation import DriftFinding, attribute_week
-from ar_mis.register_corrections import (
-    CREDIT_NOTE_TYPES as _CREDIT_NOTE_TYPES,
-    RECEIPT_JOURNAL_TYPES as _RECEIPT_JOURNAL_TYPES,
-    SALES_DN_TYPES as _SALES_DN_TYPES,
-    RegisterRowCorrection,
-    apply_corrections,
-    effective_corrections,
-)
 from ar_mis.sign import flip_sign
 
 MATCH = "Match"
 AMOUNT_MISMATCH = "Amount Mismatch"
 MISSING_FROM_REGISTERS = "Missing from Registers"
 EXTRA_IN_REGISTERS = "Extra in Registers"
+
+# Which register owns which voucher_type category - the same routing
+# ar_mis.pipeline._build_and_persist_registers uses when building these
+# registers in the first place. Used to be shared with the old register-
+# correction overlay (removed this session: Edit/Delete now mutate the
+# real register row directly, so there's no separate overlay left to
+# scope) - local here since this module is now the only one that needs
+# them.
+_SALES_DN_TYPES = frozenset({"Sales", "Debit Note"})
+_CREDIT_NOTE_TYPES = frozenset({"Credit Note"})
+_RECEIPT_JOURNAL_TYPES = frozenset({"Receipt", "Journal"})
 
 _Key = tuple[str, str, str]  # (branch_id, voucher_number, party_id) - always scoped to one register
 
@@ -153,7 +156,6 @@ def compute_ytd_vs_register_comparison(
     sales_dn_rows: list[SalesDNRegisterRow],
     cn_rows: list[CreditNoteRegisterRow],
     rj_rows: list[ReceiptJournalRegisterRow],
-    corrections: list[RegisterRowCorrection] = (),
 ) -> list[YtdVsRegisterRow]:
     """Both directions of the client's own explicit ask: a voucher missing
     from the registers, AND a voucher sitting in a register that Tally's
@@ -169,25 +171,16 @@ def compute_ytd_vs_register_comparison(
     since a register row from an earlier week is still a real voucher this
     YTD pull's own date range would also cover.
 
-    `corrections` (Phase 6b's Delete/Modify overlay, ar_mis.register_
-    corrections) is applied to the register side only, before either
-    direction is computed - an EXCLUDE-d key drops out of the register
-    amounts entirely (so it correctly re-surfaces as MISSING_FROM_
-    REGISTERS if the YTD pull still has it, or simply disappears from
-    this report if it doesn't - exactly mirroring what "this should never
-    have been in the register" means), and a CORRECT_AMOUNT-ed key's
-    register_amount becomes the Maker's own corrected figure, which the
-    usual is_match comparison then judges on its own merits - a correction
-    is never silently trusted as "now a match."
+    No corrections overlay any more (client's explicit redesign this
+    session): Edit/Delete on a register page now mutate the real register
+    row directly, so whatever's passed in here already IS the corrected
+    reality - a voucher a Maker deleted as wrongly-present is simply gone
+    from `sales_dn_rows`/`cn_rows`/`rj_rows` already, no separate overlay
+    step needed to make this comparison see that.
     """
-    sales_dn_amounts_raw, sales_dn_dates, sales_dn_labels = _sales_dn_amounts(sales_dn_rows)
-    cn_amounts_raw, cn_dates, cn_labels = _cn_amounts(cn_rows)
-    rj_amounts_raw, rj_dates, rj_labels = _rj_amounts(rj_rows)
-
-    effective = effective_corrections(list(corrections))
-    sales_dn_amounts = apply_corrections(sales_dn_amounts_raw, _SALES_DN_TYPES, effective)
-    cn_amounts = apply_corrections(cn_amounts_raw, _CREDIT_NOTE_TYPES, effective)
-    rj_amounts = apply_corrections(rj_amounts_raw, _RECEIPT_JOURNAL_TYPES, effective)
+    sales_dn_amounts, sales_dn_dates, sales_dn_labels = _sales_dn_amounts(sales_dn_rows)
+    cn_amounts, cn_dates, cn_labels = _cn_amounts(cn_rows)
+    rj_amounts, rj_dates, rj_labels = _rj_amounts(rj_rows)
 
     def _register_side(voucher_type: str) -> tuple[dict[_Key, Decimal], dict[_Key, date], str]:
         if voucher_type in _SALES_DN_TYPES:
@@ -243,11 +236,10 @@ def compute_ytd_vs_register_comparison(
     # never appeared in the YTD pull for that SAME register's own voucher
     # type(s). branch_id/voucher_type come from the register side's own
     # labels dict, since the YTD side has nothing for this key by
-    # definition. Driven by the CORRECTED amounts dicts' own keys, never
-    # the raw rows directly - an EXCLUDE-d key has no entry left in
-    # `sales_dn_amounts`/`cn_amounts`/`rj_amounts` (the register row
-    # itself is untouched in storage, only dropped from this computation),
-    # so it correctly never appears here once excluded.
+    # definition. A voucher a Maker already deleted as wrongly-present
+    # (register page Edit/Delete) is simply absent from `sales_dn_rows`/
+    # `cn_rows`/`rj_rows` in the first place, so it never reaches this
+    # loop at all - nothing left here to specifically account for it.
     for key, register_amount in sales_dn_amounts.items():
         voucher_type = sales_dn_labels[key]
         if (voucher_type, key) in seen_type_keys:

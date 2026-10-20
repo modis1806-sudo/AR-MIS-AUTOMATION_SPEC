@@ -31,7 +31,6 @@ from ar_mis.models import (
     Voucher,
     VoucherType,
 )
-from ar_mis.register_corrections import RegisterRowCorrection, apply_corrections, effective_corrections
 
 _MOVEMENT_TYPES = (
     VoucherType.SALES,
@@ -78,7 +77,6 @@ def compute_party_closings_as_of(
     branch_id: str,
     party_ledger_names: set[str],
     as_of: date,
-    corrections: list[RegisterRowCorrection] = (),
 ) -> dict[str, PartyMovement]:
     """Section 2.4's Opening+Movements=Closing formula, evaluated fresh
     from scratch every single time this is called - never a stored or
@@ -91,19 +89,34 @@ def compute_party_closings_as_of(
     Check, AR Snapshot, and every other caller just want one party's
     whole cumulative position as of one date, computed live.
 
-    Opening is always Pre-MIS Outstanding (Layer 1, never a prior
-    result); the movement is every register row on record for that
-    party dated on or before `as_of`, summed through the same
-    aggregate_party_movements_from_registers a normal weekly run always
-    used for its own week's movement - this just widens the row set to
-    the party's entire history instead of one run's own vouchers.
+    Opening is always the party's ORIGINAL Pre-MIS Outstanding - the
+    figure as originally fed in, frozen forever (Store.get_original_pre_
+    mis_outstanding), never the living, adjustment-updated figure AR
+    Snapshot uses for its own different purpose. Client's explicit call
+    this session: every register movement since then - Sales, CN, DN,
+    Receipts, Journals - is summed and added on top without exception,
+    regardless of how a Credit Note or Journal later got classified. A
+    voucher reclassified as a Pre-MIS Adjustment still really happened
+    and Tally's own real balance already reflects it; freezing Opening
+    instead of letting it float is what makes including every movement,
+    unconditionally, the correct and simpler of the two ways to reach
+    the same true total (see this session's own worked proof: Opening
+    frozen + every movement counted once equals Opening floating +
+    movements minus whatever got folded into it - same answer, fewer
+    moving parts).
+
+    The movement is every register row on record for that party dated
+    on or before `as_of`, summed through the same aggregate_party_
+    movements_from_registers a normal weekly run always used for its
+    own week's movement - this just widens the row set to the party's
+    entire history instead of one run's own vouchers.
     """
     sales_dn = [r for r in store.all_sales_dn_rows(branch_id) if r.invoice_date <= as_of]
     cn = [r for r in store.all_credit_note_rows(branch_id) if r.cn_date <= as_of]
     rj = [r for r in store.all_receipt_journal_rows(branch_id) if r.txn_date <= as_of]
 
-    pre_mis_openings = {party: store.get_opening_balance(party, branch_id) for party in party_ledger_names}
-    return aggregate_party_movements_from_registers(sales_dn, cn, rj, party_ledger_names, pre_mis_openings, corrections)
+    pre_mis_openings = {party: store.get_original_pre_mis_outstanding(party, branch_id) for party in party_ledger_names}
+    return aggregate_party_movements_from_registers(sales_dn, cn, rj, party_ledger_names, pre_mis_openings)
 
 
 def aggregate_party_movements(
@@ -154,7 +167,6 @@ def aggregate_party_movements_from_registers(
     rj_rows: list[ReceiptJournalRegisterRow],
     party_ledger_names: set[str],
     openings: dict[str, Decimal],
-    corrections: list[RegisterRowCorrection] = (),
 ) -> dict[str, PartyMovement]:
     """Section 4.2's "TB vs Registers" redesign (docs/registers_and_
     reporting_design.md item 56) - TB Cross-Check's own "our side" number,
@@ -198,18 +210,11 @@ def aggregate_party_movements_from_registers(
       by construction, which IS the post-flip AR convention - flip_sign-ing
       it on top would wrongly invert a real sale into a negative movement.
 
-    `corrections` (Phase 6b's Delete/Modify overlay, ar_mis.register_
-    corrections) is applied per-voucher (branch + voucher_number + party),
-    never per physical row - a Receipt/Journal voucher's several bill-
-    allocation lines are collapsed into one figure first (the same
-    reduction ar_mis.ytd_debtor_cross_check already needs for its own
-    voucher-wise comparison), then corrected, then summed into the
-    party's field total - a correction can never be double-counted or
-    partially applied just because a voucher happens to have more than
-    one physical register row.
+    No corrections overlay any more (client's explicit redesign this
+    session): Edit/Delete on a register page now mutate the real register
+    row directly, so `sales_dn_rows`/`cn_rows`/`rj_rows` passed in here
+    already ARE the corrected reality - nothing left to apply on top.
     """
-    effective = effective_corrections(list(corrections))
-
     sales_raw: dict[tuple[str, str, str], Decimal] = {}
     debit_note_raw: dict[tuple[str, str, str], Decimal] = {}
     for row in sales_dn_rows:
@@ -235,24 +240,18 @@ def aggregate_party_movements_from_registers(
         bucket = receipt_raw if row.voucher_type == VoucherType.RECEIPT.value else journal_raw
         bucket[key] = bucket.get(key, Decimal("0.00")) + row.amount
 
-    sales_c = apply_corrections(sales_raw, frozenset({"Sales"}), effective)
-    debit_note_c = apply_corrections(debit_note_raw, frozenset({"Debit Note"}), effective)
-    cn_c = apply_corrections(cn_raw, frozenset({"Credit Note"}), effective)
-    receipt_c = apply_corrections(receipt_raw, frozenset({"Receipt"}), effective)
-    journal_c = apply_corrections(journal_raw, frozenset({"Journal"}), effective)
-
     totals: dict[str, dict[str, Decimal]] = defaultdict(
         lambda: {f: Decimal("0.00") for f in _TYPE_TO_FIELD.values()}
     )
-    for key, amount in sales_c.items():
+    for key, amount in sales_raw.items():
         totals[key[2]]["sales"] += amount
-    for key, amount in debit_note_c.items():
+    for key, amount in debit_note_raw.items():
         totals[key[2]]["debit_notes"] += amount
-    for key, amount in cn_c.items():
+    for key, amount in cn_raw.items():
         totals[key[2]]["credit_notes"] += flip_sign(amount)
-    for key, amount in receipt_c.items():
+    for key, amount in receipt_raw.items():
         totals[key[2]]["receipts"] += flip_sign(amount)
-    for key, amount in journal_c.items():
+    for key, amount in journal_raw.items():
         totals[key[2]]["journals"] += flip_sign(amount)
 
     movements: dict[str, PartyMovement] = {}

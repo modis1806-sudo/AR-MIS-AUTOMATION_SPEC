@@ -600,3 +600,44 @@ class RegisterBuildExceptionRecord:
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
     reviewed_note: str | None = None
+
+
+@dataclass(frozen=True)
+class RegisterRowAuditEntry:
+    """One entry in register_row_audit - the client's explicit redesign
+    this session, replacing the old register_row_correction overlay
+    (which never touched the real register, only a calculation-time
+    layer a handful of screens had to remember to apply). Edit and
+    Delete now mutate the real register row directly; this is the audit
+    trail for that, not something any calculation reads or applies.
+
+    `register` is one of "sales_dn" / "credit_note" / "receipt_journal".
+    `action` is "EDIT" / "DELETE" / "UNDO". `row_id` is the specific
+    register row a Maker selected to start the action, kept for
+    traceability even when the action turned out to be voucher-wide
+    (a multi-line Receipt/Journal voucher, client's explicit call: never
+    a hardcoded default, the Maker chooses this-line-only or whole-
+    voucher every time). `before`/`after` are each a list of dicts - the
+    affected row(s)' own full field set, as plain JSON-safe values - so
+    one voucher-wide action on several lines is still exactly one audit
+    entry, and Undo has everything it needs to restore them exactly.
+    `before` is None for an UNDO-of-DELETE's own forward action (nothing
+    existed yet); `after` is None for a DELETE (nothing exists after).
+    `undone_of` is set only on an UNDO entry, naming the earlier entry
+    it reverses - undoing is itself a new, logged, reasoned action,
+    never a silent rewind.
+    """
+
+    id: int
+    register: str
+    action: str
+    row_id: int
+    branch_id: str
+    voucher_number: str
+    party_id: str
+    before: list[dict] | None
+    after: list[dict] | None
+    reason: str
+    performed_by: str
+    performed_at: datetime
+    undone_of: int | None = None

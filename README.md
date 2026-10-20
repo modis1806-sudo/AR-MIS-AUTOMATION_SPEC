@@ -174,11 +174,11 @@ much each one blocks everything else:
    internet). Architecturally the biggest piece here — probably its own
    project, not a config change.
 2. **No real authentication.** The Maker/Checker role picker is a session
-   toggle, not a login — every correction's "who" (e.g.
-   `RegisterRowCorrection.corrected_by`) is attribution a person types in
+   toggle, not a login — every register Edit/Delete/Undo's "who" (e.g.
+   `RegisterRowAuditEntry.performed_by`) is attribution a person types in
    a text box, never a verified identity. Multiple real people sharing
    this tool needs real accounts before the audit trail this whole system
-   is built around (who/when/why on every correction) means anything with
+   is built around (who/when/why on every edit/delete) means anything with
    more than one person able to use it.
 3. **Dev server.** `app.run(..., debug=True)` (this module's own
    `if __name__ == "__main__"` entry point) is Werkzeug's development
@@ -266,10 +266,17 @@ Registers and reporting (the actual day-to-day screens):
   wise; also the Manual Upload variant of the same check, scoped one
   dimension coarser (no party — see "TB vs Registers — YTD Debtor
   Vouchers" above for why).
-- `ar_mis/register_corrections.py` — the audited Delete/Modify/Reinstate
-  overlay both Check 1 and Check 2 (`ar_mis.rollforward.aggregate_
-  party_movements_from_registers`) read, so a correction changes both
-  checks' totals identically, never just one screen.
+- Register Edit/Delete/Undo (`Store.edit_sales_dn_row`/`delete_sales_dn_row`/
+  `edit_credit_note_row`/`delete_credit_note_row`/`edit_receipt_journal_row`/
+  `delete_receipt_journal_row`/`undo_register_row_audit` in `ar_mis/
+  storage.py`) — a real mutation of the register row itself, audited in
+  `register_row_audit`, never an overlay read back on top at report time;
+  both Check 1 and Check 2 (`ar_mis.rollforward.aggregate_party_movements_
+  from_registers`) read the register rows directly, so an edit or delete
+  changes both checks' totals identically, never just one screen. (This
+  replaced an earlier Delete/Modify/Reinstate overlay, `ar_mis.register_
+  corrections` — retired; see `docs/registers_and_reporting_design.md`'s
+  own phase log for why.)
 - `ar_mis/branch_totals.py` — Branch Sales + CN + DN Total, a plain
   per-branch turnover figure to eyeball against Tally's own P&L.
 - `ar_mis/manual_upload.py` — the fallback extraction path (see "Manual
@@ -447,19 +454,16 @@ store of its own:
   **Missing from Registers** (Tally has it, the registers don't) —
   **Add to Registers** replays it in, under a new week you choose, using
   that party's real Tally closing balance to confirm it reconciles clean
-  afterward; **Extra in Registers** (the registers have it, Tally's own
-  list doesn't) — **Delete**; **Amount Mismatch** — **Modify** to the
-  correct figure. Every Delete/Modify/Reinstate is an audited, append-
-  only row (`ar_mis.register_corrections`), never a silent edit to the
-  original register row, and feeds straight into both this check and
-  TB Reconciliation Cross-Check's own totals, never just this screen. A
-  **Corrections Log** below the main table lists every correction ever
-  recorded (Active/Superseded) regardless of whether its own row still
-  appears above — an Exclude on a voucher Tally's own list never had
-  removes its only remaining key, so Reinstate always lives there.
-  Manual Upload gets its own, coarser version of this (scoped to branch +
-  voucher type + voucher number only, no Add/Delete/Modify — see Manual
-  Upload above) since its own YTD file carries no debtor name at all.
+  afterward (this stays on this screen); **Extra in Registers** (the
+  registers have it, Tally's own list doesn't) and **Amount Mismatch**
+  point the Maker at the voucher's own register page (Sales & DN / Credit
+  Note / Receipt & Journal Register) instead, where Edit and Delete act
+  directly on the real register row — audited (`register_row_audit`) and
+  undoable, never a silent change and never a second overlay read back on
+  top at report time. Manual Upload gets its own, coarser version of this
+  (scoped to branch + voucher type + voucher number only, no Add — see
+  Manual Upload above) since its own YTD file carries no debtor name at
+  all.
 
 ## Diagnosing a live Tally connection from the command line
 

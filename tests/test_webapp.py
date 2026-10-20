@@ -4566,13 +4566,18 @@ def _seed_extra_and_mismatch_rows(client):
     store.close()
 
 
-def test_ytd_debtor_voucher_report_shows_delete_and_modify_actions_for_maker(client):
+def test_ytd_debtor_voucher_report_points_a_maker_at_the_register_page(client):
+    # Client's explicit redesign this session: Extra in Registers and
+    # Amount Mismatch rows no longer carry their own Delete/Modify forms
+    # here - a Maker corrects the register row directly on its own
+    # register page now, so this page just says so.
     _seed_extra_and_mismatch_rows(client)
     resp = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
     assert b"Extra in Registers" in resp.data
     assert b"Amount Mismatch" in resp.data
-    assert b">Delete<" in resp.data
-    assert b">Modify<" in resp.data
+    assert b"Edit or Delete this voucher from its own register page" in resp.data
+    assert b">Delete<" not in resp.data
+    assert b">Modify<" not in resp.data
 
 
 def test_ytd_debtor_voucher_report_hides_actions_for_a_checker(roleless_client):
@@ -4580,111 +4585,7 @@ def test_ytd_debtor_voucher_report_hides_actions_for_a_checker(roleless_client):
     _seed_extra_and_mismatch_rows(roleless_client)
     resp = roleless_client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
     assert resp.status_code == 200
-    assert b">Delete<" not in resp.data
-    assert b">Modify<" not in resp.data
-
-
-def test_register_row_correction_submit_excludes_an_extra_in_registers_row(client):
-    _seed_extra_and_mismatch_rows(client)
-    resp = client.post(
-        "/reports/ytd-debtor-vouchers/correction",
-        data={
-            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
-            "party_id": "ACME", "action": "Exclude", "reason": "Not a real Sundry Debtor voucher",
-            "corrected_by": "AR Manager",
-        },
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    assert b"Correction recorded" in resp.data
-    # CN1 never appeared in the YTD pull either, so excluding it drops
-    # the row from the comparison table entirely - confirmed via the
-    # durable Corrections Log, which is the only place it's visible now.
-    assert b"CN1" in resp.data  # still shown in the Corrections Log
-    assert b"Active" in resp.data
-
-
-def test_register_row_correction_submit_corrects_an_amount_mismatch(client):
-    _seed_extra_and_mismatch_rows(client)
-    resp = client.post(
-        "/reports/ytd-debtor-vouchers/correction",
-        data={
-            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN2",
-            "party_id": "ACME", "action": "Correct Amount", "corrected_amount": "300.00",
-            "reason": "Register captured the wrong figure", "corrected_by": "AR Manager",
-        },
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    report = client.get("/reports/ytd-debtor-vouchers?as_of=2026-04-07")
-    rows_section = report.data
-    assert b"Amount Mismatch" not in rows_section
-
-
-def test_register_row_correction_submit_requires_a_reason(client):
-    resp = client.post(
-        "/reports/ytd-debtor-vouchers/correction",
-        data={
-            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
-            "party_id": "ACME", "action": "Exclude", "reason": "", "corrected_by": "AR Manager",
-        },
-        follow_redirects=True,
-    )
-    assert b"Enter a reason for this correction" in resp.data
-    from ar_mis.storage import Store
-    store = Store(client.application.config["DB_PATH"])
-    assert store.all_register_row_corrections() == []
-    store.close()
-
-
-def test_register_row_correction_submit_requires_a_valid_corrected_amount(client):
-    resp = client.post(
-        "/reports/ytd-debtor-vouchers/correction",
-        data={
-            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN2",
-            "party_id": "ACME", "action": "Correct Amount", "corrected_amount": "not-a-number",
-            "reason": "test", "corrected_by": "AR Manager",
-        },
-        follow_redirects=True,
-    )
-    assert b"Enter a valid corrected amount" in resp.data
-
-
-def test_register_row_correction_submit_rejects_an_unknown_action(client):
-    resp = client.post(
-        "/reports/ytd-debtor-vouchers/correction",
-        data={
-            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
-            "party_id": "ACME", "action": "Delete Forever", "reason": "test", "corrected_by": "AR Manager",
-        },
-        follow_redirects=True,
-    )
-    assert b"Choose a valid correction action" in resp.data
-
-
-def test_register_row_correction_reinstate_marks_the_exclude_superseded(client):
-    _seed_extra_and_mismatch_rows(client)
-    client.post(
-        "/reports/ytd-debtor-vouchers/correction",
-        data={
-            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
-            "party_id": "ACME", "action": "Exclude", "reason": "test exclude", "corrected_by": "AR Manager",
-        },
-    )
-    resp = client.post(
-        "/reports/ytd-debtor-vouchers/correction",
-        data={
-            "as_of": "2026-04-07", "branch_id": "KOL", "voucher_type": "Credit Note", "voucher_number": "CN1",
-            "party_id": "ACME", "action": "Reinstate", "reason": "excluded by mistake", "corrected_by": "AR Manager",
-        },
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    # CN1 has no YTD-side counterpart, so once reinstated it goes back to
-    # being Extra in Registers again, with a Delete form available once
-    # more (the correction is no longer active).
-    assert b"Extra in Registers" in resp.data
-    assert b"Superseded" in resp.data
+    assert b"Edit or Delete this voucher from its own register page" not in resp.data
 
 
 def test_ytd_debtor_voucher_report_shows_add_action_for_a_backed_missing_from_registers_row(client):

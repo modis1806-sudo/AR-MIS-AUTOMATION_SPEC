@@ -51,16 +51,6 @@ from ar_mis.drift_correction import (
 )
 from ar_mis.pipeline import process_branch_data
 from ar_mis.pre_mis_register import compute_pre_mis_register
-from ar_mis.register_corrections import (
-    CORRECT_AMOUNT,
-    EXCLUDE,
-    REINSTATE,
-    RegisterRowCorrection,
-    apply_credit_note_row_corrections,
-    apply_receipt_journal_row_corrections,
-    apply_sales_dn_row_corrections,
-    effective_corrections,
-)
 from ar_mis.ytd_debtor_cross_check import (
     MATCH,
     MISSING_FROM_REGISTERS,
@@ -134,8 +124,8 @@ _RESOLUTION_REASON_BY_TARGET = {
 
 # Voucher Type Aliases (client's own ask) - the five AR-relevant
 # categories ar_mis.parsers.categorize_voucher_type already recognizes,
-# in the exact label each one's own corrections/comparisons already use
-# (ar_mis.register_corrections.SALES_DN_TYPES etc.). Seed values are the
+# in the exact label each one's own comparisons already use
+# (ar_mis.ytd_debtor_cross_check._SALES_DN_TYPES etc.). Seed values are the
 # global keyword list's own known name variants (parsers._CATEGORY_
 # KEYWORDS) - what a branch with nothing configured yet is effectively
 # already matching today, shown as a starting point rather than a blank
@@ -2076,25 +2066,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         follow_ups = store.all_invoice_follow_ups()
         tally_closing_by_party = _current_tb_closing_by_party(store)
-        corrections = [r.correction for r in store.all_register_row_corrections()]
         freshness = _freshness(store.last_extraction_at())
         store.close()
-
-        # Check 1 and Check 2 already read every correction back out
-        # (register_corrections' own docstring); this dashboard is a third
-        # consumer of the same raw registers and was never wired up to do
-        # the same - confirmed live (CHARZE INDUSTRIES): a Correct Amount
-        # on a Receipt's wrongly-signed bill allocation changed what Check
-        # 1 showed but left this report's Reconciliation Check gap
-        # unchanged. Applying the overlay once, here, before anything else
-        # reads these three lists, means every figure below (ageing, DSO,
-        # Reconciliation Check, Unapplied Cash/CN) reflects the same
-        # corrected reality Check 1/2 already do - not just the one bridge
-        # figure a Maker happened to be looking at when they found the gap.
-        effective = effective_corrections(corrections)
-        sales_dn_rows = apply_sales_dn_row_corrections(sales_dn_rows, effective)
-        cn_rows = apply_credit_note_row_corrections(cn_rows, effective)
-        rj_rows = apply_receipt_journal_row_corrections(rj_rows, effective)
 
         sales_dn_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in sales_dn_rows}
         ptp_rate = compute_ptp_kept_rate(follow_ups, sales_dn_by_identity, cn_rows, rj_rows, as_of)
@@ -2468,8 +2441,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
-        correction_records = store.all_register_row_corrections()
-        corrections = [r.correction for r in correction_records]
         # Phase 6a's Add action replays the same DriftFindingRecord this
         # voucher's own live save already created (ar_mis.ytd_debtor_
         # cross_check.drift_findings_from_missing_registers) - looked up
@@ -2485,41 +2456,22 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
-        rows = compute_ytd_vs_register_comparison(ytd_rows, sales_dn_rows, cn_rows, rj_rows, corrections=corrections)
+        rows = compute_ytd_vs_register_comparison(ytd_rows, sales_dn_rows, cn_rows, rj_rows)
         rows.sort(key=lambda r: (r.status == MATCH, r.branch_id, r.voucher_type, r.voucher_number))
         summary = {
             "total": len(rows),
             "matched": sum(1 for r in rows if r.status == MATCH),
             "mismatched": sum(1 for r in rows if r.status != MATCH),
         }
-        effective = effective_corrections(corrections)
-        active_corrections = {}
         finding_ids = {}
         for row in rows:
             key = (row.branch_id, row.voucher_type, row.voucher_number, row.party_id)
-            correction = effective.get(key)
-            if correction is not None and correction.action in (EXCLUDE, CORRECT_AMOUNT):
-                active_corrections[key] = correction
             finding = findings_by_key.get(key)
             if finding is not None:
                 finding_ids[key] = finding.id
-        # Durable log, independent of whether a row still appears above -
-        # an Exclude on a voucher with no YTD-side counterpart removes
-        # that row from the comparison entirely, so Reinstate needs
-        # somewhere to live regardless (`correction_records` is already
-        # oldest-first, so the LAST entry seen per key is the latest).
-        latest_correction_id_by_key: dict[tuple[str, str, str, str], int] = {}
-        for record in correction_records:
-            key = (
-                record.correction.branch_id, record.correction.voucher_type,
-                record.correction.voucher_number, record.correction.party_id,
-            )
-            latest_correction_id_by_key[key] = record.id
         return render_template(
             "ytd_debtor_voucher_report.html", rows=rows, as_of=as_of.isoformat(),
-            active_corrections=active_corrections, finding_ids=finding_ids,
-            correction_log=list(reversed(correction_records)),
-            latest_correction_id_by_key=latest_correction_id_by_key,
+            finding_ids=finding_ids,
             pull_as_of=pull_as_of.isoformat() if pull_as_of else None, freshness=freshness, summary=summary,
         )
 
@@ -2644,64 +2596,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "success",
         )
         return _drift_finding_redirect()
-
-    @app.route("/reports/ytd-debtor-vouchers/correction", methods=["POST"])
-    @requires_role("maker")
-    def register_row_correction_submit():
-        """Phase 6b/6c: Check 1's own Delete (Exclude) / Modify (Correct
-        Amount) / Reinstate actions, one audited row per submission
-        (ar_mis.register_corrections.RegisterRowCorrection) - never an
-        edit to the register row itself, per the client's standing
-        rejection of silent edit/delete of original voucher data. Applies
-        to BOTH checks on the very next page load (ar_mis.rollforward.
-        aggregate_party_movements_from_registers and this same module's
-        own compute_ytd_vs_register_comparison both read every recorded
-        correction back out, never just this one screen).
-        """
-        as_of = request.form.get("as_of", "")
-        branch_id = request.form.get("branch_id", "").strip()
-        voucher_type = request.form.get("voucher_type", "").strip()
-        voucher_number = request.form.get("voucher_number", "").strip()
-        party_id = request.form.get("party_id", "").strip()
-        action = request.form.get("action", "").strip()
-        raw_corrected_amount = request.form.get("corrected_amount", "").strip()
-        reason = request.form.get("reason", "").strip()
-        corrected_by = request.form.get("corrected_by", "").strip()
-
-        def _back():
-            return redirect(url_for("ytd_debtor_voucher_report", as_of=as_of))
-
-        if not (branch_id and voucher_type and voucher_number and party_id):
-            flash("That correction request was missing which voucher it applies to - please try again.", "error")
-            return _back()
-        if action not in (EXCLUDE, CORRECT_AMOUNT, REINSTATE):
-            flash("Choose a valid correction action.", "error")
-            return _back()
-        if not reason:
-            flash("Enter a reason for this correction.", "error")
-            return _back()
-        if not corrected_by:
-            flash("Enter your name to record a correction.", "error")
-            return _back()
-
-        corrected_amount = None
-        if action == CORRECT_AMOUNT:
-            try:
-                corrected_amount = Decimal(raw_corrected_amount)
-            except (InvalidOperation, ValueError):
-                flash("Enter a valid corrected amount.", "error")
-                return _back()
-
-        correction = RegisterRowCorrection(
-            branch_id=branch_id, voucher_type=voucher_type, voucher_number=voucher_number, party_id=party_id,
-            action=action, corrected_amount=corrected_amount, reason=reason, corrected_by=corrected_by,
-            corrected_at=datetime.now(),
-        )
-        store = get_store()
-        store.record_register_row_correction(correction)
-        store.close()
-        flash(f"Correction recorded: {action} on {voucher_type} {voucher_number} ({party_id}).", "success")
-        return _back()
 
     @app.route("/reports/register-exceptions")
     def register_exceptions_review():

@@ -38,6 +38,7 @@ from ar_mis.models import (
     ReceiptJournalRegisterRow,
     RegisterBuildExceptionRecord,
     RegisterClassification,
+    RegisterRowAuditEntry,
     SalesDNRegisterRow,
     Voucher,
     VoucherType,
@@ -45,7 +46,6 @@ from ar_mis.models import (
     YtdDebtorVoucherRow,
 )
 from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
-from ar_mis.register_corrections import RegisterRowCorrection, RegisterRowCorrectionRecord
 
 # Schema changes must be additive-only — new tables, or new columns via
 # ALTER TABLE ADD COLUMN — never a DROP/recreate of an existing table
@@ -65,7 +65,7 @@ from ar_mis.register_corrections import RegisterRowCorrection, RegisterRowCorrec
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 19
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -460,17 +460,13 @@ CREATE TABLE IF NOT EXISTS ytd_debtor_voucher (
     UNIQUE (branch_id, as_of, voucher_number, party_id)
 );
 """,
-    # Phase 6b's Delete/Modify overlay on the three master registers
-    # (ar_mis.register_corrections) - the client's explicit rejection of
-    # silent edit/delete of original voucher data applies here exactly as
-    # it already does to drift_finding/pre_mis_adjustments: append-only,
-    # never UPDATE/DELETE against a register row. No UNIQUE constraint -
-    # the SAME voucher can legitimately be corrected more than once over
-    # time (a Modify that needs a further Modify, or a Reinstate that
-    # undoes an earlier Exclude), and the latest row for a given identity
-    # is always the one that applies (ar_mis.register_corrections.
-    # effective_corrections) - every earlier row stays as audit history,
-    # never superseded by being overwritten in place.
+    # Phase 6b's Delete/Modify overlay on the three master registers used
+    # to live here (register_row_correction table, read back via
+    # ar_mis.register_corrections.effective_corrections). The client's
+    # later, explicit redesign this session replaced that overlay with
+    # real row mutation + register_row_audit (see migration 19 below);
+    # this table is kept, unread, as permanent audit history of every
+    # correction it ever recorded - never dropped, never migrated.
     15: """
 CREATE TABLE IF NOT EXISTS register_row_correction (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,6 +550,59 @@ WHERE w.week_ending = (
     WHERE w2.party_id = w.party_id AND w2.branch_id = w.branch_id
 );
 """,
+    # Client's explicit call: TB Cross-Check's Opening must be the figure
+    # originally fed in, frozen forever - never the living, adjustment-
+    # updated customer_master.pre_mis_outstanding that AR Snapshot and the
+    # Pre-MIS Adjustment Register still correctly rely on. This column is
+    # that frozen figure. Only the column is added here (SQL) - its
+    # backfill for existing parties needs real Decimal arithmetic against
+    # the full pre_mis_adjustments history (original = current minus every
+    # adjustment ever applied), which is precision-risky to do as raw SQL
+    # over TEXT-stored decimals, so Store._backfill_original_pre_mis_
+    # outstanding does it in Python immediately after this migration runs.
+    18: """
+ALTER TABLE customer_master ADD COLUMN original_pre_mis_outstanding TEXT;
+""",
+    # Client's explicit redesign this session: the old register_row_
+    # correction overlay (migration 15) - "stop counting this row, as if
+    # it never existed, for computation purposes" - never actually
+    # touched the register itself, which left a Maker able to mark a bad
+    # voucher "resolved" on Check 1 while it kept sitting in the real
+    # Sales & DN Register, Ageing, DSO, everywhere else, unchanged. That
+    # table is NOT dropped (never-discard-data) but nothing writes to it
+    # from this version on - register_row_audit replaces its actual job.
+    #
+    # Edit and Delete now mutate the real register row - a genuine UPDATE
+    # or DELETE against sales_dn_register/credit_note_register/
+    # receipt_journal_register, the one and only place every screen reads
+    # from, so nothing downstream can forget to apply a correction ever
+    # again. The audit trail moves here instead: `before`/`after` are
+    # each a JSON list of the affected row(s) own full field set (a list,
+    # not a single object, so one voucher-wide action on a multi-line
+    # Receipt/Journal voucher is still exactly one audit entry) - enough
+    # to reconstruct exactly what existed before an action and undo it
+    # later. `row_id` is the specific register row a Maker actually
+    # selected to start the action, kept for traceability even when the
+    # action ended up voucher-wide. `undone_of` is set only on an UNDO
+    # entry, naming the earlier entry it reverses - Undo is itself a new,
+    # logged action, never a silent rewind.
+    19: """
+CREATE TABLE IF NOT EXISTS register_row_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    register TEXT NOT NULL,
+    action TEXT NOT NULL,
+    row_id INTEGER NOT NULL,
+    branch_id TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    before_json TEXT,
+    after_json TEXT,
+    reason TEXT NOT NULL,
+    performed_by TEXT NOT NULL,
+    performed_at TEXT NOT NULL,
+    undone_of INTEGER
+);
+""",
 }
 
 
@@ -596,10 +645,41 @@ class Store:
             return
         if not is_new_db:
             self._backup_before_migration(db_path, current_version)
+        needs_pre_mis_backfill = current_version < 18 <= SCHEMA_VERSION
         for version in range(current_version + 1, SCHEMA_VERSION + 1):
             self.conn.executescript(MIGRATIONS[version])
             self.conn.execute(f"PRAGMA user_version = {version}")
+        if needs_pre_mis_backfill:
+            self._backfill_original_pre_mis_outstanding()
         self.conn.commit()
+
+    def _backfill_original_pre_mis_outstanding(self) -> None:
+        """One-time, run only the first time a database crosses into
+        schema version 18 (see MIGRATIONS[18]'s own comment for why this
+        isn't plain SQL). For every existing party: original = current
+        pre_mis_outstanding minus every adjustment ever recorded against
+        them - exact, not a guess, since record_pre_mis_adjustment's own
+        math (new_balance = old + amount) makes this invertible. A party
+        with no adjustments on record gets original == current, correctly
+        (nothing has ever moved it). A brand-new party created after this
+        migration never needs this path - upsert_customer_master sets
+        both columns equal at creation time directly.
+        """
+        self.conn.row_factory = sqlite3.Row
+        parties = self.conn.execute(
+            "SELECT party_id, branch_id, pre_mis_outstanding FROM customer_master"
+        ).fetchall()
+        adjustment_totals: dict[tuple[str, str], Decimal] = {}
+        for row in self.conn.execute("SELECT party_id, branch_id, amount FROM pre_mis_adjustments"):
+            key = (row["party_id"], row["branch_id"])
+            adjustment_totals[key] = adjustment_totals.get(key, Decimal("0.00")) + Decimal(row["amount"])
+        for party in parties:
+            key = (party["party_id"], party["branch_id"])
+            original = Decimal(party["pre_mis_outstanding"]) - adjustment_totals.get(key, Decimal("0.00"))
+            self.conn.execute(
+                "UPDATE customer_master SET original_pre_mis_outstanding=? WHERE party_id=? AND branch_id=?",
+                (str(original), party["party_id"], party["branch_id"]),
+            )
 
     def _backup_before_migration(self, db_path: str, from_version: int) -> None:
         """Uses SQLite's own backup API rather than a raw file copy, so
@@ -737,12 +817,14 @@ class Store:
         if existing is None:
             self.conn.execute(
                 "INSERT INTO customer_master"
-                " (party_id, branch_id, party_name, pre_mis_outstanding, grouping, credit_period_days, credit_limit)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " (party_id, branch_id, party_name, pre_mis_outstanding, original_pre_mis_outstanding,"
+                " grouping, credit_period_days, credit_limit)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.party_id,
                     record.branch_id,
                     record.party_name,
+                    str(record.pre_mis_outstanding),
                     str(record.pre_mis_outstanding),
                     record.grouping.value if record.grouping else None,
                     record.credit_period_days,
@@ -928,6 +1010,13 @@ class Store:
         the seed. This is the one place besides record_pre_mis_adjustment
         that can move pre_mis_outstanding after creation, and it refuses
         to run once the field it protects has actually been relied upon.
+
+        Moves original_pre_mis_outstanding together with pre_mis_
+        outstanding - at this point in a party's life the two have never
+        diverged (no adjustment has ever been possible, since none can
+        be recorded before a real extraction exists either), so "the
+        seed" and "the original seed" are still the same fact being
+        corrected.
         """
         if self.has_tb_balance_on_record(party_id, branch_id):
             raise ValueError(
@@ -937,14 +1026,33 @@ class Store:
         if not self.customer_master_exists(party_id, branch_id):
             raise ValueError(f"No customer_master record for {party_id}/{branch_id} to overwrite")
         self.conn.execute(
-            "UPDATE customer_master SET pre_mis_outstanding=? WHERE party_id=? AND branch_id=?",
-            (str(new_amount), party_id, branch_id),
+            "UPDATE customer_master SET pre_mis_outstanding=?, original_pre_mis_outstanding=?"
+            " WHERE party_id=? AND branch_id=?",
+            (str(new_amount), str(new_amount), party_id, branch_id),
         )
         self.conn.commit()
 
     def get_opening_balance(self, party_id: str, branch_id: str) -> Decimal:
         row = self.conn.execute(
             "SELECT pre_mis_outstanding FROM customer_master WHERE party_id=? AND branch_id=?",
+            (party_id, branch_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No customer_master record for {party_id}/{branch_id}")
+        return Decimal(row[0])
+
+    def get_original_pre_mis_outstanding(self, party_id: str, branch_id: str) -> Decimal:
+        """Client's explicit call this session: TB Cross-Check's Opening
+        must be exactly what was originally fed in, frozen forever - this
+        is that figure, never touched by record_pre_mis_adjustment (see
+        this column's own migration comment). get_opening_balance above
+        is deliberately a separate method, not reused here: it reads the
+        living, adjustment-updated figure AR Snapshot and the Pre-MIS
+        Adjustment Register still correctly depend on, which is a
+        different fact for a different purpose.
+        """
+        row = self.conn.execute(
+            "SELECT original_pre_mis_outstanding FROM customer_master WHERE party_id=? AND branch_id=?",
             (party_id, branch_id),
         ).fetchone()
         if row is None:
@@ -1478,6 +1586,305 @@ class Store:
             raise ValueError(f"No receipt_journal_register rows for {branch_id}/{voucher_number}/{party_id}")
         self.conn.commit()
 
+    # ---- Register row Edit/Delete/Undo (client's explicit redesign this
+    # session, replacing register_row_correction's overlay) - real
+    # mutation of the actual register row, audited in register_row_audit.
+
+    _SALES_DN_AUDIT_COLUMNS = [
+        "branch_id", "invoice_date", "note_type", "voucher_number", "bill_allocation_reference",
+        "party_id", "taxable_value", "cgst", "sgst", "igst", "invoice_value", "due_date", "job_id",
+    ]
+    _CREDIT_NOTE_AUDIT_COLUMNS = [
+        "branch_id", "cn_date", "voucher_number", "party_id", "cn_amount",
+        "bill_allocation_reference", "classification", "reason",
+    ]
+    _RECEIPT_JOURNAL_AUDIT_COLUMNS = [
+        "branch_id", "txn_date", "voucher_type", "voucher_number", "party_id",
+        "amount", "target_doc_no", "classification", "narration",
+    ]
+    _AUDIT_TABLE_BY_REGISTER = {
+        "sales_dn": "sales_dn_register", "credit_note": "credit_note_register", "receipt_journal": "receipt_journal_register",
+    }
+    _AUDIT_COLUMNS_BY_REGISTER = {
+        "sales_dn": _SALES_DN_AUDIT_COLUMNS, "credit_note": _CREDIT_NOTE_AUDIT_COLUMNS, "receipt_journal": _RECEIPT_JOURNAL_AUDIT_COLUMNS,
+    }
+    _AUDIT_AMOUNT_COLUMN_BY_REGISTER = {
+        "sales_dn": "invoice_value", "credit_note": "cn_amount", "receipt_journal": "amount",
+    }
+
+    def _fetch_row_dict(self, table: str, row_id: int) -> dict | None:
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute(f"SELECT * FROM {table} WHERE id=?", (row_id,)).fetchone()
+        return dict(r) if r is not None else None
+
+    def _record_register_audit(
+        self, register: str, action: str, row_id: int, branch_id: str, voucher_number: str, party_id: str,
+        before: list[dict] | None, after: list[dict] | None, reason: str, performed_by: str, performed_at: datetime,
+        undone_of: int | None = None,
+    ) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO register_row_audit (register, action, row_id, branch_id, voucher_number, party_id,"
+            " before_json, after_json, reason, performed_by, performed_at, undone_of)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                register, action, row_id, branch_id, voucher_number, party_id,
+                json.dumps(before) if before is not None else None,
+                json.dumps(after) if after is not None else None,
+                reason, performed_by, performed_at.isoformat(), undone_of,
+            ),
+        )
+        return cur.lastrowid
+
+    def edit_sales_dn_row(
+        self, row_id: int, new_invoice_value: Decimal, reason: str, edited_by: str, edited_at: datetime
+    ) -> int:
+        before = self._fetch_row_dict("sales_dn_register", row_id)
+        if before is None:
+            raise ValueError(f"No sales_dn_register row with id={row_id}")
+        self.conn.execute("UPDATE sales_dn_register SET invoice_value=? WHERE id=?", (str(new_invoice_value), row_id))
+        after = dict(before, invoice_value=str(new_invoice_value))
+        audit_id = self._record_register_audit(
+            "sales_dn", "EDIT", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
+            [before], [after], reason, edited_by, edited_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def delete_sales_dn_row(self, row_id: int, reason: str, deleted_by: str, deleted_at: datetime) -> int:
+        """Deletes the real row. Cascades, same as Store.delete_branch_week
+        already does for the same reasons: this invoice's own Invoice
+        Follow-Up note goes with it (nothing left for a human's PTP/next-
+        action note to attach to), and any Credit Note/Receipt/Journal
+        that had matched this invoice's own bill_allocation_reference is
+        unmatched (cleared back to on-account/unapplied) rather than left
+        pointing at a row that no longer exists. Undo restores the
+        invoice row itself; it does NOT restore the Follow-Up note or
+        re-match whatever was unmatched - a deliberate limit, not an
+        oversight, since reconstructing those exactly would need far more
+        bookkeeping for a genuinely rare case (undoing a delete that also
+        had cascade effects).
+        """
+        before = self._fetch_row_dict("sales_dn_register", row_id)
+        if before is None:
+            raise ValueError(f"No sales_dn_register row with id={row_id}")
+        branch_id, voucher_number, party_id = before["branch_id"], before["voucher_number"], before["party_id"]
+        bill_ref = before["bill_allocation_reference"]
+
+        self.conn.execute(
+            "DELETE FROM invoice_follow_up WHERE branch_id=? AND voucher_number=? AND party_id=?",
+            (branch_id, voucher_number, party_id),
+        )
+        self.conn.execute(
+            "UPDATE credit_note_register SET bill_allocation_reference=NULL"
+            " WHERE branch_id=? AND party_id=? AND bill_allocation_reference=?",
+            (branch_id, party_id, bill_ref),
+        )
+        self.conn.execute(
+            "UPDATE receipt_journal_register SET target_doc_no=NULL"
+            " WHERE branch_id=? AND party_id=? AND target_doc_no=?",
+            (branch_id, party_id, bill_ref),
+        )
+        self.conn.execute("DELETE FROM sales_dn_register WHERE id=?", (row_id,))
+
+        audit_id = self._record_register_audit(
+            "sales_dn", "DELETE", row_id, branch_id, voucher_number, party_id,
+            [before], None, reason, deleted_by, deleted_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def edit_credit_note_row(
+        self, row_id: int, new_cn_amount: Decimal, reason: str, edited_by: str, edited_at: datetime
+    ) -> int:
+        before = self._fetch_row_dict("credit_note_register", row_id)
+        if before is None:
+            raise ValueError(f"No credit_note_register row with id={row_id}")
+        self.conn.execute("UPDATE credit_note_register SET cn_amount=? WHERE id=?", (str(new_cn_amount), row_id))
+        after = dict(before, cn_amount=str(new_cn_amount))
+        audit_id = self._record_register_audit(
+            "credit_note", "EDIT", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
+            [before], [after], reason, edited_by, edited_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def delete_credit_note_row(self, row_id: int, reason: str, deleted_by: str, deleted_at: datetime) -> int:
+        before = self._fetch_row_dict("credit_note_register", row_id)
+        if before is None:
+            raise ValueError(f"No credit_note_register row with id={row_id}")
+        self.conn.execute("DELETE FROM credit_note_register WHERE id=?", (row_id,))
+        audit_id = self._record_register_audit(
+            "credit_note", "DELETE", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
+            [before], None, reason, deleted_by, deleted_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def edit_receipt_journal_row(
+        self, row_id: int, new_amount: Decimal, reason: str, edited_by: str, edited_at: datetime, whole_voucher: bool
+    ) -> int:
+        """`whole_voucher` is the Maker's own explicit choice (client's
+        call: never a hardcoded default) for a voucher spanning several
+        bill-allocation lines. True collapses every line of the voucher
+        into one, carrying `new_amount` - the first line's own txn_date/
+        target_doc_no/classification/narration are kept, the rest
+        dropped, same convention the old Correct Amount action always
+        used. False edits only the one selected line.
+        """
+        anchor = self._fetch_row_dict("receipt_journal_register", row_id)
+        if anchor is None:
+            raise ValueError(f"No receipt_journal_register row with id={row_id}")
+        branch_id, voucher_number, party_id = anchor["branch_id"], anchor["voucher_number"], anchor["party_id"]
+
+        if whole_voucher:
+            self.conn.row_factory = sqlite3.Row
+            before = [
+                dict(r)
+                for r in self.conn.execute(
+                    "SELECT * FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                    (branch_id, voucher_number, party_id),
+                ).fetchall()
+            ]
+            self.conn.execute(
+                "DELETE FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                (branch_id, voucher_number, party_id),
+            )
+            new_row = dict(before[0], amount=str(new_amount))
+            cols = self._RECEIPT_JOURNAL_AUDIT_COLUMNS
+            self.conn.execute(
+                f"INSERT INTO receipt_journal_register ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                tuple(new_row[c] for c in cols),
+            )
+            after = [new_row]
+        else:
+            self.conn.execute("UPDATE receipt_journal_register SET amount=? WHERE id=?", (str(new_amount), row_id))
+            before = [anchor]
+            after = [dict(anchor, amount=str(new_amount))]
+
+        audit_id = self._record_register_audit(
+            "receipt_journal", "EDIT", row_id, branch_id, voucher_number, party_id,
+            before, after, reason, edited_by, edited_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def delete_receipt_journal_row(
+        self, row_id: int, reason: str, deleted_by: str, deleted_at: datetime, whole_voucher: bool
+    ) -> int:
+        anchor = self._fetch_row_dict("receipt_journal_register", row_id)
+        if anchor is None:
+            raise ValueError(f"No receipt_journal_register row with id={row_id}")
+        branch_id, voucher_number, party_id = anchor["branch_id"], anchor["voucher_number"], anchor["party_id"]
+
+        if whole_voucher:
+            self.conn.row_factory = sqlite3.Row
+            before = [
+                dict(r)
+                for r in self.conn.execute(
+                    "SELECT * FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                    (branch_id, voucher_number, party_id),
+                ).fetchall()
+            ]
+            self.conn.execute(
+                "DELETE FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                (branch_id, voucher_number, party_id),
+            )
+        else:
+            before = [anchor]
+            self.conn.execute("DELETE FROM receipt_journal_register WHERE id=?", (row_id,))
+
+        audit_id = self._record_register_audit(
+            "receipt_journal", "DELETE", row_id, branch_id, voucher_number, party_id,
+            before, None, reason, deleted_by, deleted_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def get_register_row_audit(self, audit_id: int) -> RegisterRowAuditEntry | None:
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute("SELECT * FROM register_row_audit WHERE id=?", (audit_id,)).fetchone()
+        return self._register_row_audit_from_row(r) if r is not None else None
+
+    def all_register_row_audit(self, branch_id: str | None = None) -> list[RegisterRowAuditEntry]:
+        self.conn.row_factory = sqlite3.Row
+        if branch_id is None:
+            cur = self.conn.execute("SELECT * FROM register_row_audit ORDER BY performed_at DESC, id DESC")
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM register_row_audit WHERE branch_id=? ORDER BY performed_at DESC, id DESC",
+                (branch_id,),
+            )
+        return [self._register_row_audit_from_row(r) for r in cur.fetchall()]
+
+    def _register_row_audit_from_row(self, r) -> RegisterRowAuditEntry:
+        return RegisterRowAuditEntry(
+            id=r["id"], register=r["register"], action=r["action"], row_id=r["row_id"],
+            branch_id=r["branch_id"], voucher_number=r["voucher_number"], party_id=r["party_id"],
+            before=json.loads(r["before_json"]) if r["before_json"] else None,
+            after=json.loads(r["after_json"]) if r["after_json"] else None,
+            reason=r["reason"], performed_by=r["performed_by"],
+            performed_at=datetime.fromisoformat(r["performed_at"]), undone_of=r["undone_of"],
+        )
+
+    def undo_register_row_audit(self, audit_id: int, undone_by: str, undone_at: datetime) -> int:
+        """Restores exactly what `audit_id`'s own `before` captured -
+        always reverting to that specific action's own prior state, even
+        if something else has since changed the row again (ordinary,
+        expected "undo this one action" semantics, not "undo everything
+        since"). Refuses to undo an UNDO (make a new correction instead,
+        don't chase your own tail) or to undo the same entry twice.
+        """
+        entry = self.get_register_row_audit(audit_id)
+        if entry is None:
+            raise ValueError(f"No register_row_audit entry with id={audit_id}")
+        if entry.action == "UNDO":
+            raise ValueError("Cannot undo an Undo - make a new correction instead.")
+        if self.conn.execute("SELECT 1 FROM register_row_audit WHERE undone_of=? LIMIT 1", (audit_id,)).fetchone():
+            raise ValueError(f"Audit entry #{audit_id} has already been undone.")
+
+        table = self._AUDIT_TABLE_BY_REGISTER[entry.register]
+        cols = self._AUDIT_COLUMNS_BY_REGISTER[entry.register]
+        amount_col = self._AUDIT_AMOUNT_COLUMN_BY_REGISTER[entry.register]
+
+        if entry.action == "DELETE":
+            for row in entry.before:
+                self.conn.execute(
+                    f"INSERT OR IGNORE INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                    tuple(row[c] for c in cols),
+                )
+        elif entry.action == "EDIT":
+            if entry.register == "receipt_journal" and len(entry.before) > 1:
+                # A whole-voucher edit collapsed several lines into one -
+                # undo removes that single collapsed line and restores
+                # every original line.
+                self.conn.execute(
+                    "DELETE FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
+                    (entry.branch_id, entry.voucher_number, entry.party_id),
+                )
+                for row in entry.before:
+                    self.conn.execute(
+                        f"INSERT OR IGNORE INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                        tuple(row[c] for c in cols),
+                    )
+            else:
+                for row in entry.before:
+                    if self._fetch_row_dict(table, row["id"]) is None:
+                        raise ValueError(
+                            f"Cannot undo: {table} row {row['id']} no longer exists "
+                            "(deleted or collapsed by a later action)."
+                        )
+                    self.conn.execute(f"UPDATE {table} SET {amount_col}=? WHERE id=?", (row[amount_col], row["id"]))
+        else:
+            raise ValueError(f"Unknown audit action: {entry.action}")
+
+        new_audit_id = self._record_register_audit(
+            entry.register, "UNDO", entry.row_id, entry.branch_id, entry.voucher_number, entry.party_id,
+            entry.after, entry.before, f"Undo of audit #{audit_id}: {entry.reason}", undone_by, undone_at,
+            undone_of=audit_id,
+        )
+        self.conn.commit()
+        return new_audit_id
+
     # ---- Extraction log (freshness indicator for Registers/Reports viewers) --
 
     def record_extraction_run(
@@ -1690,56 +2097,6 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         row = self.conn.execute("SELECT * FROM drift_finding WHERE id=?", (finding_id,)).fetchone()
         return self._drift_finding_record_from_row(row) if row else None
-
-    def record_register_row_correction(self, correction: RegisterRowCorrection) -> int:
-        """The only sanctioned way to Delete (Exclude) or Modify (Correct
-        Amount) a register row's own contribution to any downstream total
-        - always a new row, never an UPDATE/DELETE against an existing
-        correction or the register row itself. Returns the new row's id.
-        """
-        cur = self.conn.execute(
-            "INSERT INTO register_row_correction (branch_id, voucher_type, voucher_number, party_id,"
-            " action, corrected_amount, reason, corrected_by, corrected_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                correction.branch_id, correction.voucher_type, correction.voucher_number, correction.party_id,
-                correction.action, str(correction.corrected_amount) if correction.corrected_amount is not None else None,
-                correction.reason, correction.corrected_by, correction.corrected_at.isoformat(),
-            ),
-        )
-        self.conn.commit()
-        return cur.lastrowid
-
-    def all_register_row_corrections(self, branch_id: str | None = None) -> list[RegisterRowCorrectionRecord]:
-        """Every correction ever recorded, oldest first - the order
-        ar_mis.register_corrections.effective_corrections needs to reduce
-        this full history down to the one effective correction per
-        voucher identity (latest wins)."""
-        self.conn.row_factory = sqlite3.Row
-        if branch_id is not None:
-            cur = self.conn.execute(
-                "SELECT * FROM register_row_correction WHERE branch_id=? ORDER BY corrected_at ASC, id ASC",
-                (branch_id,),
-            )
-        else:
-            cur = self.conn.execute("SELECT * FROM register_row_correction ORDER BY corrected_at ASC, id ASC")
-        return [
-            RegisterRowCorrectionRecord(
-                id=r["id"],
-                correction=RegisterRowCorrection(
-                    branch_id=r["branch_id"],
-                    voucher_type=r["voucher_type"],
-                    voucher_number=r["voucher_number"],
-                    party_id=r["party_id"],
-                    action=r["action"],
-                    corrected_amount=Decimal(r["corrected_amount"]) if r["corrected_amount"] is not None else None,
-                    reason=r["reason"],
-                    corrected_by=r["corrected_by"],
-                    corrected_at=datetime.fromisoformat(r["corrected_at"]),
-                ),
-            )
-            for r in cur.fetchall()
-        ]
 
     def mark_drift_finding_incorporated(
         self, finding_id: int, incorporated_by: str, incorporated_at: datetime, week_ending: date | None = None
