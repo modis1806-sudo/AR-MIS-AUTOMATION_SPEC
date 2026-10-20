@@ -67,12 +67,11 @@ def test_pass_run_uses_customer_credit_period_for_due_date(store):
     assert row.due_date == date(2026, 5, 21)  # 2026-04-06 + 45 days
 
 
-def test_recon_fail_still_writes_register_rows_and_weekly_snapshot(store):
+def test_recon_fail_still_writes_register_rows_and_the_tb_reading(store):
     # Wrong closing balance - reconciliation fails for this party, but
     # per the client's explicit instruction data must never be discarded:
-    # the invoice-level register rows and the weekly_snapshot row (with
-    # its real, nonzero difference) are still written, for this party AND
-    # any other party in the same branch/week.
+    # the invoice-level register row AND Tally's own stated closing
+    # (Store.party_tb_balance) are still written, mismatch and all.
     store.upsert_customer_master(CustomerMasterRecord("A & B Transport", "A & B Transport", "KOL", Decimal("0.00")))
     voucher = _sales_voucher("SB/0142", "A & B Transport", Decimal("125000.00"))
 
@@ -86,10 +85,15 @@ def test_recon_fail_still_writes_register_rows_and_weekly_snapshot(store):
     assert len(rows) == 1
     assert rows[0].voucher_number == "SB/0142"
 
-    snapshot_rows = store.weekly_snapshots_for_week(date(2026, 4, 7))
-    assert len(snapshot_rows) == 1
-    assert snapshot_rows[0]["reconciled"] == 0
-    assert Decimal(snapshot_rows[0]["difference"]) != Decimal("0.00")
+    balance = store.all_party_tb_balances()[("A & B Transport", "KOL")]
+    assert balance.as_of == date(2026, 4, 7)
+    assert balance.closing_extracted == Decimal("999999.00")
+
+    from ar_mis.reconciliation_report import compute_tb_cross_check_rows
+
+    tb_row = compute_tb_cross_check_rows(store)[0]
+    assert tb_row.reconciled is False
+    assert tb_row.difference != Decimal("0.00")
 
 
 def test_recon_fail_does_not_block_other_parties_in_the_same_branch(store):
@@ -133,8 +137,10 @@ def test_week_two_opening_comes_from_this_apps_own_registers_not_tallys_stated_c
     # 125000 (this app's own week-1 workings) + 10000 (week-2 sale) =
     # 135000 vs Tally's own 134000 - the same real 1000 gap persists,
     # never silently fixed by trusting last week's Tally figure.
-    week2_row = store.weekly_snapshots_for_week(date(2026, 4, 14))[0]
-    assert Decimal(week2_row["opening"]) == Decimal("125000.00")
+    from ar_mis.rollforward import compute_party_closings_as_of
+
+    movements = compute_party_closings_as_of(store, "KOL", {"A & B Transport"}, date(2026, 4, 14))
+    assert movements["A & B Transport"].closing_computed == Decimal("135000.00")
     assert outcome2.failed_parties == ["A & B Transport"]
 
 
@@ -271,7 +277,9 @@ def test_a_cn_voucher_excluded_from_the_register_now_shows_as_a_reconciliation_m
     assert outcome.register_build_exceptions  # the CN voucher itself is flagged
     assert store.all_credit_note_rows("KOL") == []  # confirmed: never made it into the register
 
-    rows = {r.party_id: r for r in store.all_weekly_snapshot_rows()}
+    from ar_mis.reconciliation_report import compute_tb_cross_check_rows
+
+    rows = {r.party_id: r for r in compute_tb_cross_check_rows(store)}
     assert rows["Joy Ray"].credit_notes == Decimal("0.00")  # starved, not the real -2160/+2160
     assert rows["Joy Ray"].closing_computed == Decimal("0.00")
     assert rows["Joy Ray"].reconciled is False

@@ -69,7 +69,7 @@ from ar_mis.ytd_debtor_cross_check import (
 )
 from ar_mis.reconciliation_report import (
     compute_concentration_risk,
-    compute_latest_per_party,
+    compute_tb_cross_check_rows,
     compute_tb_cross_check_summary,
     compute_unreconciled_parties,
 )
@@ -362,7 +362,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         than silently loading the good rows and burying the bad ones in a
         flash message - a maker fixes the file and re-uploads it clean.
 
-        Always seeds with force=True. seed()'s has_weekly_snapshots()
+        Always seeds with force=True. seed()'s has_tb_balance_on_record()
         check runs BEFORE its force check and is never bypassed by it -
         a party with real extraction history on record can never be
         touched here no matter what. Without force, though, a party that
@@ -606,9 +606,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if from_date > as_of:
             return _redisplay("The anchor date must be before the 'as of' date - there needs to be at least one day of activity to pull.")
 
-        if store.has_weekly_snapshots(party_name, branch_id):
+        if store.has_tb_balance_on_record(party_name, branch_id):
             return _redisplay(
-                f"'{party_name}' already has weekly extraction history on record - this tool is only for a "
+                f"'{party_name}' has already been through a real extraction run - this tool is only for a "
                 "party never tracked before. Use a logged adjustment for an already-tracked party instead."
             )
 
@@ -774,7 +774,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             chunks = [
                 {
                     "start": c_start.isoformat(), "end": c_end.isoformat(),
-                    "already_recorded": store.has_weekly_snapshot_for_branch_week(branch_id, c_end),
+                    "already_recorded": store.has_extraction_for_branch_week(branch_id, c_end),
                 }
                 for c_start, c_end in split_into_chunks(from_date, to_date)
             ]
@@ -867,7 +867,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         chunk_results = []
 
         for c_start, c_end in split_into_chunks(from_date, to_date):
-            if store.has_weekly_snapshot_for_branch_week(branch_id, c_end):
+            if store.has_extraction_for_branch_week(branch_id, c_end):
                 chunk_results.append({
                     "start": c_start.isoformat(), "end": c_end.isoformat(), "status": "skipped",
                     "detail": f"Already has recorded data for the run ending {c_end.isoformat()} - not overwritten.",
@@ -1203,6 +1203,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return date.fromisoformat(raw) if raw else date.today()
         except ValueError:
             return date.today()
+
+    def _current_tb_closing_by_party(store, branch_id: str | None = None) -> dict[tuple[str, str], Decimal]:
+        """Flattens Store.all_party_tb_balances() to {(party_id, branch_id):
+        closing_extracted} - the shape ar_mis.dashboard.compute_ar_snapshot
+        and ar_mis.ageing_matrix.compute_ageing_matrix already expect.
+        Deliberately takes no `as_of` - there is only ever the one current
+        reading per party (client's explicit call this session: no stored
+        history to scope by date at all), so every caller gets the same
+        dict regardless of what `as_of` it's using for the registers side.
+        """
+        return {key: balance.closing_extracted for key, balance in store.all_party_tb_balances(branch_id).items()}
 
     def _default_ptp_amount_to_open_balance(
         sales_dn_row, cn_rows: list, rj_rows: list, as_of: date
@@ -2044,13 +2055,18 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
     @app.route("/reports/ar-snapshot")
     def ar_snapshot_report():
-        """Design doc item 15's flagship report - every figure recomputed
-        for the selected `as_of` date (item 14), nothing read from a
-        stored total. Trend Analysis (Sales/Collection MIS-vs-Pre-MIS,
-        last 4 months) is deliberately not built yet - it needs a
-        configured MIS go-live date this application doesn't have
-        anywhere yet, and guessing one would put a wrong number in front
-        of whoever's using this to make a decision.
+        """Design doc item 15's flagship report. Every registers-sourced
+        figure is recomputed for the selected `as_of` date (item 14); the
+        Tally-sourced figures (Total AR, Related Party AR, Reporting
+        Period AR) are not - Store.party_tb_balance only ever holds the
+        single current reading, so those three always show "as of last
+        extraction" regardless of what `as_of` is typed (see
+        ar_mis.dashboard's own docstring). Trend Analysis (Sales/
+        Collection MIS-vs-Pre-MIS, last 4 months) is deliberately not
+        built yet - it needs a configured MIS go-live date this
+        application doesn't have anywhere yet, and guessing one would
+        put a wrong number in front of whoever's using this to make a
+        decision.
         """
         as_of = _parse_as_of()
         store = get_store()
@@ -2059,7 +2075,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         rj_rows = store.all_receipt_journal_rows()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         follow_ups = store.all_invoice_follow_ups()
-        tally_closing_by_party = store.latest_weekly_snapshot_closing_by_party(as_of)
+        tally_closing_by_party = _current_tb_closing_by_party(store)
         corrections = [r.correction for r in store.all_register_row_corrections()]
         freshness = _freshness(store.last_extraction_at())
         store.close()
@@ -2208,7 +2224,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         summary (reusing compute_branch_ageing_schedule as-is) plus a
         party-level breakdown that independently cross-checks the
         registers-derived Total Open against Tally's own ledger closing
-        balance for that party (weekly_snapshot.closing_extracted). FY
+        balance for that party (Store.party_tb_balance's single current
+        reading - never scoped by this screen's own `as_of`). FY
         scoping is applied here, at the call site, by filtering
         sales_dn_rows before either compute function runs - neither
         compute function itself knows about financial years.
@@ -2219,7 +2236,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
-        tally_closing_by_party = store.latest_weekly_snapshot_closing_by_party(as_of)
+        tally_closing_by_party = _current_tb_closing_by_party(store)
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
@@ -2315,7 +2332,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
-        tally_closing_by_party = store.latest_weekly_snapshot_closing_by_party(week_ending)
+        tally_closing_by_party = _current_tb_closing_by_party(store)
 
         snapshot = compute_ar_snapshot(
             sales_dn_rows, cn_rows, rj_rows, customer_masters,
@@ -2329,32 +2346,23 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
     @app.route("/reports/tb-cross-check")
     def tb_cross_check_report():
-        """The client's explicit ask this session: the Trial Balance /
-        Sundry Debtors closing balance this app already extracts from
-        Tally, kept visible in its own sheet - one row per party per
-        branch per week - alongside this app's own workings and the
-        difference between the two, so a Maker or Checker can always see
-        for themselves whether the data is valid, not just trust that it
-        is. Every row already exists in weekly_snapshot (data is never
-        discarded, reconciled or not - see ar_mis.pipeline); this report
-        does no independent computation, only the summary rollup.
+        """The client's explicit ask this session, redesigned again
+        later the same session (client's further call): Tally's own
+        current closing balance per party, compared LIVE against this
+        app's own workings, recomputed fresh every time this page loads
+        (ar_mis.reconciliation_report.compute_tb_cross_check_rows) -
+        never read back from a stored per-week history. There is
+        exactly one row per party, always - no date range, no "latest
+        vs history" toggle, because there is no history to toggle to;
+        weekly_snapshot's old per-week accumulation is gone (client's
+        explicit call: it never needed to be anything but the current
+        state to do its actual job - cross-verify the registers and
+        give a current Total AR).
 
-        From/To date range (client's second explicit ask this session):
-        scopes which weeks are LISTED below, so a specific period can be
-        reviewed on its own rather than scrolling the entire history. The
-        Total Debtor as per Books tile, however, is always computed from
-        the FULL history up to `to_date` (see compute_tb_cross_check_
-        summary's own docstring) - a party untouched again inside a
-        narrow display window still owes their last known balance, and
-        scoping the running total to the same narrow window would
-        silently understate it, not just narrow what's shown.
-
-        Branch filter (client's later ask): unlike the date range above,
-        picking a branch here scopes EVERYTHING on this screen, tiles
-        included - "all three tiles are branch-blind" would defeat the
-        actual point of asking to see just one branch's own numbers.
-        Default is every branch combined, same as before this filter
-        existed.
+        Branch filter (client's earlier ask, kept): scopes EVERYTHING on
+        this screen, tiles included - "all three tiles are branch-blind"
+        would defeat the actual point of asking to see just one branch's
+        own numbers. Default is every branch combined.
 
         Grouping column (client's later ask): joined from Customer
         Master's own PartyGrouping classification, not recomputed here -
@@ -2364,7 +2372,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         """
         branch_id = request.args.get("branch_id", "").strip()
         store = get_store()
-        all_rows = store.all_weekly_snapshot_rows()
+        rows = compute_tb_cross_check_rows(store, branch_id or None)
         branches = store.list_branches()
         groupings = {
             (c.party_id, c.branch_id): (c.grouping.value if c.grouping else "Unclassified")
@@ -2373,40 +2381,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
-        if branch_id:
-            all_rows = [r for r in all_rows if r.branch_id == branch_id]
-
-        today = date.today()
-        try:
-            from_date = date.fromisoformat(request.args.get("from_date", ""))
-        except ValueError:
-            from_date = financial_year_start(today)
-        try:
-            to_date = date.fromisoformat(request.args.get("to_date", ""))
-        except ValueError:
-            to_date = today
-
-        # Client's own later ask: the table defaulted to listing every
-        # week ever recorded for every party (1,930+ rows once a few
-        # months of history pile up) when most of the time a Maker or
-        # Checker just wants each party's current position - exactly what
-        # the three tiles above already show. Default view is that same
-        # reduction (compute_latest_per_party, as of to_date) rather than
-        # the full from_date..to_date range; `view=history` switches back
-        # to the full range, unchanged from before this ask. Kept as a
-        # display-only choice - weekly_snapshot itself is untouched,
-        # still one row per party per branch per week, kept forever.
-        view = request.args.get("view", "latest")
-        if view == "history":
-            rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
-        else:
-            view = "latest"
-            rows = compute_latest_per_party(all_rows, as_of=to_date)
-        summary = compute_tb_cross_check_summary(all_rows, as_of=to_date)
+        rows.sort(key=lambda r: (r.party_id, r.branch_id))
+        summary = compute_tb_cross_check_summary(rows)
         return render_template(
             "tb_cross_check.html", rows=rows, summary=summary, freshness=freshness,
-            from_date=from_date.isoformat(), to_date=to_date.isoformat(),
-            branches=branches, selected_branch_id=branch_id, groupings=groupings, view=view,
+            branches=branches, selected_branch_id=branch_id, groupings=groupings,
         )
 
     @app.route("/reports/tb-cross-check/export.xlsx")
@@ -2415,42 +2394,24 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         list (export_unreconciled_parties below), but the complete TB
         Cross-Check table as displayed on screen, so a Maker can apply
         their own filter/pivot in Excel instead of being limited to this
-        screen's own search/filter. Uses the exact same from_date/to_date,
-        branch_id, AND view scoping as tb_cross_check_report, so the
-        download always matches what was on screen when it was clicked -
-        `view=latest` (the default) exports each party's current row
-        only, `view=history` exports the full from/to range.
+        screen's own search/filter. Same branch_id scoping as
+        tb_cross_check_report, and the same live, current-state-only
+        computation - no date range any more, since there is no history
+        to range over.
         """
-        today = date.today()
-        try:
-            from_date = date.fromisoformat(request.args.get("from_date", ""))
-        except ValueError:
-            from_date = financial_year_start(today)
-        try:
-            to_date = date.fromisoformat(request.args.get("to_date", ""))
-        except ValueError:
-            to_date = today
         branch_id = request.args.get("branch_id", "").strip()
-        view = request.args.get("view", "latest")
-
         store = get_store()
-        all_rows = store.all_weekly_snapshot_rows()
+        rows = compute_tb_cross_check_rows(store, branch_id or None)
         store.close()
+        rows.sort(key=lambda r: (r.party_id, r.branch_id))
 
-        if branch_id:
-            all_rows = [r for r in all_rows if r.branch_id == branch_id]
-        if view == "history":
-            rows = [r for r in all_rows if from_date <= r.week_ending <= to_date]
-        else:
-            view = "latest"
-            rows = compute_latest_per_party(all_rows, as_of=to_date)
-        wb = build_tb_cross_check_workbook(rows, from_date, to_date)
+        wb = build_tb_cross_check_workbook(rows)
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
         return send_file(
             buf, as_attachment=True,
-            download_name=f"TB_Cross_Check_{from_date.isoformat()}_to_{to_date.isoformat()}.xlsx",
+            download_name=f"TB_Cross_Check_{date.today().isoformat()}.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -2460,32 +2421,25 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         parties behind the "Parties currently showing a difference"
         tile, so a Maker doesn't have to scroll and eyeball the full TB
         Cross-Check table for the handful of non-zero Difference rows.
-        Uses the same as-of-`to_date` latest-per-party state as that
-        tile (see compute_unreconciled_parties), never the display-range-
-        filtered table - the export must always match the tile's count.
-        Also honors the same branch_id filter as the tile itself, for the
-        same reason.
+        Uses the exact same live rows as that tile (compute_unreconciled_
+        parties), so the export can never disagree with the tile's
+        count. Also honors the same branch_id filter as the tile itself,
+        for the same reason.
         """
-        today = date.today()
-        try:
-            to_date = date.fromisoformat(request.args.get("to_date", ""))
-        except ValueError:
-            to_date = today
         branch_id = request.args.get("branch_id", "").strip()
 
         store = get_store()
-        all_rows = store.all_weekly_snapshot_rows()
+        rows = compute_tb_cross_check_rows(store, branch_id or None)
         store.close()
 
-        if branch_id:
-            all_rows = [r for r in all_rows if r.branch_id == branch_id]
-        mismatched = compute_unreconciled_parties(all_rows, as_of=to_date)
-        wb = build_unreconciled_parties_workbook(mismatched, to_date)
+        mismatched = compute_unreconciled_parties(rows)
+        today = date.today()
+        wb = build_unreconciled_parties_workbook(mismatched, today)
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
         return send_file(
-            buf, as_attachment=True, download_name=f"Unreconciled_Parties_{to_date.isoformat()}.xlsx",
+            buf, as_attachment=True, download_name=f"Unreconciled_Parties_{today.isoformat()}.xlsx",
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -2574,17 +2528,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         """AR concentration risk (client's explicit ask): are receivables
         spread across many customers, or does a handful of them make up
         most of the exposure - a risk in its own right, independent of
-        whether any of them happen to be overdue right now. Uses the
-        exact same latest-per-party-as-of-`as_of` reduction and the same
-        closing_extracted figure as TB Cross-Check's own "Total Debtor
-        as per Books" tile, so this screen's Total AR can never quietly
-        disagree with that one.
+        whether any of them happen to be overdue right now. Live,
+        current-state-only, same as TB Cross-Check (client's further
+        call this session: no stored history to pick a past date from) -
+        uses the exact same rows and the same closing_extracted figure
+        as TB Cross-Check's own "Total Debtor as per Books" tile, so
+        this screen's Total AR can never quietly disagree with that one.
         """
-        today = date.today()
-        try:
-            as_of = date.fromisoformat(request.args.get("as_of", ""))
-        except ValueError:
-            as_of = today
         try:
             top_n = int(request.args.get("top_n", "10"))
         except ValueError:
@@ -2593,14 +2543,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             top_n = 10
 
         store = get_store()
-        all_rows = store.all_weekly_snapshot_rows()
+        rows = compute_tb_cross_check_rows(store)
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
-        summary = compute_concentration_risk(all_rows, as_of=as_of, top_n=top_n)
+        summary = compute_concentration_risk(rows, top_n=top_n)
         return render_template(
-            "concentration_risk.html", summary=summary, freshness=freshness,
-            as_of=as_of.isoformat(), top_n=top_n,
+            "concentration_risk.html", summary=summary, freshness=freshness, top_n=top_n,
         )
 
     @app.route("/reports/branch-totals")

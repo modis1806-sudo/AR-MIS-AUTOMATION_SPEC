@@ -4,14 +4,14 @@ fixture XML the live-extraction parser tests use, since parsing never
 cared whether XML arrived over HTTP or as a file - only how the values
 get into process_branch_data differs.
 """
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from ar_mis.manual_upload import ManualUploadRefused, process_manual_upload
-from ar_mis.models import CustomerMasterRecord, WeeklySnapshotRow
+from ar_mis.models import CustomerMasterRecord
 from ar_mis.orchestration import ExtractionOutcome
 from ar_mis.storage import Store
 
@@ -37,7 +37,7 @@ def _seed_matching_openings(store):
     )
 
 
-def test_process_manual_upload_clean_run_writes_snapshot(store):
+def test_process_manual_upload_clean_run_writes_tb_balances(store):
     _seed_matching_openings(store)
     sales_xml = (FIXTURES / "voucher_collection_sales.xml").read_text()
     tb_xml = (FIXTURES / "ledger_closing_balances.xml").read_text()
@@ -48,15 +48,14 @@ def test_process_manual_upload_clean_run_writes_snapshot(store):
         trial_balance_xml=tb_xml,
     )
     assert result.outcome.outcome == ExtractionOutcome.PASS
-    rows = store.weekly_snapshots_for_week(date(2026, 4, 7))
-    assert len(rows) == 2
+    assert len(store.all_party_tb_balances()) == 2
 
 
 def test_process_manual_upload_recon_fail_still_writes_data(store):
     # Wrong opening balances (0.00) - will not match the TB closing. Per
     # the client's explicit instruction, this no longer withholds data:
     # the outcome is still PASS, with the mismatched parties reported via
-    # failed_parties, and their weekly_snapshot rows are still written.
+    # failed_parties, and their Tally-stated balances are still written.
     store.upsert_customer_master(
         CustomerMasterRecord("A & B Transport Pvt Ltd", "A & B Transport Pvt Ltd", "KOL", Decimal("0.00"))
     )
@@ -73,20 +72,12 @@ def test_process_manual_upload_recon_fail_still_writes_data(store):
     )
     assert result.outcome.outcome == ExtractionOutcome.PASS
     assert result.outcome.failed_parties != []
-    assert len(store.weekly_snapshots_for_week(date(2026, 4, 7))) == 2
+    assert len(store.all_party_tb_balances()) == 2
 
 
 def test_process_manual_upload_refuses_when_already_recorded(store):
     _seed_matching_openings(store)
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="A & B Transport Pvt Ltd", branch_id="KOL", week_ending=date(2026, 4, 7),
-            opening=Decimal("300000.00"), sales=Decimal("0.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("300000.00"), closing_extracted=Decimal("300000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
+    store.record_extraction_run("KOL", date(2026, 4, 7), datetime(2026, 4, 7, 9, 0))
     sales_xml = (FIXTURES / "voucher_collection_sales.xml").read_text()
     tb_xml = (FIXTURES / "ledger_closing_balances.xml").read_text()
 
@@ -96,8 +87,8 @@ def test_process_manual_upload_refuses_when_already_recorded(store):
             weekly_voucher_xml={"Sales": sales_xml},
             trial_balance_xml=tb_xml,
         )
-    # Nothing new was written - still exactly the one pre-existing row.
-    assert len(store.weekly_snapshots_for_week(date(2026, 4, 7))) == 1
+    # Nothing new was written - no party_tb_balance rows at all.
+    assert store.all_party_tb_balances() == {}
 
 
 def test_process_manual_upload_auto_discovers_new_customer(store):

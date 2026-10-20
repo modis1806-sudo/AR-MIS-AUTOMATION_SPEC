@@ -22,12 +22,12 @@
   <div class="kpi-tile">
     <div class="kpi-label">Total AR</div>
     <div class="kpi-value">{{ snapshot.total_ar|inr }}</div>
-    <div class="kpi-caption">Every Sundry Debtor, as per Tally — <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">view party-by-party</a></div>
+    <div class="kpi-caption">Every Sundry Debtor, as per Tally — <a href="{{ url_for('tb_cross_check_report') }}">view party-by-party</a></div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Related Party AR</div>
     <div class="kpi-value">{{ snapshot.related_party_ar|inr }}</div>
-    <div class="kpi-caption">Included within Total AR, not subtracted — <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">view party-by-party</a></div>
+    <div class="kpi-caption">Included within Total AR, not subtracted — <a href="{{ url_for('tb_cross_check_report') }}">view party-by-party</a></div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Pre-MIS Outstanding</div>
@@ -53,11 +53,11 @@
     <div class="kpi-label">Reconciliation Check</div>
     <div class="kpi-value">{% if snapshot.reconciliation_difference is not none %}{{ snapshot.reconciliation_difference|inr }}{% else %}—{% endif %}</div>
     {% if snapshot.reconciliation_difference is none %}
-    <div class="kpi-caption">Tally Total AR minus the registers' own Workings total — zero confirms the registers tie out. <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">view party-by-party</a></div>
+    <div class="kpi-caption">Tally Total AR minus the registers' own Workings total — zero confirms the registers tie out. <a href="{{ url_for('tb_cross_check_report') }}">view party-by-party</a></div>
     {% elif snapshot.reconciliation_unexplained == 0 %}
-    <div class="kpi-caption" style="color:#166534;">Fully explained by Unapplied Cash ({{ snapshot.unapplied_cash|inr }}) + Unapplied CN ({{ snapshot.unapplied_cn|inr }}) — nothing left to investigate. <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">view party-by-party</a></div>
+    <div class="kpi-caption" style="color:#166534;">Fully explained by Unapplied Cash ({{ snapshot.unapplied_cash|inr }}) + Unapplied CN ({{ snapshot.unapplied_cn|inr }}) — nothing left to investigate. <a href="{{ url_for('tb_cross_check_report') }}">view party-by-party</a></div>
     {% else %}
-    <div class="kpi-caption" style="color:#b91c1c; font-weight:600;">After Unapplied Cash ({{ snapshot.unapplied_cash|inr }}) + Unapplied CN ({{ snapshot.unapplied_cn|inr }}), {{ snapshot.reconciliation_unexplained|inr }} is still unexplained — worth investigating (a missed voucher, a misclassification) or check <a href="{{ url_for('register_exceptions_review') }}">Register Exceptions Review</a> for a Pending Review item not yet resolved. <a href="{{ url_for('tb_cross_check_report', to_date=as_of) }}">View party-by-party</a></div>
+    <div class="kpi-caption" style="color:#b91c1c; font-weight:600;">After Unapplied Cash ({{ snapshot.unapplied_cash|inr }}) + Unapplied CN ({{ snapshot.unapplied_cn|inr }}), {{ snapshot.reconciliation_unexplained|inr }} is still unexplained — worth investigating (a missed voucher, a misclassification) or check <a href="{{ url_for('register_exceptions_review') }}">Register Exceptions Review</a> for a Pending Review item not yet resolved. <a href="{{ url_for('tb_cross_check_report') }}">View party-by-party</a></div>
     {% endif %}
   </div>
 </div>

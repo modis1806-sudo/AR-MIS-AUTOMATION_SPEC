@@ -13,12 +13,13 @@ views:
 - Customer-level detail (this module's own compute_ageing_matrix): one
   row per (party_id, branch_id) with the full ageing-bucket breakdown of
   its Open Amount, PLUS an independent cross-check against Tally's own
-  ledger closing balance for that party as of the same date
-  (weekly_snapshot.closing_extracted - the same figure the zero-tolerance
-  reconciliation itself is built on, via
-  Store.latest_weekly_snapshot_closing_by_party). A party with no
-  weekly_snapshot row on or before as_of has tally_closing_balance=None
-  and difference=None - "no Tally figure on record" is not the same as
+  ledger closing balance for that party - Store.party_tb_balance's one
+  current reading (the same figure the zero-tolerance reconciliation
+  itself is built on, via ar_mis.rollforward.compute_party_closings_as_of),
+  never scoped by this screen's own `as_of` - there is only ever the one
+  reading, as of whenever that party was last extracted. A party with no
+  reading on record yet has tally_closing_balance=None and
+  difference=None - "no Tally figure on record" is not the same as
   "matches exactly" and must never be displayed as 0.00.
 
 No materiality tolerance is applied anywhere in this module - the

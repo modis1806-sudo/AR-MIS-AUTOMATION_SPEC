@@ -160,10 +160,10 @@ def seed(
             summary.unchanged += 1
             continue
 
-        if store.has_weekly_snapshots(record.party_id, record.branch_id):
+        if store.has_tb_balance_on_record(record.party_id, record.branch_id):
             reason = (
                 f"{key}: on record as {current}, CSV has {record.pre_mis_outstanding}, and the "
-                "weekly pipeline has already produced snapshot(s) for this party - refusing to "
+                "weekly pipeline has already run at least once for this party - refusing to "
                 "overwrite even with --force. Use Store.record_pre_mis_adjustment() for a logged "
                 "correction instead."
             )

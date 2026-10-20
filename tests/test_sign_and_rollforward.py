@@ -16,7 +16,7 @@ from ar_mis.register_corrections import CORRECT_AMOUNT, EXCLUDE, REINSTATE, Regi
 from ar_mis.rollforward import (
     aggregate_party_movements,
     aggregate_party_movements_from_registers,
-    resolve_opening_balances_from_registers,
+    compute_party_closings_as_of,
 )
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
@@ -99,15 +99,15 @@ def test_non_party_ledger_lines_are_excluded():
     assert "Freight Income" not in movements
 
 
-def test_resolve_opening_balances_from_registers_uses_pre_mis_outstanding_when_nothing_precedes(tmp_path):
+def test_compute_party_closings_as_of_uses_pre_mis_outstanding_when_nothing_on_record(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
-    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 5))
-    assert openings == {"Acme": Decimal("100000.00")}
+    movements = compute_party_closings_as_of(store, "KOL", {"Acme"}, date(2026, 1, 5))
+    assert movements["Acme"].closing_computed == Decimal("100000.00")
     store.close()
 
 
-def test_resolve_opening_balances_from_registers_sums_every_movement_type_before_period_start(tmp_path):
+def test_compute_party_closings_as_of_sums_every_movement_type_on_or_before_as_of(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
     store.append_sales_dn_row(
@@ -128,17 +128,17 @@ def test_resolve_opening_balances_from_registers_sums_every_movement_type_before
     )
     # Pre-MIS 100000 + sales 20000 - receipt 15000 (raw Cr +15000, flipped
     # to -15000) = 105000 - no weekly_snapshot row involved anywhere.
-    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 6))
-    assert openings == {"Acme": Decimal("105000.00")}
+    movements = compute_party_closings_as_of(store, "KOL", {"Acme"}, date(2026, 1, 6))
+    assert movements["Acme"].closing_computed == Decimal("105000.00")
     store.close()
 
 
-def test_resolve_opening_balances_from_registers_excludes_rows_on_or_after_period_start(tmp_path):
-    # The CHARZE INDUSTRIES incident this replaces: a backdated voucher's
-    # own real date can land earlier than register rows already on
-    # record for later dates. There's no chain left to confuse - this is
-    # a plain date filter, so a row on or after `period_start` must never
-    # be swept into an earlier period's opening.
+def test_compute_party_closings_as_of_excludes_rows_dated_after_as_of(tmp_path):
+    # The CHARZE INDUSTRIES incident this whole redesign traces back to:
+    # a backdated voucher's own real date can land earlier than register
+    # rows already on record for later dates. There's no chain left to
+    # confuse any more - this is a plain date filter, so a row dated
+    # after `as_of` must never leak into an earlier date's own total.
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
     store.append_sales_dn_row(
@@ -149,22 +149,22 @@ def test_resolve_opening_balances_from_registers_excludes_rows_on_or_after_perio
             igst=Decimal("0.00"), invoice_value=Decimal("20000.00"), due_date=date(2026, 2, 12),
         )
     )
-    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 5))
-    assert openings == {"Acme": Decimal("100000.00")}
-    # The boundary itself is exclusive: a row dated exactly on period_start
-    # is this period's own movement, not a prior-period opening component.
-    openings_on_boundary = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 12))
-    assert openings_on_boundary == {"Acme": Decimal("100000.00")}
+    movements = compute_party_closings_as_of(store, "KOL", {"Acme"}, date(2026, 1, 5))
+    assert movements["Acme"].closing_computed == Decimal("100000.00")
+    # The boundary itself is inclusive: a row dated exactly on `as_of` IS
+    # counted - "as of" a date means through and including that date.
+    movements_on_boundary = compute_party_closings_as_of(store, "KOL", {"Acme"}, date(2026, 1, 12))
+    assert movements_on_boundary["Acme"].closing_computed == Decimal("120000.00")
     store.close()
 
 
-def test_resolve_opening_balances_from_registers_is_unaffected_by_insertion_order(tmp_path):
-    # Structurally re-proves the CHARZE bug can't recur: resolving an
-    # earlier period's opening is a pure sum-by-date over whatever's on
-    # record, regardless of which register row was appended first - a
-    # later-appended but earlier-dated (backdated) row is included
-    # exactly like any other, and a later-dated row already on record
-    # has no way to leak backwards into it.
+def test_compute_party_closings_as_of_is_unaffected_by_insertion_order(tmp_path):
+    # Structurally re-proves the CHARZE bug can't recur: computing a
+    # party's position as of an earlier date is a pure sum-by-date over
+    # whatever's on record, regardless of which register row was
+    # appended first - a later-appended but earlier-dated (backdated)
+    # row is included exactly like any other, and a later-dated row
+    # already on record has no way to leak backwards into it.
     store = Store(str(tmp_path / "t.db"))
     store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("100000.00")))
     store.append_sales_dn_row(
@@ -183,8 +183,8 @@ def test_resolve_opening_balances_from_registers_is_unaffected_by_insertion_orde
             igst=Decimal("0.00"), invoice_value=Decimal("20000.00"), due_date=date(2026, 2, 1),
         )
     )
-    openings = resolve_opening_balances_from_registers(store, "KOL", {"Acme"}, date(2026, 1, 6))
-    assert openings == {"Acme": Decimal("120000.00")}
+    movements = compute_party_closings_as_of(store, "KOL", {"Acme"}, date(2026, 1, 6))
+    assert movements["Acme"].closing_computed == Decimal("120000.00")
     store.close()
 
 

@@ -271,8 +271,7 @@ def test_pre_mis_csv_corrects_a_party_auto_created_at_zero_by_an_earlier_extract
     s.close()
 
 
-def test_pre_mis_csv_skips_party_that_already_has_weekly_snapshots(client):
-    from ar_mis.models import WeeklySnapshotRow
+def test_pre_mis_csv_skips_party_that_already_has_a_real_extraction(client):
     from ar_mis.storage import Store
 
     client.post(
@@ -289,15 +288,7 @@ def test_pre_mis_csv_skips_party_that_already_has_weekly_snapshots(client):
     )
 
     s = Store(client.application.config["DB_PATH"])
-    s.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Acme Traders", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("125000.00"), sales=Decimal("0.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("125000.00"), closing_extracted=Decimal("125000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
+    s.upsert_party_tb_balance("Acme Traders", "KOL", date(2026, 1, 5), Decimal("125000.00"))
     s.close()
 
     resp = client.post(
@@ -762,7 +753,7 @@ def test_catch_up_party_reconciles_clean_and_builds_the_register_row(client, mon
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
     assert store.customer_master_exists("Narendra Trading Company", "KOL")
-    assert store.has_weekly_snapshots("Narendra Trading Company", "KOL")
+    assert store.has_tb_balance_on_record("Narendra Trading Company", "KOL")
     sales_rows = [r for r in store.all_sales_dn_rows("KOL") if r.party_id == "Narendra Trading Company"]
     assert len(sales_rows) == 1
     assert sales_rows[0].voucher_number == "SB/9"
@@ -795,32 +786,24 @@ def test_catch_up_party_only_replays_the_target_partys_own_vouchers(client, monk
     store = Store(client.application.config["DB_PATH"])
     other_rows = [r for r in store.all_sales_dn_rows("KOL") if r.party_id == "Other Existing Party"]
     assert len(other_rows) == 1  # unchanged - not duplicated
-    assert store.has_weekly_snapshots("Other Existing Party", "KOL") is False  # never touched
+    assert store.has_tb_balance_on_record("Other Existing Party", "KOL") is False  # never touched
     store.close()
 
 
 def test_catch_up_party_refuses_when_party_already_has_weekly_history(client, monkeypatch):
-    from ar_mis.models import CustomerMasterRecord, WeeklySnapshotRow
+    from ar_mis.models import CustomerMasterRecord
     from ar_mis.storage import Store
 
     monkeypatch.setattr("ar_mis.webapp.app.TallyClient", FakeTallyClientCatchUp)
     _add_branch(client)
     store = Store(client.application.config["DB_PATH"])
     store.upsert_customer_master(CustomerMasterRecord("Narendra Trading Company", "Narendra Trading Company", "KOL", Decimal("0.00")))
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Narendra Trading Company", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("0.00"), sales=Decimal("0.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("0.00"), closing_extracted=Decimal("0.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
+    store.upsert_party_tb_balance("Narendra Trading Company", "KOL", date(2026, 1, 5), Decimal("0.00"))
     store.close()
 
     resp = _post_catch_up(client)
     assert resp.status_code == 200
-    assert b"already has weekly extraction history" in resp.data
+    assert b"already been through a real extraction run" in resp.data
 
 
 def test_catch_up_party_refuses_when_not_found_in_tally_sundry_debtors(client, monkeypatch):
@@ -834,7 +817,7 @@ def test_catch_up_party_refuses_when_not_found_in_tally_sundry_debtors(client, m
     # the customer_master seed is harmless and idempotent either way.
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert store.has_weekly_snapshots("Narendra Trading Company", "KOL") is False
+    assert store.has_tb_balance_on_record("Narendra Trading Company", "KOL") is False
     store.close()
 
 
@@ -866,7 +849,7 @@ def test_test_extraction_save_writes_data_and_shows_reconciled_clean(client, mon
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
+    assert len(store.all_party_tb_balances()) == 1
     assert len(store.all_sales_dn_rows("KOL")) == 1
     assert len(store.all_ytd_debtor_voucher_rows("KOL")) == 1  # Section 4.2's Check 1 pull, saved
     store.close()
@@ -1040,7 +1023,7 @@ def test_test_extraction_save_mismatch_still_writes_data(client, monkeypatch):
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
+    assert len(store.all_party_tb_balances()) == 1
     store.close()
 
 
@@ -1061,7 +1044,7 @@ def test_test_extraction_save_skips_a_week_already_recorded(client, monkeypatch)
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
+    assert len(store.all_party_tb_balances()) == 1
     store.close()
 
 
@@ -1077,7 +1060,7 @@ def test_test_extraction_save_reports_connection_failure_and_writes_nothing(clie
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert store.weekly_snapshots_for_week(date(2026, 1, 11)) == []
+    assert store.all_party_tb_balances() == {}
     store.close()
 
 
@@ -1108,8 +1091,11 @@ def test_test_extraction_save_stops_at_first_failed_week_in_a_multi_week_range(c
 
     from ar_mis.storage import Store
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 1, 11))) == 1
-    assert store.weekly_snapshots_for_week(date(2026, 1, 18)) == []
+    balances = store.all_party_tb_balances()
+    assert len(balances) == 1
+    # Still as of week 1's own date - week 2 never ran, so nothing
+    # touched this reading a second time.
+    assert all(b.as_of == date(2026, 1, 11) for b in balances.values())
     store.close()
 
 
@@ -1518,7 +1504,7 @@ def test_manual_upload_mismatch_still_writes_data_and_shows_mismatch_badge(clien
     assert b"still recorded" in resp.data
 
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.weekly_snapshots_for_week(date(2026, 4, 7))) == 2
+    assert len(store.all_party_tb_balances()) == 2
     store.close()
 
 
@@ -3531,7 +3517,7 @@ def test_ar_snapshot_shows_renamed_labels_and_cross_check_links(client):
     assert "Reconciliation Check" in html
     assert "Sundry Debtor AR" not in html
     assert "Rounding Difference" not in html
-    assert "/reports/tb-cross-check?to_date=2026-09-12" in html
+    assert "/reports/tb-cross-check" in html
     assert "/reports/exceptions?as_of=2026-09-12" in html
 
 
@@ -3938,7 +3924,7 @@ def test_tb_cross_check_renders_with_no_data(client):
     resp = client.get("/reports/tb-cross-check")
     assert resp.status_code == 200
     assert b"TB Reconciliation Cross-Check" in resp.data
-    assert b"No weeks recorded yet" in resp.data
+    assert b"No parties recorded yet" in resp.data
 
 
 def test_tb_cross_check_shows_clean_reconciliation(client):
@@ -4027,30 +4013,11 @@ def test_tb_cross_check_shows_total_debtor_as_per_books(client):
     assert b"1,500.00" in resp.data
 
 
-def test_tb_cross_check_date_range_scopes_the_table_but_never_shrinks_the_running_total(client):
-    from ar_mis.models import CustomerMasterRecord
-    from ar_mis.pipeline import process_branch_data
-    from ar_mis.storage import Store
-
-    store = Store(client.application.config["DB_PATH"])
-    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
-    process_branch_data(store, "KOL", "Kolkata", date(2026, 1, 5), [], {"P1": Decimal("-1000.00")})
-    store.close()
-
-    # A narrow later range that doesn't include week ending 2026-01-05 -
-    # the row must not appear in Full History view, but the party's last
-    # known balance must still count toward Total Debtor as per Books.
-    resp = client.get("/reports/tb-cross-check?from_date=2026-06-01&to_date=2026-06-30&view=history")
-    assert resp.status_code == 200
-    assert b"2026-01-05" not in resp.data
-    assert b"1,000.00" in resp.data  # still in the Total Debtor tile
-
-
-def test_tb_cross_check_defaults_to_latest_only_one_row_per_party(client):
-    # Client's own ask: the table defaulted to listing every week ever
-    # recorded (1,930+ rows once history piles up) - now defaults to each
-    # party's current position, same reduction the tiles already use,
-    # with the full history still one click away, never discarded.
+def test_tb_cross_check_shows_only_the_current_reading_per_party(client):
+    # Client's explicit call this session: there is no history to browse
+    # any more - re-extracting a party for a later date simply replaces
+    # what's shown, it never adds a second row or lets an old reading
+    # linger.
     from ar_mis.models import CustomerMasterRecord
     from ar_mis.pipeline import process_branch_data
     from ar_mis.storage import Store
@@ -4063,21 +4030,8 @@ def test_tb_cross_check_defaults_to_latest_only_one_row_per_party(client):
 
     resp = client.get("/reports/tb-cross-check")
     assert resp.status_code == 200
-    assert b"2026-04-05" not in resp.data  # superseded week, not shown by default
-    assert b"2026-04-12" in resp.data  # the latest week, shown
-    assert b">Latest only<" in resp.data
-    assert b">Full history<" in resp.data
-
-    history = client.get("/reports/tb-cross-check?view=history")
-    assert b"2026-04-05" in history.data
-    assert b"2026-04-12" in history.data
-
-
-def test_tb_cross_check_view_choice_survives_the_date_range_form(client):
-    # The date-range form must carry the current view forward - submitting
-    # Apply from Full History must not silently snap back to Latest only.
-    resp = client.get("/reports/tb-cross-check?view=history")
-    assert b'<input type="hidden" name="view" value="history">' in resp.data
+    assert b"2026-04-05" not in resp.data  # superseded reading, gone
+    assert b"2026-04-12" in resp.data  # the current reading
 
 
 def test_tb_cross_check_branch_filter_scopes_table_and_tiles(client):
@@ -4113,23 +4067,6 @@ def test_tb_cross_check_branch_filter_scopes_table_and_tiles(client):
     assert b"1,000.00" in kol_only.data  # KOL's own Total Debtor
     assert b"P2" not in kol_only.data  # Delhi's party doesn't leak into the table
     assert b'<option value="KOL" selected>Kolkata</option>' in kol_only.data
-
-
-def test_tb_cross_check_as_of_excludes_a_week_recorded_after_the_chosen_to_date(client):
-    from ar_mis.models import CustomerMasterRecord
-    from ar_mis.pipeline import process_branch_data
-    from ar_mis.storage import Store
-
-    store = Store(client.application.config["DB_PATH"])
-    store.upsert_customer_master(CustomerMasterRecord("P1", "P1", "KOL", Decimal("0.00")))
-    process_branch_data(store, "KOL", "Kolkata", date(2026, 1, 5), [], {"P1": Decimal("-1000.00")})
-    process_branch_data(store, "KOL", "Kolkata", date(2026, 1, 19), [], {"P1": Decimal("-1200.00")})
-    store.close()
-
-    resp = client.get("/reports/tb-cross-check?from_date=2026-01-01&to_date=2026-01-12")
-    assert resp.status_code == 200
-    assert b"1,000.00" in resp.data
-    assert b"1,200.00" not in resp.data
 
 
 def test_tb_cross_check_offers_export_link_only_when_something_is_mismatched(client):

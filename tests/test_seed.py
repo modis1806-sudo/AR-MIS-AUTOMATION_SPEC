@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from ar_mis.models import WeeklySnapshotRow
 from ar_mis.seed import parse_seed_csv, parse_seed_rows_for_branch, seed
 from ar_mis.storage import Store
 
@@ -61,20 +60,12 @@ def test_seed_is_idempotent_for_unchanged_balances(tmp_path):
     store.close()
 
 
-def test_seed_refuses_to_overwrite_once_weekly_snapshots_exist(tmp_path):
+def test_seed_refuses_to_overwrite_once_a_real_extraction_has_run(tmp_path):
     store = Store(str(tmp_path / "t.db"))
     records, _ = parse_seed_csv(str(FIXTURES / "sample_pre_mis_outstanding.csv"))
     seed(store, records, announce=lambda *_: None)
 
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="ACME001", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("325000.00"), sales=Decimal("0.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("325000.00"), closing_extracted=Decimal("325000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
+    store.upsert_party_tb_balance("ACME001", "KOL", date(2026, 1, 5), Decimal("325000.00"))
 
     # A revised CSV tries to correct ACME001's baseline after the fact.
     corrected = [r for r in records]

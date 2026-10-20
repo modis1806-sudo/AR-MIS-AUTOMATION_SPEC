@@ -9,6 +9,8 @@ can never silently drift from what they were just looking at on screen.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
@@ -143,7 +145,7 @@ _RECEIPT_JOURNAL_MONEY_COLUMNS = [10, 11, 12]
 
 
 _UNRECONCILED_PARTIES_HEADERS = [
-    "Party", "Branch", "Week Ending", "Opening", "Sales", "Credit Notes", "Debit Notes",
+    "Party", "Branch", "As Of", "Opening", "Sales", "Credit Notes", "Debit Notes",
     "Receipts", "Journals", "Closing (Workings)", "Closing (TB/Tally)", "Difference",
 ]
 # Opening, Sales, Credit Notes, Debit Notes, Receipts, Journals,
@@ -152,12 +154,13 @@ _UNRECONCILED_PARTIES_MONEY_COLUMNS = [4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 
 def build_unreconciled_parties_workbook(rows: list, as_of) -> Workbook:
-    """rows: the WeeklySnapshotRow list from
-    ar_mis.reconciliation_report.compute_unreconciled_parties - already
-    reduced to each party's current (as-of `as_of`) state and sorted by
-    absolute difference, largest first. Same TB Cross-Check field set as
-    the on-screen table, so nothing in the download can read differently
-    from what a Maker was just looking at.
+    """rows: the TBCrossCheckRow list from
+    ar_mis.reconciliation_report.compute_unreconciled_parties - the live
+    current state, sorted by absolute difference, largest first. Same
+    TB Cross-Check field set as the on-screen table, so nothing in the
+    download can read differently from what a Maker was just looking
+    at. `as_of` here is just today's date for the title line, not a
+    scope - there is no history to scope.
     """
     wb = Workbook()
     ws = wb.active
@@ -170,7 +173,7 @@ def build_unreconciled_parties_workbook(rows: list, as_of) -> Workbook:
     for row in rows:
         ws.append(
             [
-                row.party_id, row.branch_id, row.week_ending,
+                row.party_id, row.branch_id, row.as_of,
                 float(row.opening), float(row.sales), float(row.credit_notes), float(row.debit_notes),
                 float(row.receipts), float(row.journals),
                 float(row.closing_computed), float(row.closing_extracted), float(row.difference),
@@ -182,7 +185,7 @@ def build_unreconciled_parties_workbook(rows: list, as_of) -> Workbook:
 
 
 _TB_CROSS_CHECK_HEADERS = [
-    "Party", "Branch", "Week Ending", "Opening", "Sales", "Credit Notes", "Debit Notes",
+    "Party", "Branch", "As Of", "Opening", "Sales", "Credit Notes", "Debit Notes",
     "Receipts", "Journals", "Closing (Workings)", "Closing (TB/Tally)", "Difference", "Reconciled",
 ]
 # Opening, Sales, Credit Notes, Debit Notes, Receipts, Journals,
@@ -190,18 +193,20 @@ _TB_CROSS_CHECK_HEADERS = [
 _TB_CROSS_CHECK_MONEY_COLUMNS = [4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 
-def build_tb_cross_check_workbook(rows: list, from_date, to_date) -> Workbook:
-    """rows: the WeeklySnapshotRow list the tb_cross_check_report route
-    already scoped to [from_date, to_date] for the on-screen table - the
-    complete report, mismatches and clean rows alike, in the same order
-    the Maker was just looking at it, so they can apply their own filter
-    in Excel rather than getting only the pre-filtered unreconciled list
-    (see build_unreconciled_parties_workbook, a separate, narrower export).
+def build_tb_cross_check_workbook(rows: list) -> Workbook:
+    """rows: the TBCrossCheckRow list tb_cross_check_report already
+    computed live for the on-screen table - the complete current state,
+    mismatches and clean rows alike, in the same order the Maker was
+    just looking at it, so they can apply their own filter in Excel
+    rather than getting only the pre-filtered unreconciled list (see
+    build_unreconciled_parties_workbook, a separate, narrower export).
+    No date range any more - this is always every party's current
+    reconciliation state, not a history to range over.
     """
     wb = Workbook()
     ws = wb.active
     ws.title = "TB Cross-Check"
-    ws.append([f"TB Reconciliation Cross-Check - {from_date} to {to_date}"])
+    ws.append([f"TB Reconciliation Cross-Check - as of {date.today().isoformat()}"])
     ws["A1"].font = Font(bold=True, size=12)
     ws.append([])
     _header_row(ws, _TB_CROSS_CHECK_HEADERS)
@@ -209,7 +214,7 @@ def build_tb_cross_check_workbook(rows: list, from_date, to_date) -> Workbook:
     for row in rows:
         ws.append(
             [
-                row.party_id, row.branch_id, row.week_ending,
+                row.party_id, row.branch_id, row.as_of,
                 float(row.opening), float(row.sales), float(row.credit_notes), float(row.debit_notes),
                 float(row.receipts), float(row.journals),
                 float(row.closing_computed), float(row.closing_extracted), float(row.difference),

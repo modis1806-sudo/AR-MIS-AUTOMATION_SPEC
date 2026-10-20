@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import asdict
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -31,6 +30,7 @@ from ar_mis.models import (
     LedgerEntry,
     NoteType,
     PartyGrouping,
+    PartyTBBalance,
     PreMisAdjustment,
     PTPEntry,
     PTPStatus,
@@ -42,7 +42,6 @@ from ar_mis.models import (
     Voucher,
     VoucherType,
     WeeklyMovementRow,
-    WeeklySnapshotRow,
     YtdDebtorVoucherRow,
 )
 from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
@@ -66,7 +65,7 @@ from ar_mis.register_corrections import RegisterRowCorrection, RegisterRowCorrec
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -506,6 +505,55 @@ CREATE TABLE IF NOT EXISTS voucher_type_alias (
     PRIMARY KEY (branch_id, category, alias_name)
 );
 """,
+    # Client's explicit call this session: weekly_snapshot's per-week,
+    # per-party accumulation was never needed for TB Cross-Check, AR
+    # Snapshot, or Ageing Matrix to do their actual jobs - every one of
+    # them only ever needed Tally's CURRENT stated closing per party, not
+    # a growing history of past ones, because the registers (already
+    # append-only, already date-stamped per voucher) can reconstruct any
+    # past position on demand (ar_mis.rollforward.
+    # compute_party_closings_as_of) without anything having been saved
+    # for that purpose. party_tb_balance replaces it: one row per party,
+    # upserted (never appended) on every extraction - the single current
+    # reading, nothing else. weekly_snapshot itself is deliberately NOT
+    # dropped here (this app's own never-discard-data principle) - it
+    # simply stops being written or read by any code from this version
+    # on, and whatever history already exists in it on a live database
+    # stays on disk, untouched, for anyone who needs to look at it
+    # directly.
+    #
+    # extraction_log gains its own period_start for the same reason
+    # weekly_snapshot once needed it (Branch Master's coverage summary,
+    # delete_branch_week's audit trail) - backfilled here from whichever
+    # weekly_snapshot row shared that run's (branch_id, week_ending),
+    # since every party in one run recorded the identical period_start.
+    17: """
+CREATE TABLE IF NOT EXISTS party_tb_balance (
+    party_id TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    as_of TEXT NOT NULL,
+    closing_extracted TEXT NOT NULL,
+    PRIMARY KEY (party_id, branch_id)
+);
+
+ALTER TABLE extraction_log ADD COLUMN period_start TEXT;
+
+UPDATE extraction_log
+SET period_start = (
+    SELECT w.period_start FROM weekly_snapshot w
+    WHERE w.branch_id = extraction_log.branch_id AND w.week_ending = extraction_log.week_ending
+    LIMIT 1
+)
+WHERE period_start IS NULL;
+
+INSERT OR IGNORE INTO party_tb_balance (party_id, branch_id, as_of, closing_extracted)
+SELECT w.party_id, w.branch_id, w.week_ending, w.closing_extracted
+FROM weekly_snapshot w
+WHERE w.week_ending = (
+    SELECT MAX(w2.week_ending) FROM weekly_snapshot w2
+    WHERE w2.party_id = w.party_id AND w2.branch_id = w.branch_id
+);
+""",
 }
 
 
@@ -859,26 +907,31 @@ class Store:
         ).fetchone()
         return row is not None
 
-    def has_weekly_snapshots(self, party_id: str, branch_id: str) -> bool:
+    def has_tb_balance_on_record(self, party_id: str, branch_id: str) -> bool:
+        """True once this party has ever been through a real extraction
+        run - party_tb_balance only ever gets a row for a party the
+        moment process_branch_data first runs for them, same timing
+        guarantee the old weekly_snapshot-based check relied on.
+        """
         row = self.conn.execute(
-            "SELECT 1 FROM weekly_snapshot WHERE party_id=? AND branch_id=? LIMIT 1",
+            "SELECT 1 FROM party_tb_balance WHERE party_id=? AND branch_id=?",
             (party_id, branch_id),
         ).fetchone()
         return row is not None
 
     def force_overwrite_pre_mis_outstanding(self, party_id: str, branch_id: str, new_amount: Decimal) -> None:
         """Corrects a bad *initial* Layer 1 load - before the weekly
-        pipeline has ever produced a snapshot for this party. Raises if
-        any weekly_snapshot row already exists: at that point the only
-        sanctioned path is record_pre_mis_adjustment() (an explicit,
+        pipeline has ever actually run for this party. Raises once a
+        real extraction has (has_tb_balance_on_record): at that point the
+        only sanctioned path is record_pre_mis_adjustment() (an explicit,
         logged, reasoned adjustment), never a silent bulk overwrite of
         the seed. This is the one place besides record_pre_mis_adjustment
         that can move pre_mis_outstanding after creation, and it refuses
         to run once the field it protects has actually been relied upon.
         """
-        if self.has_weekly_snapshots(party_id, branch_id):
+        if self.has_tb_balance_on_record(party_id, branch_id):
             raise ValueError(
-                f"{party_id}/{branch_id} already has weekly snapshot rows on record - "
+                f"{party_id}/{branch_id} has already been through a real extraction run - "
                 "use record_pre_mis_adjustment() instead of overwriting the seed."
             )
         if not self.customer_master_exists(party_id, branch_id):
@@ -898,103 +951,70 @@ class Store:
             raise ValueError(f"No customer_master record for {party_id}/{branch_id}")
         return Decimal(row[0])
 
-    # ---- Layer 2: weekly snapshot (append-only) --------------------
+    # ---- Layer 2: party_tb_balance (upsert, never appended) ---------
+    # Replaces weekly_snapshot's actual job (client's explicit call this
+    # session) - one current reading per party, overwritten every
+    # extraction, never a growing per-week history. See PartyTBBalance's
+    # own docstring in ar_mis.models for why no history is kept here.
 
-    def append_weekly_snapshot(self, row: WeeklySnapshotRow) -> None:
-        d = asdict(row)
+    def upsert_party_tb_balance(self, party_id: str, branch_id: str, as_of: date, closing_extracted: Decimal) -> None:
         self.conn.execute(
-            "INSERT INTO weekly_snapshot "
-            "(party_id, branch_id, week_ending, opening, sales, credit_notes, debit_notes,"
-            " receipts, journals, closing_computed, closing_extracted, reconciled, difference,"
-            " period_start)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                d["party_id"],
-                d["branch_id"],
-                d["week_ending"].isoformat(),
-                str(d["opening"]),
-                str(d["sales"]),
-                str(d["credit_notes"]),
-                str(d["debit_notes"]),
-                str(d["receipts"]),
-                str(d["journals"]),
-                str(d["closing_computed"]),
-                str(d["closing_extracted"]),
-                int(d["reconciled"]),
-                str(d["difference"]),
-                d["period_start"].isoformat() if d["period_start"] else None,
-            ),
+            "INSERT INTO party_tb_balance (party_id, branch_id, as_of, closing_extracted) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(party_id, branch_id) DO UPDATE SET as_of=excluded.as_of,"
+            " closing_extracted=excluded.closing_extracted",
+            (party_id, branch_id, as_of.isoformat(), str(closing_extracted)),
         )
         self.conn.commit()
 
-    def weekly_snapshots_for_week(self, week_ending: date) -> list[sqlite3.Row]:
-        self.conn.row_factory = sqlite3.Row
-        cur = self.conn.execute(
-            "SELECT * FROM weekly_snapshot WHERE week_ending=?", (week_ending.isoformat(),)
-        )
-        return cur.fetchall()
-
-    def append_weekly_snapshots(self, rows: Iterable[WeeklySnapshotRow]) -> None:
-        for row in rows:
-            self.append_weekly_snapshot(row)
-
-    def all_weekly_snapshot_rows(self) -> list[WeeklySnapshotRow]:
-        """Every weekly_snapshot row ever recorded, fully typed - the TB
-        Reconciliation Cross-Check sheet's own data source (design doc
-        item 15, the user's explicit ask this session), one row per party
-        per branch per week. Ordered by party then branch then week, so
-        one party's own history reads as a contiguous run rather than
-        interleaved with every other party's.
+    def all_party_tb_balances(self, branch_id: str | None = None) -> dict[tuple[str, str], "PartyTBBalance"]:
+        """Every party's current Tally reading, keyed (party_id,
+        branch_id) - the live input to TB Cross-Check, AR Snapshot's
+        Total AR, and Ageing Matrix's Tally-closing column alike. Always
+        the single latest reading; there is nothing else to filter by a
+        date, since nothing older is kept.
         """
         self.conn.row_factory = sqlite3.Row
-        cur = self.conn.execute(
-            "SELECT * FROM weekly_snapshot ORDER BY party_id ASC, branch_id ASC, week_ending ASC"
-        )
-        return [
-            WeeklySnapshotRow(
-                party_id=r["party_id"],
-                branch_id=r["branch_id"],
-                week_ending=date.fromisoformat(r["week_ending"]),
-                opening=Decimal(r["opening"]),
-                sales=Decimal(r["sales"]),
-                credit_notes=Decimal(r["credit_notes"]),
-                debit_notes=Decimal(r["debit_notes"]),
-                receipts=Decimal(r["receipts"]),
-                journals=Decimal(r["journals"]),
-                closing_computed=Decimal(r["closing_computed"]),
-                closing_extracted=Decimal(r["closing_extracted"]),
-                reconciled=bool(r["reconciled"]),
-                difference=Decimal(r["difference"]),
-                period_start=date.fromisoformat(r["period_start"]) if r["period_start"] else None,
+        if branch_id is None:
+            cur = self.conn.execute("SELECT * FROM party_tb_balance")
+        else:
+            cur = self.conn.execute("SELECT * FROM party_tb_balance WHERE branch_id=?", (branch_id,))
+        return {
+            (r["party_id"], r["branch_id"]): PartyTBBalance(
+                party_id=r["party_id"], branch_id=r["branch_id"],
+                as_of=date.fromisoformat(r["as_of"]), closing_extracted=Decimal(r["closing_extracted"]),
             )
             for r in cur.fetchall()
-        ]
+        }
 
-    def has_weekly_snapshot_for_branch_week(self, branch_id: str, week_ending: date) -> bool:
-        """True if this branch/week already has any recorded data, from
-        either live extraction or a manual upload - the two converge on
-        the same append-only weekly_snapshot table, so this is the one
+    def has_extraction_for_branch_week(self, branch_id: str, week_ending: date) -> bool:
+        """True if this branch/week already has a recorded extraction
+        run, from either live extraction or a manual upload - the two
+        converge on the same extraction_log table, so this is the one
         check that enforces "first one in wins, no silent overwrite"
-        regardless of which path got there first.
+        regardless of which path got there first. Replaces the old
+        weekly_snapshot-based has_weekly_snapshot_for_branch_week:
+        extraction_log already gets exactly one row per run regardless
+        of how many parties it touched, so it's the more direct source,
+        not just a substitute.
         """
         row = self.conn.execute(
-            "SELECT 1 FROM weekly_snapshot WHERE branch_id=? AND week_ending=? LIMIT 1",
+            "SELECT 1 FROM extraction_log WHERE branch_id=? AND week_ending=? LIMIT 1",
             (branch_id, week_ending.isoformat()),
         ).fetchone()
         return row is not None
 
     def all_week_endings(self) -> list[date]:
-        cur = self.conn.execute("SELECT DISTINCT week_ending FROM weekly_snapshot ORDER BY week_ending")
+        cur = self.conn.execute("SELECT DISTINCT week_ending FROM extraction_log ORDER BY week_ending")
         return [date.fromisoformat(row[0]) for row in cur.fetchall()]
 
     def week_endings_for_branch(self, branch_id: str) -> list[date]:
-        """Every week_ending this branch has recorded data for, oldest
-        first - the authoritative "what's already in the system" list
-        Branch Master shows, and what delete_branch_week checks against
-        to enforce its latest-week-only guard below.
+        """Every week_ending this branch has a recorded extraction run
+        for, oldest first - the authoritative "what's already in the
+        system" list Branch Master shows, and what delete_branch_week
+        checks against to enforce its latest-week-only guard below.
         """
         cur = self.conn.execute(
-            "SELECT DISTINCT week_ending FROM weekly_snapshot WHERE branch_id=? ORDER BY week_ending",
+            "SELECT DISTINCT week_ending FROM extraction_log WHERE branch_id=? ORDER BY week_ending",
             (branch_id,),
         )
         return [date.fromisoformat(row[0]) for row in cur.fetchall()]
@@ -1009,7 +1029,7 @@ class Store:
         """
         row = self.conn.execute(
             "SELECT MIN(period_start), MAX(week_ending), COUNT(DISTINCT week_ending)"
-            " FROM weekly_snapshot WHERE branch_id=?",
+            " FROM extraction_log WHERE branch_id=?",
             (branch_id,),
         ).fetchone()
         if row is None or row[0] is None:
@@ -1028,19 +1048,23 @@ class Store:
         with no way to reextract cleanly.
 
         Deliberately restricted to the branch's OWN latest recorded run,
-        not any arbitrary past one. Opening Balance is no longer a chain
-        read dynamically off a prior run's stored closing (rollforward.
-        resolve_opening_balances_from_registers recomputes it fresh from
-        the registers on every run instead) - but each run's own Opening/
-        Closing(Workings) figures are still computed ONCE, at write time,
-        by summing whatever register rows existed then, and frozen into
-        that run's own weekly_snapshot row from then on. Deleting an
-        earlier run's register rows out from under a later one that's
-        still on record would leave that later run's already-stored
-        figures silently stale - baked-in sums over data that no longer
-        exists, with no mechanism here to notice or recompute them.
-        Deleting only ever the newest run avoids that: nothing later
-        depends on it yet, since nothing later exists yet.
+        not any arbitrary past one. Opening Balance and Closing (Workings)
+        are no longer anything stored at all - ar_mis.rollforward.
+        compute_party_closings_as_of recomputes both fresh from the
+        registers every time anyone needs them, for any date, so there
+        is no stale frozen figure to strand by deleting an earlier run.
+        The real remaining risk is party_tb_balance, which IS a stored
+        current reading (deliberately, see its own docstring): deleting
+        an earlier run's reading out from under a later one already on
+        record for the same party would be fine (the later reading would
+        simply stand), but deleting the LATEST run must also roll
+        party_tb_balance back - leaving it pointing at a now-deleted
+        run's Tally figure would silently claim a "current" state that
+        no longer has a supporting extraction behind it. Restricting
+        this to the branch's own latest run keeps that rollback exact:
+        every party_tb_balance row this run touched has as_of ==
+        week_ending, by construction, so deleting rows with that exact
+        (branch_id, as_of) match is never a guess.
 
         sales_dn_register/credit_note_register/receipt_journal_register
         carry no week_ending column of their own (see their own CREATE
@@ -1074,8 +1098,9 @@ class Store:
         if not weeks or week_ending != weeks[-1]:
             raise ValueError(
                 f"Only the most recently recorded week for '{branch_id}' can be deleted - "
-                "every earlier week's closing balance is the opening balance the next week "
-                "rolled forward from, and deleting out of order would strand that chain."
+                "deleting an earlier run while a later one is still on record would leave "
+                "that later run's party_tb_balance readings pointing at data that no "
+                "longer supports them."
             )
         w_end_s = week_ending.isoformat()
 
@@ -1117,39 +1142,20 @@ class Store:
         self.conn.execute(
             "DELETE FROM drift_finding WHERE branch_id=? AND attributed_week=?", (branch_id, w_end_s)
         )
+        # Legacy cleanup only: no code writes weekly_snapshot any more,
+        # so this is a no-op for any run saved after that change - kept
+        # so deleting a pre-existing legacy row still works cleanly for
+        # a database migrated from before it.
         self.conn.execute(
             "DELETE FROM weekly_snapshot WHERE branch_id=? AND week_ending=?", (branch_id, w_end_s)
         )
+        # party_tb_balance rollback (see this method's own docstring):
+        # every party this run touched has as_of == week_ending exactly,
+        # since this is always the branch's own latest run.
+        self.conn.execute(
+            "DELETE FROM party_tb_balance WHERE branch_id=? AND as_of=?", (branch_id, w_end_s)
+        )
         self.conn.commit()
-
-    def latest_weekly_snapshot_closing_by_party(self, as_of: date) -> dict[tuple[str, str], Decimal]:
-        """Per (party_id, branch_id), the closing_extracted from that
-        party's most recent weekly_snapshot row with week_ending <= as_of
-        - Tally's own ledger closing balance as of that date, independent
-        of anything this codebase itself computed. The Ageing Matrix
-        (ar_mis.ageing_matrix) uses this as an outside cross-check against
-        the registers-derived Total Open per party; a party absent from
-        this dict has no weekly_snapshot row on or before as_of yet, which
-        the cross-check must show as "no Tally balance on record", not 0.
-        """
-        self.conn.row_factory = sqlite3.Row
-        cur = self.conn.execute(
-            "SELECT party_id, branch_id, week_ending, closing_extracted FROM weekly_snapshot"
-            " WHERE week_ending <= ? ORDER BY week_ending ASC",
-            (as_of.isoformat(),),
-        )
-        result: dict[tuple[str, str], Decimal] = {}
-        for row in cur.fetchall():
-            result[(row["party_id"], row["branch_id"])] = Decimal(row["closing_extracted"])
-        return result
-
-    def weekly_snapshots_for_party(self, party_id: str, branch_id: str) -> list[sqlite3.Row]:
-        self.conn.row_factory = sqlite3.Row
-        cur = self.conn.execute(
-            "SELECT * FROM weekly_snapshot WHERE party_id=? AND branch_id=? ORDER BY week_ending",
-            (party_id, branch_id),
-        )
-        return cur.fetchall()
 
     def all_customer_master_records(self) -> list[sqlite3.Row]:
         self.conn.row_factory = sqlite3.Row
@@ -1474,17 +1480,27 @@ class Store:
 
     # ---- Extraction log (freshness indicator for Registers/Reports viewers) --
 
-    def record_extraction_run(self, branch_id: str, week_ending: date, extracted_at: datetime) -> None:
+    def record_extraction_run(
+        self, branch_id: str, week_ending: date, extracted_at: datetime, period_start: date | None = None
+    ) -> None:
         """One row per successful (PASS-outcome) extraction run - the real
         wall-clock moment data was pulled, not `week_ending` (the business
         period a run covers - an operator can run a backlogged week's
         extraction well after that week actually ended). This is what a
         Registers/Reports viewer needs to judge the age of what they're
         looking at.
+
+        `period_start` (added alongside party_tb_balance, replacing
+        weekly_snapshot's own copy of the same fact) is this run's own
+        start date - branch_data_summary's "earliest_week_start" needs
+        it; nothing else does, now that register-row cleanup
+        (Store.delete_branch_week) is keyed off voucher_log identities
+        rather than a derived date range.
         """
         self.conn.execute(
-            "INSERT INTO extraction_log (branch_id, week_ending, extracted_at) VALUES (?, ?, ?)",
-            (branch_id, week_ending.isoformat(), extracted_at.isoformat()),
+            "INSERT INTO extraction_log (branch_id, week_ending, extracted_at, period_start) VALUES (?, ?, ?, ?)",
+            (branch_id, week_ending.isoformat(), extracted_at.isoformat(),
+             period_start.isoformat() if period_start else None),
         )
         self.conn.commit()
 
@@ -1812,20 +1828,6 @@ class Store:
             (status, reviewed_by, reviewed_at.isoformat(), reviewed_note, exception_id),
         )
         self.conn.commit()
-
-    def has_weekly_snapshot_for_party_week(self, party_id: str, branch_id: str, week_ending: date) -> bool:
-        """Party-level version of has_weekly_snapshot_for_branch_week -
-        needed by ar_mis.drift_correction, which writes a correction week
-        for ONE party at a time and must refuse a week that party already
-        has a recorded position for, without blocking on other parties in
-        the same branch/week (a normal weekly extraction) that are
-        unrelated to this correction.
-        """
-        row = self.conn.execute(
-            "SELECT 1 FROM weekly_snapshot WHERE party_id=? AND branch_id=? AND week_ending=? LIMIT 1",
-            (party_id, branch_id, week_ending.isoformat()),
-        ).fetchone()
-        return row is not None
 
     # ---- Invoice Follow-Up (item 7 — the one mutable/upserted register row) --
 

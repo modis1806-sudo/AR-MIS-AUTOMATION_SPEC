@@ -4,12 +4,11 @@
 {% block content %}
 {% include "_back_to_reports.html" %}
 <h1>TB Reconciliation Cross-Check</h1>
-<p class="subtitle">The Trial Balance / Sundry Debtors closing balance pulled straight from Tally, alongside this app's own workings (Opening + Sales + DN − CN + Receipts + Journals) and the exact difference — one row per party per branch per week, kept forever, mismatches included. Nothing here is ever discarded or overwritten.</p>
+<p class="subtitle">The Trial Balance / Sundry Debtors closing balance pulled straight from Tally, alongside this app's own workings (Opening + Sales + DN − CN + Receipts + Journals) and the exact difference — one row per party, always the current state, recomputed live every time this page loads. Nothing here is ever read back from a stored history.</p>
 
 {% include "_freshness.html" %}
 
 <form class="as-of-form" method="get">
-  <input type="hidden" name="view" value="{{ view }}">
   <div>
     <label for="branch_id">Branch</label>
     <select id="branch_id" name="branch_id">
@@ -19,14 +18,6 @@
       {% endfor %}
     </select>
   </div>
-  <div>
-    <label for="from_date">From{% if view == 'latest' %} <span style="font-weight:400; color:#6b7280;">(Full history view only)</span>{% endif %}</label>
-    <input type="date" id="from_date" name="from_date" value="{{ from_date }}">
-  </div>
-  <div>
-    <label for="to_date">To</label>
-    <input type="date" id="to_date" name="to_date" value="{{ to_date }}">
-  </div>
   <button class="btn secondary" type="submit">Apply</button>
 </form>
 
@@ -34,37 +25,26 @@
   <div class="kpi-tile">
     <div class="kpi-label">Total Debtor as per Books</div>
     <div class="kpi-value">{{ summary.total_debtor_as_per_books|inr }}</div>
-    <div class="kpi-caption">As of {{ to_date }} — each party's latest Tally closing on or before this date, summed. Check this against Tally's own Sundry Debtors total for the same date.</div>
+    <div class="kpi-caption">Every party's current Tally closing, summed. Check this against Tally's own Sundry Debtors total.</div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Parties currently showing a difference</div>
     <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.parties_with_current_difference else 'color:#166534;' }}">{{ summary.parties_with_current_difference }}</div>
     <div class="kpi-caption">
-      As of {{ to_date }}
       {% if summary.parties_with_current_difference %}
-      — <a href="{{ url_for('export_unreconciled_parties', to_date=to_date, branch_id=selected_branch_id) }}">Export list</a>
+      <a href="{{ url_for('export_unreconciled_parties', branch_id=selected_branch_id) }}">Export list</a>
       {% endif %}
     </div>
   </div>
   <div class="kpi-tile">
     <div class="kpi-label">Total absolute difference (current)</div>
     <div class="kpi-value" style="{{ 'color:#b91c1c;' if summary.total_current_absolute_difference else 'color:#166534;' }}">{{ summary.total_current_absolute_difference|inr }}</div>
-    <div class="kpi-caption">As of {{ to_date }}</div>
   </div>
 </div>
-<p class="subtitle" style="margin-top:-12px;">All three tiles above use each party's most recently recorded week ON OR BEFORE {{ to_date }} — not just whatever week happens to be shown below. Searching or filtering the table itself only changes which rows you're looking at — it never touches the three tiles above. The Branch dropdown above is different: picking a branch there re-scopes the tiles too, down to that branch alone.</p>
-
-<div style="margin-bottom:16px;">
-  <a class="btn {{ 'secondary' if view != 'latest' else '' }}" href="{{ url_for('tb_cross_check_report', from_date=from_date, to_date=to_date, branch_id=selected_branch_id, view='latest') }}">Latest only</a>
-  <a class="btn {{ 'secondary' if view != 'history' else '' }}" href="{{ url_for('tb_cross_check_report', from_date=from_date, to_date=to_date, branch_id=selected_branch_id, view='history') }}">Full history</a>
-  <span class="subtitle" style="margin:0 0 0 8px;">
-    {% if view == 'latest' %}Each party's most recent week on or before {{ to_date }} — the same position the tiles above show, one row per party. The underlying weekly data is untouched and kept forever; this is just what's listed by default.
-    {% else %}Every week from {{ from_date }} to {{ to_date }} for every party — the full audit trail, mismatches included.{% endif %}
-  </span>
-</div>
+<p class="subtitle" style="margin-top:-12px;">Searching or filtering the table itself only changes which rows you're looking at — it never touches the three tiles above. The Branch dropdown above is different: picking a branch there re-scopes the tiles too, down to that branch alone.</p>
 
 {% if rows %}
-<p style="margin-bottom:8px;"><a class="btn secondary" href="{{ url_for('tb_cross_check_export', from_date=from_date, to_date=to_date, branch_id=selected_branch_id, view=view) }}">Export to Excel</a></p>
+<p style="margin-bottom:8px;"><a class="btn secondary" href="{{ url_for('tb_cross_check_export', branch_id=selected_branch_id) }}">Export to Excel</a></p>
 <div class="table-tools" data-tt="tbcheck">
   <input type="search" data-tt-search placeholder="Search party, branch...">
   <span data-tt-filters></span>
@@ -80,7 +60,7 @@
   <thead>
     <tr>
       <th><input type="checkbox" data-tt-select-all title="Select all visible"></th>
-      <th>Party</th><th data-tt-filter data-tt-col="branch">Branch</th><th data-tt-filter data-tt-col="grouping">Grouping</th><th>Week Ending</th><th>Opening</th><th>Sales</th>
+      <th>Party</th><th data-tt-filter data-tt-col="branch">Branch</th><th data-tt-filter data-tt-col="grouping">Grouping</th><th>As Of</th><th>Opening</th><th>Sales</th>
       <th>Credit Notes</th><th>Debit Notes</th><th>Receipts</th><th>Journals</th>
       <th>Closing (Workings)</th><th>Closing (TB/Tally)</th><th>Difference</th>
       <th data-tt-filter data-tt-col="reconciled">Reconciled</th>
@@ -89,11 +69,11 @@
   <tbody>
   {% for row in rows %}
     <tr data-tt-row {% if not row.reconciled %}style="background:#fef2f2;"{% endif %}>
-      <td><input type="checkbox" data-tt-row-select value="{{ row.party_id }}|{{ row.branch_id }}|{{ row.week_ending }}"></td>
+      <td><input type="checkbox" data-tt-row-select value="{{ row.party_id }}|{{ row.branch_id }}|{{ row.as_of }}"></td>
       <td>{{ row.party_id }}</td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td data-tt-col="grouping">{{ groupings.get((row.party_id, row.branch_id), "Unclassified") }}</td>
-      <td>{{ row.week_ending }}</td>
+      <td>{{ row.as_of }}</td>
       <td>{{ row.opening|inr }}</td>
       <td>{{ row.sales|inr }}</td>
       <td>{{ row.credit_notes|inr }}</td>
@@ -106,7 +86,7 @@
       <td data-tt-col="reconciled">{% if row.reconciled %}<span class="pill ok">Yes</span>{% else %}<span class="pill fail">No</span>{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="15" class="empty">No weeks recorded yet — run an extraction first.</td></tr>
+    <tr><td colspan="15" class="empty">No parties recorded yet — run an extraction first.</td></tr>
   {% endfor %}
   </tbody>
 </table>

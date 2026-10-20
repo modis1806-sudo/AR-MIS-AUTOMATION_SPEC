@@ -186,6 +186,12 @@ class WeeklySnapshotRow:
     week_ending. Optional/None only for rows that predate this field
     existing at all - see storage.py's own migration for how those are
     backfilled.
+
+    LEGACY (client's explicit call this session): no code writes or
+    reads this shape any more - PartyTBBalance below replaces its actual
+    job. The weekly_snapshot table itself is deliberately not dropped
+    (never-discard-data), so this dataclass stays only to document what
+    a pre-existing row on a live database still looks like.
     """
 
     party_id: str
@@ -202,6 +208,24 @@ class WeeklySnapshotRow:
     reconciled: bool
     difference: Decimal
     period_start: date | None = None
+
+
+@dataclass(frozen=True)
+class PartyTBBalance:
+    """Replaces weekly_snapshot's actual job (client's explicit call this
+    session): Tally's own latest stated closing balance for one party,
+    one row per (party_id, branch_id), upserted - never appended - on
+    every extraction. No history on purpose: the registers can already
+    reconstruct any party's own past position on demand
+    (ar_mis.rollforward.compute_party_closings_as_of), so the only thing
+    worth persisting here is the one fact nothing else can reconstruct
+    after the fact - what Tally said, right now.
+    """
+
+    party_id: str
+    branch_id: str
+    as_of: date
+    closing_extracted: Decimal
 
 
 @dataclass(frozen=True)

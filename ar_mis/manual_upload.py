@@ -85,7 +85,7 @@ def process_manual_upload(
     later recover exactly which rows this upload covers, same reason the
     live path now needs it (see ar_mis.config's own docstring).
     """
-    if store.has_weekly_snapshot_for_branch_week(branch_id, to_date):
+    if store.has_extraction_for_branch_week(branch_id, to_date):
         raise ManualUploadRefused(
             f"Branch '{branch_name}' already has recorded data for the week ending "
             f"{to_date.isoformat()} (from live extraction or an earlier manual upload). "

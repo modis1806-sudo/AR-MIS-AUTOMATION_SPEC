@@ -23,7 +23,6 @@ from ar_mis.models import (
     Voucher,
     VoucherType,
     WeeklyMovementRow,
-    WeeklySnapshotRow,
     YtdDebtorVoucherRow,
 )
 from ar_mis.reconciliation import DriftFinding
@@ -116,98 +115,24 @@ def test_all_customer_masters_returns_fully_typed_records(store):
     assert records["P2"].grouping is None
 
 
-def test_latest_weekly_snapshot_closing_by_party_is_empty_when_no_snapshots(store):
-    assert store.latest_weekly_snapshot_closing_by_party(date(2026, 1, 12)) == {}
+def test_all_party_tb_balances_is_empty_when_none_recorded(store):
+    assert store.all_party_tb_balances() == {}
 
 
-def test_latest_weekly_snapshot_closing_by_party_picks_latest_week_per_party(store):
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 12),
-            opening=Decimal("1000.00"), sales=Decimal("500.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("1500.00"), closing_extracted=Decimal("1490.00"),
-            reconciled=True, difference=Decimal("10.00"),
-        )
-    )
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="P2", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("0.00"), sales=Decimal("2000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("2000.00"), closing_extracted=Decimal("2000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
-    result = store.latest_weekly_snapshot_closing_by_party(date(2026, 1, 12))
-    assert result == {("P1", "KOL"): Decimal("1490.00"), ("P2", "KOL"): Decimal("2000.00")}
+def test_all_party_tb_balances_reflects_the_latest_upsert_per_party(store):
+    store.upsert_party_tb_balance("P1", "KOL", date(2026, 1, 5), Decimal("1000.00"))
+    store.upsert_party_tb_balance("P1", "KOL", date(2026, 1, 12), Decimal("1490.00"))
+    store.upsert_party_tb_balance("P2", "KOL", date(2026, 1, 5), Decimal("2000.00"))
+    result = store.all_party_tb_balances()
+    assert result[("P1", "KOL")].closing_extracted == Decimal("1490.00")
+    assert result[("P1", "KOL")].as_of == date(2026, 1, 12)
+    assert result[("P2", "KOL")].closing_extracted == Decimal("2000.00")
 
 
-def test_all_weekly_snapshot_rows_is_empty_before_any_week(store):
-    assert store.all_weekly_snapshot_rows() == []
-
-
-def test_all_weekly_snapshot_rows_returns_full_history_typed(store):
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="P2", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("0.00"), sales=Decimal("2000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("2000.00"), closing_extracted=Decimal("2000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("990.00"),
-            reconciled=False, difference=Decimal("10.00"),
-        )
-    )
-    rows = store.all_weekly_snapshot_rows()
-    assert len(rows) == 2
-    # Ordered by party_id first, so P1 (the mismatched one) comes first.
-    assert rows[0].party_id == "P1"
-    assert rows[0].reconciled is False
-    assert rows[0].difference == Decimal("10.00")
-    assert rows[0].closing_extracted == Decimal("990.00")
-    assert rows[1].party_id == "P2"
-    assert rows[1].reconciled is True
-
-
-def test_latest_weekly_snapshot_closing_by_party_respects_as_of_cutoff(store):
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 5),
-            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="P1", branch_id="KOL", week_ending=date(2026, 1, 12),
-            opening=Decimal("1000.00"), sales=Decimal("500.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("1500.00"), closing_extracted=Decimal("1500.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
-    # Only the week on-or-before as_of counts, not the later one.
-    result = store.latest_weekly_snapshot_closing_by_party(date(2026, 1, 5))
-    assert result == {("P1", "KOL"): Decimal("1000.00")}
+def test_all_party_tb_balances_filters_by_branch(store):
+    store.upsert_party_tb_balance("P1", "KOL", date(2026, 1, 5), Decimal("1000.00"))
+    store.upsert_party_tb_balance("P2", "MUM", date(2026, 1, 5), Decimal("2000.00"))
+    assert set(store.all_party_tb_balances("KOL")) == {("P1", "KOL")}
 
 
 def test_upsert_customer_master_does_not_touch_credit_period_or_grouping_for_existing_party(store):
@@ -295,31 +220,17 @@ def test_all_pre_mis_adjustments_returns_everything_oldest_first(store):
     assert adjustments[0].adjusted_by == "maker"
 
 
-def test_weekly_snapshot_is_append_only(store):
-    row = WeeklySnapshotRow(
-        party_id="P1",
-        branch_id="KOL",
-        week_ending=date(2026, 1, 5),
-        opening=Decimal("100000.00"),
-        sales=Decimal("5000.00"),
-        credit_notes=Decimal("0.00"),
-        debit_notes=Decimal("0.00"),
-        receipts=Decimal("-2000.00"),
-        journals=Decimal("0.00"),
-        closing_computed=Decimal("103000.00"),
-        closing_extracted=Decimal("103000.00"),
-        reconciled=True,
-        difference=Decimal("0.00"),
-    )
-    store.append_weekly_snapshot(row)
-    rows = store.weekly_snapshots_for_week(date(2026, 1, 5))
-    assert len(rows) == 1
-    assert rows[0]["reconciled"] == 1
-
-    # Duplicate week/party/branch must fail, not silently overwrite -
-    # append-only means a correction is a new week, not a mutated row.
-    with pytest.raises(Exception):
-        store.append_weekly_snapshot(row)
+def test_party_tb_balance_upsert_overwrites_not_appends(store):
+    # Deliberately the OPPOSITE of this app's usual append-only rule
+    # (ar_mis.models.PartyTBBalance's own docstring): there is only ever
+    # one row per party - a second upsert for the same party/branch
+    # replaces it, never adds a second row.
+    store.upsert_party_tb_balance("P1", "KOL", date(2026, 1, 5), Decimal("103000.00"))
+    store.upsert_party_tb_balance("P1", "KOL", date(2026, 1, 12), Decimal("150000.00"))
+    balances = store.all_party_tb_balances()
+    assert len(balances) == 1
+    assert balances[("P1", "KOL")].closing_extracted == Decimal("150000.00")
+    assert balances[("P1", "KOL")].as_of == date(2026, 1, 12)
 
 
 def _weekly_movement_row(week_ending, total_ar=Decimal("100000.00")):
@@ -566,22 +477,6 @@ def test_all_register_row_corrections_filters_by_branch(store):
     assert len(store.all_register_row_corrections("KOL")) == 1
     assert len(store.all_register_row_corrections("MUM")) == 1
     assert len(store.all_register_row_corrections()) == 2
-
-
-def test_has_weekly_snapshot_for_party_week(store):
-    assert store.has_weekly_snapshot_for_party_week("Acme", "KOL", date(2026, 9, 12)) is False
-    store.append_weekly_snapshot(
-        WeeklySnapshotRow(
-            party_id="Acme", branch_id="KOL", week_ending=date(2026, 9, 12),
-            opening=Decimal("0.00"), sales=Decimal("1000.00"), credit_notes=Decimal("0.00"),
-            debit_notes=Decimal("0.00"), receipts=Decimal("0.00"), journals=Decimal("0.00"),
-            closing_computed=Decimal("1000.00"), closing_extracted=Decimal("1000.00"),
-            reconciled=True, difference=Decimal("0.00"),
-        )
-    )
-    assert store.has_weekly_snapshot_for_party_week("Acme", "KOL", date(2026, 9, 12)) is True
-    # A different party in the same branch/week must not be affected.
-    assert store.has_weekly_snapshot_for_party_week("Beta", "KOL", date(2026, 9, 12)) is False
 
 
 def test_ptp_status_log_tracks_latest_status_per_week(store):

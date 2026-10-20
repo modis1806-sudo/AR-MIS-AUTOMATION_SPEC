@@ -14,9 +14,10 @@ this stays testable independent of Flask/SQLite.
 Client's explicit later call on this dashboard's single most important
 number: Total AR must be bulletproof against "my books say X, your report
 says Y" - so it is sourced from Tally's own closing balance per party
-(Store.latest_weekly_snapshot_closing_by_party), not recomputed from the
-invoice-level registers. Two parallel universes deliberately coexist on
-this one screen:
+(Store.all_party_tb_balances - the single current reading per party,
+never a stored history), not recomputed from the invoice-level
+registers. Two parallel universes deliberately coexist on this one
+screen:
 
 - **"Position" figures - Tally-sourced, ties exactly to the books**:
   Total AR, Related Party AR, and Reporting Period AR (Total AR minus
@@ -147,13 +148,16 @@ def compute_ar_snapshot(
     this module has no reason to also depend on) rather than recomputed
     here.
 
-    `tally_closing_by_party` (Store.latest_weekly_snapshot_closing_by_party(as_of),
-    same keying) is each party's own latest known Tally closing balance on
-    or before `as_of` - the books' own number, and now the source of
-    Total AR, Related Party AR, and Reporting Period AR (see this
-    module's own docstring for why). A party absent from this dict has no
-    Tally balance on record yet and simply isn't counted - there's
-    nothing to sum, not a zero to assume.
+    `tally_closing_by_party` (derived from Store.all_party_tb_balances(),
+    same keying) is each party's own single current Tally closing
+    balance - the books' own number, and now the source of Total AR,
+    Related Party AR, and Reporting Period AR (see this module's own
+    docstring for why). It is deliberately NOT scoped by `as_of` - there
+    is only ever one reading per party, as of whenever that party was
+    last extracted, so this figure never moves when `as_of` is changed
+    to look at a different date for the registers-side figures below. A
+    party absent from this dict has no Tally balance on record yet and
+    simply isn't counted - there's nothing to sum, not a zero to assume.
     """
     pre_mis_outstanding_total = sum((c.pre_mis_outstanding for c in customer_masters.values()), Decimal("0.00"))
 

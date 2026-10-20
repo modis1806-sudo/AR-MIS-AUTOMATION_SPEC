@@ -73,40 +73,37 @@ _TYPE_TO_FIELD = {
 }
 
 
-def resolve_opening_balances_from_registers(
+def compute_party_closings_as_of(
     store,
     branch_id: str,
     party_ledger_names: set[str],
-    period_start: date,
-) -> dict[str, Decimal]:
-    """Opening Balance per Section 2.5, recomputed fresh every run rather
-    than chained off a prior run's own stored closing - the client's own
-    call this session ("why not use simple maths... instead of so much
-    criticality"), after the chained version's real, confirmed failure
-    mode: a backdated correction landing earlier than weeks already on
-    record resolved its opening from the wrong week (the bug that was
-    Store.get_latest_closing's whole reason for existing). There is no
-    chain left to strand, so there's nothing left to get wrong this way.
+    as_of: date,
+    corrections: list[RegisterRowCorrection] = (),
+) -> dict[str, PartyMovement]:
+    """Section 2.4's Opening+Movements=Closing formula, evaluated fresh
+    from scratch every single time this is called - never a stored or
+    chained prior result. Replaces BOTH the original chained roll-
+    forward AND this session's own first fix (resolve_opening_balances_
+    from_registers, which only widened the row set but still split
+    "opening" from "this run's own movement"): the client's further call
+    this session removed weekly_snapshot entirely, so there is no longer
+    any separate "this run's own week" to split out at all - TB Cross-
+    Check, AR Snapshot, and every other caller just want one party's
+    whole cumulative position as of one date, computed live.
 
-    Opening = Pre-MIS Outstanding + every register movement already on
-    record for that party dated strictly before `period_start` (this
-    run's own window start) - exactly Section 2.4's own
-    Opening+Movements=Closing formula, just evaluated once, from scratch,
-    over whatever history already exists, instead of trusting a running
-    total. Same registers, same aggregate_party_movements_from_registers
-    used for this run's own week's movements below - the only difference
-    is the row set (everything before this run) and the opening handed
-    in (always Pre-MIS, never a prior result).
+    Opening is always Pre-MIS Outstanding (Layer 1, never a prior
+    result); the movement is every register row on record for that
+    party dated on or before `as_of`, summed through the same
+    aggregate_party_movements_from_registers a normal weekly run always
+    used for its own week's movement - this just widens the row set to
+    the party's entire history instead of one run's own vouchers.
     """
-    prior_sales_dn = [r for r in store.all_sales_dn_rows(branch_id) if r.invoice_date < period_start]
-    prior_cn = [r for r in store.all_credit_note_rows(branch_id) if r.cn_date < period_start]
-    prior_rj = [r for r in store.all_receipt_journal_rows(branch_id) if r.txn_date < period_start]
+    sales_dn = [r for r in store.all_sales_dn_rows(branch_id) if r.invoice_date <= as_of]
+    cn = [r for r in store.all_credit_note_rows(branch_id) if r.cn_date <= as_of]
+    rj = [r for r in store.all_receipt_journal_rows(branch_id) if r.txn_date <= as_of]
 
     pre_mis_openings = {party: store.get_opening_balance(party, branch_id) for party in party_ledger_names}
-    prior_movements = aggregate_party_movements_from_registers(
-        prior_sales_dn, prior_cn, prior_rj, party_ledger_names, pre_mis_openings
-    )
-    return {party: prior_movements[party].closing_computed for party in party_ledger_names}
+    return aggregate_party_movements_from_registers(sales_dn, cn, rj, party_ledger_names, pre_mis_openings, corrections)
 
 
 def aggregate_party_movements(

@@ -30,7 +30,6 @@ from ar_mis.models import (
     SalesDNRegisterRow,
     Voucher,
     VoucherType,
-    WeeklySnapshotRow,
 )
 from ar_mis.orchestration import BranchRunOutcome, ExtractionOutcome
 from ar_mis.reconciliation import reconcile_all_parties
@@ -41,7 +40,7 @@ from ar_mis.registers import (
     build_receipt_journal_register_rows,
     build_sales_dn_register_row,
 )
-from ar_mis.rollforward import aggregate_party_movements_from_registers, resolve_opening_balances_from_registers
+from ar_mis.rollforward import compute_party_closings_as_of
 from ar_mis.sign import flip_sign
 from ar_mis.storage import Store
 from ar_mis.tally_client import TallyClient
@@ -58,21 +57,21 @@ def process_branch_data(
     period_start: date | None = None,
 ) -> BranchRunOutcome:
     """Roll forward, auto-discover new customers, reconcile at zero
-    tolerance, and write Layer 2 (weekly_snapshot), the voucher log, and
-    the invoice-level registers - for EVERY party, regardless of whether
-    that party's own reconciliation matched.
+    tolerance, and write the voucher log and invoice-level registers -
+    for EVERY party, regardless of whether that party's own
+    reconciliation matched.
 
     This is a deliberate reversal of this module's original all-or-
     nothing gate: the client's explicit instruction is that data must
-    never be discarded, even when it doesn't tie out. A party's
-    weekly_snapshot row still records the real `reconciled`/`difference`
-    it computed - a mismatch is a fact to surface (see the TB
-    Reconciliation Cross-Check sheet, ar_mis.reconciliation_report),
-    never a reason to withhold that week's data for every OTHER party in
-    the branch too, which is what the old halt-the-whole-branch behavior
-    did. `BranchRunOutcome.failed_parties` still reports which parties
-    didn't reconcile this run, for anything downstream that needs to
-    flag it (the webapp's own combined Cross-Check banner).
+    never be discarded, even when it doesn't tie out. `BranchRunOutcome.
+    failed_parties` still reports which parties didn't reconcile this
+    run, for anything downstream that needs to flag it (the webapp's own
+    combined Cross-Check banner) - but nothing about a mismatch is ever
+    frozen into storage: Store.party_tb_balance only ever remembers
+    Tally's own stated figure, never this app's own workings, so a
+    mismatch is always re-detected fresh (ar_mis.rollforward.
+    compute_party_closings_as_of) whenever anyone looks, never read back
+    from what this run happened to compute.
 
     `extracted_at` is the real wall-clock moment this run happened (for
     the Registers/Reports screens' freshness indicator) - defaults to
@@ -90,11 +89,10 @@ def process_branch_data(
     Tally pull needs it applied, some manual-upload sources might not.
 
     `period_start` is this run's own real start date - stored alongside
-    week_ending so Store.delete_branch_week can later recover exactly
-    which register rows belong to this run, now that extraction no
-    longer runs on a fixed calendar grid (see ar_mis.config's own
-    docstring for why that assumption was dropped). None only for a
-    caller that genuinely has no meaningful start date of its own.
+    week_ending (now on extraction_log rather than weekly_snapshot,
+    which this version stops writing) for Branch Master's coverage
+    summary. None only for a caller that genuinely has no meaningful
+    start date of its own.
     """
     party_names = set(closing_extracted)
 
@@ -110,60 +108,27 @@ def process_branch_data(
     for party in new_parties:
         store.upsert_customer_master(CustomerMasterRecord(party, party, branch_id, Decimal("0.00")))
 
-    # Registers are built FIRST, before movements - Section 4.2's "TB vs
-    # Registers" redesign needs the movements that feed weekly_snapshot
-    # to come from exactly what the registers captured for this run, not
-    # a separate, exclusion-blind re-sum of the same raw vouchers (see
-    # aggregate_party_movements_from_registers' own docstring for why).
+    # Registers are built FIRST - compute_party_closings_as_of below
+    # reads them straight back out, so this run's own vouchers must
+    # already be persisted for its own reconciliation to see them.
     register_exceptions, sales_dn_rows_built, cn_rows_built, rj_rows_built = _build_and_persist_registers(
         store, branch_id, all_vouchers
     )
 
-    # The opening cutoff must never land AFTER any of this run's own
-    # vouchers - resolve_opening_balances_from_registers reads back
-    # whatever is already in the registers at this point, which (per the
-    # comment above) now includes the rows this exact call just
-    # persisted. Falling back to week_ending here would be wrong for any
-    # run whose own vouchers are dated before it (the normal case): a
-    # voucher would be counted once as this run's own movement AND again
-    # as a "prior" opening component. A caller with no period_start of
-    # its own (rare - every real caller has one) still gets a safe
-    # cutoff: the earliest date actually present in this run's own
-    # vouchers, or week_ending only when there are no vouchers at all to
-    # collide with.
-    if period_start is not None:
-        opening_cutoff = period_start
-    elif all_vouchers:
-        opening_cutoff = min(v.voucher_date for v in all_vouchers)
-    else:
-        opening_cutoff = week_ending
-    openings = resolve_opening_balances_from_registers(store, branch_id, party_names, opening_cutoff)
-    movements = aggregate_party_movements_from_registers(
-        sales_dn_rows_built, cn_rows_built, rj_rows_built, party_names, openings
-    )
+    # Live reconciliation, client's explicit call this session: Tally's
+    # own stated closing vs one full recompute from EVERY register row
+    # on record for that party through week_ending, done fresh here and
+    # again every time anyone views TB Cross-Check later - never a
+    # stored breakdown, never a chain. There is no separate "this run's
+    # own movement" to isolate any more (that was weekly_snapshot's own
+    # job, now gone): a party's whole position as of a date is one
+    # number, computed the same way regardless of who's asking or when.
+    movements = compute_party_closings_as_of(store, branch_id, party_names, week_ending)
     results = reconcile_all_parties(branch_id, movements, closing_extracted)
     failed = [r for r in results if not r.reconciled]
 
-    for result in results:
-        movement = movements[result.party_ledger_name]
-        store.append_weekly_snapshot(
-            WeeklySnapshotRow(
-                party_id=result.party_ledger_name,
-                branch_id=branch_id,
-                week_ending=week_ending,
-                opening=movement.opening,
-                sales=movement.sales,
-                credit_notes=movement.credit_notes,
-                debit_notes=movement.debit_notes,
-                receipts=movement.receipts,
-                journals=movement.journals,
-                closing_computed=result.closing_computed,
-                closing_extracted=result.closing_extracted,
-                reconciled=result.reconciled,
-                difference=result.difference,
-                period_start=period_start,
-            )
-        )
+    for party in party_names:
+        store.upsert_party_tb_balance(party, branch_id, week_ending, closing_extracted[party])
 
     for voucher in all_vouchers:
         for entry in voucher.entries:
@@ -180,7 +145,7 @@ def process_branch_data(
             )
 
     resolved_extracted_at = extracted_at or datetime.now()
-    store.record_extraction_run(branch_id, week_ending, resolved_extracted_at)
+    store.record_extraction_run(branch_id, week_ending, resolved_extracted_at, period_start)
     if register_exceptions.unattributable_party:
         store.append_register_build_exceptions(
             branch_id, week_ending, register_exceptions.unattributable_party, resolved_extracted_at
@@ -216,16 +181,14 @@ def _build_and_persist_registers(
 ]:
     """Builds and persists the Sales & DN, Credit Note, and Receipt &
     Journal registers (docs/registers_and_reporting_design.md items 1-2)
-    from this run's vouchers - only ever called after reconciliation has
-    already cleared (see process_branch_data), matching the same
-    "never write partial/wrong data" principle already enforced for
-    weekly_snapshot and voucher_log.
+    from this run's vouchers.
 
     Also returns the rows actually built THIS run (not the branch's full
-    history) - process_branch_data needs exactly these, and only these,
-    to compute this run's own movements from the registers rather than
-    the raw vouchers (Section 4.2's "TB vs Registers" redesign; see
-    ar_mis.rollforward.aggregate_party_movements_from_registers).
+    history) - register_build_exceptions needs exactly these to report
+    what this run itself couldn't attribute; process_branch_data's own
+    reconciliation reads the full history straight back out instead
+    (ar_mis.rollforward.compute_party_closings_as_of), now that it has
+    no separate "this run's own movement" to isolate.
 
     Sales & DN rows are built and persisted FIRST, then the bill-
     reference lookup is built from the branch's ENTIRE tracked history

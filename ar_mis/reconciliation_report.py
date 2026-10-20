@@ -1,25 +1,54 @@
 """TB Reconciliation Cross-Check - the client's explicit ask this
-session: the Trial Balance / Sundry Debtors closing balance this app
-already extracts from Tally (weekly_snapshot.closing_extracted) kept
-visible in its own sheet, one row per party per branch per week,
-alongside this app's own workings (opening + Sales + DN + CN + Receipts
-+ Journals = closing_computed) and the difference between the two.
+session, redesigned again later the same session (client's further
+call): Tally's own stated closing balance per party, compared against
+this app's own workings, recomputed LIVE every time this is viewed -
+never read back from a stored per-week history.
 
-This module does no independent computation - every field it surfaces is
-already stored by ar_mis.pipeline.process_branch_data on every run
-(reconciled and unreconciled alike, since data is never discarded - see
-that module's own docstring). It only adds the summary rollup: how many
-parties currently show an unresolved difference, and how much, so a
-Maker or Checker can tell at a glance whether today's consolidated
-figures are trustworthy without scanning every row by hand.
+weekly_snapshot (the original design here) stored one row per party per
+branch per week, forever - the client's own, correct objection: that
+table's only real job was to cross-verify the registers' sanity and
+give a current Total AR, neither of which needed a growing history to
+do. The registers themselves (append-only, every voucher already
+date-stamped) can reconstruct a party's cumulative position as of any
+date on demand (ar_mis.rollforward.compute_party_closings_as_of), so the
+only fact worth persisting at all is the one thing nothing else can
+reconstruct after the fact: what Tally itself said, right now
+(Store.party_tb_balance, upserted - never appended - on every
+extraction).
+
+So this module now does real computation, not just a rollup over
+already-stored figures: compute_tb_cross_check_rows is the live
+Workings-vs-Tally comparison itself, one row per party, always exactly
+one - there is no "latest per party" reduction left to do, because
+there is no history to reduce. The three summary functions below it
+take that rows list directly.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from ar_mis.models import WeeklySnapshotRow
+from ar_mis.money import difference, is_match
+from ar_mis.rollforward import compute_party_closings_as_of
+
+
+@dataclass(frozen=True)
+class TBCrossCheckRow:
+    party_id: str
+    branch_id: str
+    as_of: date
+    opening: Decimal
+    sales: Decimal
+    credit_notes: Decimal
+    debit_notes: Decimal
+    receipts: Decimal
+    journals: Decimal
+    closing_computed: Decimal
+    closing_extracted: Decimal
+    reconciled: bool
+    difference: Decimal
 
 
 @dataclass
@@ -45,96 +74,87 @@ class ConcentrationRiskSummary:
     top_n_percent: Decimal
 
 
-def compute_latest_per_party(rows: list[WeeklySnapshotRow], as_of: date | None = None) -> list[WeeklySnapshotRow]:
-    """Shared reduction behind compute_tb_cross_check_summary and
-    compute_unreconciled_parties, and TB Cross-Check's own default table
-    view (client's own later ask: the table should default to each
-    party's current state, same as its own tiles already show, rather
-    than always listing every week ever recorded) - only each party's
-    most recently recorded week (on or before `as_of`, when given)
-    reflects their CURRENT state; earlier weeks for the same party are
-    history, not still-open exceptions. Public (not the underscore-
-    prefixed `_latest_per_party` this was before) specifically so the
-    webapp route can reuse the exact same reduction the tiles already
-    use, rather than a second, differently-written one that could drift.
+def compute_tb_cross_check_rows(store, branch_id: str | None = None) -> list[TBCrossCheckRow]:
+    """The live comparison itself: Tally's current reading per party
+    (Store.all_party_tb_balances) against a fresh recompute of that same
+    party's cumulative position, as of THAT reading's own date, from
+    every register row on record (ar_mis.rollforward.
+    compute_party_closings_as_of) - exactly Section 2.4's Opening+
+    Movements=Closing formula, evaluated from scratch, never read back
+    from storage.
+
+    Different parties can legitimately have different `as_of` dates
+    (branches extract on their own schedules) - grouped by (branch_id,
+    as_of) so every party sharing one run's own reading gets recomputed
+    in a single pass over that branch's registers, rather than one pass
+    per party.
     """
-    eligible = rows if as_of is None else [r for r in rows if r.week_ending <= as_of]
-    latest_by_party: dict[tuple[str, str], WeeklySnapshotRow] = {}
-    for row in sorted(eligible, key=lambda r: r.week_ending):
-        latest_by_party[(row.party_id, row.branch_id)] = row
-    return list(latest_by_party.values())
+    tb_balances = store.all_party_tb_balances(branch_id)
+    groups: dict[tuple[str, date], set[str]] = defaultdict(set)
+    for (party_id, b_id), balance in tb_balances.items():
+        groups[(b_id, balance.as_of)].add(party_id)
+
+    rows: list[TBCrossCheckRow] = []
+    for (b_id, as_of), parties in groups.items():
+        movements = compute_party_closings_as_of(store, b_id, parties, as_of)
+        for party_id in parties:
+            m = movements[party_id]
+            closing_extracted = tb_balances[(party_id, b_id)].closing_extracted
+            rows.append(
+                TBCrossCheckRow(
+                    party_id=party_id, branch_id=b_id, as_of=as_of,
+                    opening=m.opening, sales=m.sales, credit_notes=m.credit_notes,
+                    debit_notes=m.debit_notes, receipts=m.receipts, journals=m.journals,
+                    closing_computed=m.closing_computed, closing_extracted=closing_extracted,
+                    reconciled=is_match(m.closing_computed, closing_extracted),
+                    difference=difference(m.closing_computed, closing_extracted),
+                )
+            )
+    return rows
 
 
-def compute_tb_cross_check_summary(
-    rows: list[WeeklySnapshotRow], as_of: date | None = None
-) -> TBCrossCheckSummary:
-    """Summarizes CURRENT state, not a count across all of history: a
-    party who mismatched three months ago and has reconciled clean every
-    week since must not still count as "currently wrong" - only that
-    party's most recently recorded week decides whether they're counted
-    here. `rows` should be every recorded week for every party (full
-    history, e.g. Store.all_weekly_snapshot_rows) - this function does
-    its own latest-per-party reduction, so the caller doesn't need to
-    pre-filter.
-
-    `as_of` (client's explicit ask: a single running total they can hold
-    up against a real Trial Balance run in Tally for a chosen date) scopes
-    "latest" to each party's most recent week ON OR BEFORE that date,
-    rather than the true latest regardless of date - None (the default)
-    keeps the original all-time-latest behavior every existing caller
-    already relies on. Always reduce over the FULL row history passed in,
-    never a range-filtered subset: a party not touched again within a
-    narrow display window still owes whatever their last known closing
-    was, and dropping them would understate this total, not just narrow
-    which weeks are shown.
+def compute_tb_cross_check_summary(rows: list[TBCrossCheckRow]) -> TBCrossCheckSummary:
+    """Summarizes the CURRENT state - `rows` is already exactly one row
+    per party (compute_tb_cross_check_rows' own guarantee), so there is
+    nothing further to reduce here, unlike the old per-week-history
+    version this replaces.
 
     `total_debtor_as_per_books` is the sum of closing_extracted (Tally's
-    own stated figure, never this app's own workings) across that same
-    latest-per-party reduction - the one number a Maker or Checker can
-    immediately compare against Tally's own Sundry Debtors total for the
-    same date to confirm the pull is complete and correct.
+    own stated figure, never this app's own workings) - the one number a
+    Maker or Checker can immediately compare against Tally's own Sundry
+    Debtors total to confirm the pull is complete and correct.
     """
-    latest = compute_latest_per_party(rows, as_of)
-    mismatched = [r for r in latest if not r.reconciled]
+    mismatched = [r for r in rows if not r.reconciled]
     return TBCrossCheckSummary(
         parties_with_current_difference=len(mismatched),
         total_current_absolute_difference=sum((abs(r.difference) for r in mismatched), Decimal("0.00")),
-        total_debtor_as_per_books=sum((r.closing_extracted for r in latest), Decimal("0.00")),
+        total_debtor_as_per_books=sum((r.closing_extracted for r in rows), Decimal("0.00")),
     )
 
 
-def compute_unreconciled_parties(
-    rows: list[WeeklySnapshotRow], as_of: date | None = None
-) -> list[WeeklySnapshotRow]:
+def compute_unreconciled_parties(rows: list[TBCrossCheckRow]) -> list[TBCrossCheckRow]:
     """The actual rows behind TBCrossCheckSummary.parties_with_current_
     difference - client's explicit ask: an "export unreconciled parties"
     action next to that tile, rather than making a Maker scroll the full
     TB Cross-Check table hunting for the non-zero Difference rows by eye.
-    Same latest-per-party-as-of-`as_of` reduction as the summary tile, so
-    the exported list can never disagree with the count shown on screen.
     Sorted by absolute difference, largest first - the ones most worth a
     human's attention lead the file, not whatever order the database
     happens to return.
     """
-    latest = compute_latest_per_party(rows, as_of)
-    mismatched = [r for r in latest if not r.reconciled]
+    mismatched = [r for r in rows if not r.reconciled]
     mismatched.sort(key=lambda r: abs(r.difference), reverse=True)
     return mismatched
 
 
-def compute_concentration_risk(
-    rows: list[WeeklySnapshotRow], as_of: date | None = None, top_n: int = 10
-) -> ConcentrationRiskSummary:
+def compute_concentration_risk(rows: list[TBCrossCheckRow], top_n: int = 10) -> ConcentrationRiskSummary:
     """AR concentration risk (client's explicit ask): are receivables
     spread across many customers, or does a handful of them make up most
     of the exposure - a real risk in its own right, independent of
     whether any of them are currently overdue.
 
-    Same latest-per-party-as-of-`as_of` reduction, and the same
-    `closing_extracted` figure (Tally's own stated truth, never this
-    app's own workings), as compute_tb_cross_check_summary's
-    `total_debtor_as_per_books` - deliberately, so this screen's "Total
-    AR" can never quietly disagree with the number already shown on TB
+    Same `closing_extracted` figure as compute_tb_cross_check_summary's
+    `total_debtor_as_per_books`, deliberately - this screen's "Total AR"
+    can never quietly disagree with the number already shown on TB
     Cross-Check. Ranked by each party's own signed outstanding (Dr
     positive/Cr negative, Section 2.3) descending, so real debtors lead
     and a credit-balance party sorts to the bottom rather than
@@ -146,9 +166,8 @@ def compute_concentration_risk(
     the absolute-amount ranking, so the percentage always reflects
     reality, never just the visible top_n slice.
     """
-    latest = compute_latest_per_party(rows, as_of)
-    total_ar = sum((r.closing_extracted for r in latest), Decimal("0.00"))
-    ranked = sorted(latest, key=lambda r: r.closing_extracted, reverse=True)[:top_n]
+    total_ar = sum((r.closing_extracted for r in rows), Decimal("0.00"))
+    ranked = sorted(rows, key=lambda r: r.closing_extracted, reverse=True)[:top_n]
 
     def _percent(amount: Decimal) -> Decimal:
         if total_ar == 0:
