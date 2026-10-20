@@ -1389,6 +1389,24 @@ class Store:
         )
         self.conn.commit()
 
+    def _sales_dn_row_from_row(self, r) -> SalesDNRegisterRow:
+        return SalesDNRegisterRow(
+            branch_id=r["branch_id"],
+            invoice_date=date.fromisoformat(r["invoice_date"]),
+            note_type=NoteType(r["note_type"]),
+            voucher_number=r["voucher_number"],
+            bill_allocation_reference=r["bill_allocation_reference"],
+            party_id=r["party_id"],
+            taxable_value=Decimal(r["taxable_value"]),
+            cgst=Decimal(r["cgst"]),
+            sgst=Decimal(r["sgst"]),
+            igst=Decimal(r["igst"]),
+            invoice_value=Decimal(r["invoice_value"]),
+            due_date=date.fromisoformat(r["due_date"]),
+            job_id=r["job_id"],
+            id=r["id"],
+        )
+
     def all_sales_dn_rows(self, branch_id: str | None = None) -> list[SalesDNRegisterRow]:
         self.conn.row_factory = sqlite3.Row
         if branch_id is None:
@@ -1397,25 +1415,16 @@ class Store:
             cur = self.conn.execute(
                 "SELECT * FROM sales_dn_register WHERE branch_id=? ORDER BY invoice_date", (branch_id,)
             )
-        return [
-            SalesDNRegisterRow(
-                branch_id=r["branch_id"],
-                invoice_date=date.fromisoformat(r["invoice_date"]),
-                note_type=NoteType(r["note_type"]),
-                voucher_number=r["voucher_number"],
-                bill_allocation_reference=r["bill_allocation_reference"],
-                party_id=r["party_id"],
-                taxable_value=Decimal(r["taxable_value"]),
-                cgst=Decimal(r["cgst"]),
-                sgst=Decimal(r["sgst"]),
-                igst=Decimal(r["igst"]),
-                invoice_value=Decimal(r["invoice_value"]),
-                due_date=date.fromisoformat(r["due_date"]),
-                job_id=r["job_id"],
-                id=r["id"],
-            )
-            for r in cur.fetchall()
-        ]
+        return [self._sales_dn_row_from_row(r) for r in cur.fetchall()]
+
+    def get_sales_dn_row_by_id(self, row_id: int) -> SalesDNRegisterRow | None:
+        """A single row by its own real id - the Edit form's own target,
+        needed to pre-fill each editable field with its current value and
+        to diff a submission against (only a field that actually changed
+        gets written - see edit_sales_dn_row)."""
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute("SELECT * FROM sales_dn_register WHERE id=?", (row_id,)).fetchone()
+        return self._sales_dn_row_from_row(r) if r is not None else None
 
     def append_credit_note_row(self, row: CreditNoteRegisterRow) -> None:
         self.conn.execute(
@@ -1611,9 +1620,16 @@ class Store:
     _AUDIT_COLUMNS_BY_REGISTER = {
         "sales_dn": _SALES_DN_AUDIT_COLUMNS, "credit_note": _CREDIT_NOTE_AUDIT_COLUMNS, "receipt_journal": _RECEIPT_JOURNAL_AUDIT_COLUMNS,
     }
-    _AUDIT_AMOUNT_COLUMN_BY_REGISTER = {
-        "sales_dn": "invoice_value", "credit_note": "cn_amount", "receipt_journal": "amount",
-    }
+
+    # Sales & DN's own editable field whitelist (client's call: money/
+    # derived fields plus Due Date and Job ID - never the identity fields
+    # Voucher No./Party/Branch/Bill Allocation Reference/Invoice Date/
+    # Note Type, since changing those has cascade implications - a CN or
+    # Receipt already matched to this row's old bill reference going
+    # silently stale - that edit_sales_dn_row doesn't handle).
+    _SALES_DN_EDITABLE_COLUMNS = [
+        "taxable_value", "cgst", "sgst", "igst", "round_off", "invoice_value", "due_date", "job_id",
+    ]
 
     def _fetch_row_dict(self, table: str, row_id: int) -> dict | None:
         self.conn.row_factory = sqlite3.Row
@@ -1639,13 +1655,43 @@ class Store:
         return cur.lastrowid
 
     def edit_sales_dn_row(
-        self, row_id: int, new_invoice_value: Decimal, reason: str, edited_by: str, edited_at: datetime
+        self, row_id: int, reason: str, edited_by: str, edited_at: datetime,
+        **changes: Decimal | date | str | None,
     ) -> int:
+        """Client's own later call (point 4/live-testing): editing only
+        Invoice Value left the real problem - an extraction that wrongly
+        captured only a discount line as the revenue item - impossible to
+        actually fix, since the Taxable Value/GST breakdown stayed wrong
+        underneath it even once the total was patched. `changes` is a
+        dict of column -> new value, restricted to _SALES_DN_EDITABLE_
+        COLUMNS, built by the caller as a diff against this row's own
+        current values (so only a field the Maker actually changed is
+        written - nothing silently reset by submitting an unmodified
+        field alongside a changed one). Raises ValueError for an unknown
+        column or an empty `changes` (nothing to update).
+        """
         before = self._fetch_row_dict("sales_dn_register", row_id)
         if before is None:
             raise ValueError(f"No sales_dn_register row with id={row_id}")
-        self.conn.execute("UPDATE sales_dn_register SET invoice_value=? WHERE id=?", (str(new_invoice_value), row_id))
-        after = dict(before, invoice_value=str(new_invoice_value))
+        unknown = set(changes) - set(self._SALES_DN_EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"Not an editable field: {', '.join(sorted(unknown))}")
+        if not changes:
+            raise ValueError("Nothing to update - every field matches its current value.")
+
+        def _serialize(col: str, value) -> str | None:
+            if col == "due_date":
+                return value.isoformat()
+            if col == "job_id":
+                return value
+            return str(value)
+
+        serialized = {col: _serialize(col, value) for col, value in changes.items()}
+        set_clause = ", ".join(f"{col}=?" for col in serialized)
+        self.conn.execute(
+            f"UPDATE sales_dn_register SET {set_clause} WHERE id=?", (*serialized.values(), row_id)
+        )
+        after = dict(before, **serialized)
         audit_id = self._record_register_audit(
             "sales_dn", "EDIT", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
             [before], [after], reason, edited_by, edited_at,
@@ -1847,7 +1893,6 @@ class Store:
 
         table = self._AUDIT_TABLE_BY_REGISTER[entry.register]
         cols = self._AUDIT_COLUMNS_BY_REGISTER[entry.register]
-        amount_col = self._AUDIT_AMOUNT_COLUMN_BY_REGISTER[entry.register]
 
         if entry.action == "DELETE":
             for row in entry.before:
@@ -1870,13 +1915,24 @@ class Store:
                         tuple(row[c] for c in cols),
                     )
             else:
+                # Full-row restore (every audited column, not just the
+                # one amount column) - needed now that edit_sales_dn_row
+                # can change several fields in one action, and correct
+                # unconditionally for the single-amount-field CN/Receipt/
+                # Journal edits too (restoring the whole row is a strict
+                # superset of restoring one column).
+                restore_cols = [c for c in cols if c != "id"]
                 for row in entry.before:
                     if self._fetch_row_dict(table, row["id"]) is None:
                         raise ValueError(
                             f"Cannot undo: {table} row {row['id']} no longer exists "
                             "(deleted or collapsed by a later action)."
                         )
-                    self.conn.execute(f"UPDATE {table} SET {amount_col}=? WHERE id=?", (row[amount_col], row["id"]))
+                    set_clause = ", ".join(f"{c}=?" for c in restore_cols)
+                    self.conn.execute(
+                        f"UPDATE {table} SET {set_clause} WHERE id=?",
+                        (*[row[c] for c in restore_cols], row["id"]),
+                    )
         else:
             raise ValueError(f"Unknown audit action: {entry.action}")
 

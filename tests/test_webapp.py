@@ -4853,11 +4853,30 @@ def test_sales_dn_register_shows_edit_delete_for_maker(client):
     assert b">Delete<" in resp.data
 
 
-def test_sales_dn_row_edit_updates_invoice_value(client):
+def _sales_dn_edit_form(client, row_id, as_of="2026-04-07", reason="test", **overrides):
+    # Mirrors the real Edit form: every editable field pre-filled with
+    # the row's own current value, so a real submission only ever
+    # changes whichever field(s) the caller overrides here.
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    row = store.get_sales_dn_row_by_id(row_id)
+    store.close()
+    data = {
+        "as_of": as_of, "row_id": str(row_id), "reason": reason,
+        "taxable_value": str(row.taxable_value), "cgst": str(row.cgst), "sgst": str(row.sgst),
+        "igst": str(row.igst), "round_off": str(row.round_off), "invoice_value": str(row.invoice_value),
+        "due_date": row.due_date.isoformat(), "job_id": row.job_id or "",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_sales_dn_row_edit_updates_invoice_value_only(client):
     row_id = _seed_sales_dn_row(client)
     resp = client.post(
         "/registers/sales-dn/edit",
-        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "Correcting a typo"},
+        data=_sales_dn_edit_form(client, row_id, reason="Correcting a typo", invoice_value="1200.00"),
         follow_redirects=True,
     )
     assert resp.status_code == 200
@@ -4866,6 +4885,7 @@ def test_sales_dn_row_edit_updates_invoice_value(client):
     rows = store.all_sales_dn_rows("KOL")
     assert len(rows) == 1
     assert rows[0].invoice_value == Decimal("1200.00")
+    assert rows[0].taxable_value == Decimal("1000.00")  # untouched
     audit = store.all_register_row_audit()
     assert len(audit) == 1
     assert audit[0].action == "EDIT"
@@ -4873,11 +4893,54 @@ def test_sales_dn_row_edit_updates_invoice_value(client):
     store.close()
 
 
+def test_sales_dn_row_edit_updates_taxable_value_without_touching_invoice_value(client):
+    # Client's own real case: Fulcrum/Gourab had the discount wrongly
+    # captured as the revenue item, leaving Taxable Value wrong even
+    # though Invoice Value needed no change - this is exactly that fix.
+    row_id = _seed_sales_dn_row(client)
+    resp = client.post(
+        "/registers/sales-dn/edit",
+        data=_sales_dn_edit_form(client, row_id, reason="Taxable Value wrongly captured as the discount line", taxable_value="950.00"),
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    row = Store(client.application.config["DB_PATH"]).all_sales_dn_rows("KOL")[0]
+    assert row.taxable_value == Decimal("950.00")
+    assert row.invoice_value == Decimal("1000.00")  # untouched
+
+
+def test_sales_dn_row_edit_updates_due_date_and_job_id(client):
+    row_id = _seed_sales_dn_row(client)
+    resp = client.post(
+        "/registers/sales-dn/edit",
+        data=_sales_dn_edit_form(client, row_id, due_date="2026-06-15", job_id="JOB-42"),
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    row = Store(client.application.config["DB_PATH"]).all_sales_dn_rows("KOL")[0]
+    assert row.due_date == date(2026, 6, 15)
+    assert row.job_id == "JOB-42"
+
+
+def test_sales_dn_row_edit_rejects_a_submission_with_nothing_changed(client):
+    row_id = _seed_sales_dn_row(client)
+    resp = client.post(
+        "/registers/sales-dn/edit",
+        data=_sales_dn_edit_form(client, row_id),
+        follow_redirects=True,
+    )
+    assert b"Nothing to update" in resp.data
+    from ar_mis.storage import Store
+    assert Store(client.application.config["DB_PATH"]).all_register_row_audit() == []
+
+
 def test_sales_dn_row_edit_requires_a_reason(client):
     row_id = _seed_sales_dn_row(client)
     resp = client.post(
         "/registers/sales-dn/edit",
-        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": ""},
+        data=_sales_dn_edit_form(client, row_id, reason="", invoice_value="1200.00"),
         follow_redirects=True,
     )
     assert b"Enter a reason for this edit" in resp.data
@@ -4937,7 +5000,7 @@ def test_checker_cannot_edit_or_delete_a_sales_dn_row(roleless_client):
     row_id = _seed_sales_dn_row(roleless_client)
     resp = roleless_client.post(
         "/registers/sales-dn/edit",
-        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test"},
+        data=_sales_dn_edit_form(roleless_client, row_id, invoice_value="1200.00"),
         follow_redirects=True,
     )
     assert b"This section isn" in resp.data
@@ -5080,7 +5143,7 @@ def test_register_row_audit_log_lists_entries_and_hides_undo_from_checker(client
     row_id = _seed_sales_dn_row(client)
     client.post(
         "/registers/sales-dn/edit",
-        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test edit"},
+        data=_sales_dn_edit_form(client, row_id, reason="test edit", invoice_value="1200.00"),
     )
     resp = client.get("/registers/audit-log")
     assert resp.status_code == 200
@@ -5116,13 +5179,40 @@ def test_register_row_audit_undo_restores_a_deleted_row(client):
     store.close()
 
 
+def test_register_row_audit_undo_restores_every_field_of_a_multi_field_edit(client):
+    from ar_mis.storage import Store
+
+    row_id = _seed_sales_dn_row(client)
+    client.post(
+        "/registers/sales-dn/edit",
+        data=_sales_dn_edit_form(client, row_id, taxable_value="950.00", invoice_value="1050.00", job_id="JOB-9"),
+    )
+    store = Store(client.application.config["DB_PATH"])
+    row = store.all_sales_dn_rows("KOL")[0]
+    assert row.taxable_value == Decimal("950.00")
+    assert row.invoice_value == Decimal("1050.00")
+    assert row.job_id == "JOB-9"
+    audit_id = store.all_register_row_audit()[0].id
+    store.close()
+
+    resp = client.post("/registers/audit-log/undo", data={"audit_ids": [str(audit_id)]}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Undone 1 of 1 selected" in resp.data
+    store2 = Store(client.application.config["DB_PATH"])
+    row = store2.all_sales_dn_rows("KOL")[0]
+    assert row.taxable_value == Decimal("1000.00")
+    assert row.invoice_value == Decimal("1000.00")
+    assert row.job_id is None
+    store2.close()
+
+
 def test_register_row_audit_undo_batch_skips_a_bad_id_but_undoes_the_rest(client):
     from ar_mis.storage import Store
 
     row_id = _seed_sales_dn_row(client)
     client.post(
         "/registers/sales-dn/edit",
-        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test"},
+        data=_sales_dn_edit_form(client, row_id, invoice_value="1200.00"),
     )
     store = Store(client.application.config["DB_PATH"])
     audit_id = store.all_register_row_audit()[0].id
@@ -5142,7 +5232,7 @@ def test_checker_cannot_undo_a_register_row_audit_entry(roleless_client):
     row_id = _seed_sales_dn_row(roleless_client)
     roleless_client.post(
         "/registers/sales-dn/edit",
-        data={"as_of": "2026-04-07", "row_id": str(row_id), "new_invoice_value": "1200.00", "reason": "test"},
+        data=_sales_dn_edit_form(roleless_client, row_id, invoice_value="1200.00"),
     )
     # The edit above was itself refused (checker, maker-only route) - no
     # audit entry exists yet, but the undo route must still be gated.

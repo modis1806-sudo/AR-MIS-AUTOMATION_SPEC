@@ -1663,6 +1663,28 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    # Sales & DN Edit form field name -> (parse function, row attribute).
+    # Client's own live-testing catch: Invoice Value alone couldn't fix a
+    # voucher whose Taxable Value/GST breakdown was itself wrong (the
+    # Fulcrum/Gourab case - an extraction that captured only a discount
+    # line as the revenue item) - every money/derived field is editable
+    # now, never just the one total. Identity fields (Voucher No./Party/
+    # Branch/Bill Allocation Reference/Invoice Date/Note Type) stay out
+    # of this list on purpose - see Store._SALES_DN_EDITABLE_COLUMNS.
+    def _parse_money_field(raw: str) -> Decimal:
+        return to_money(Decimal(raw))
+
+    _SALES_DN_EDIT_FIELDS = {
+        "taxable_value": (_parse_money_field, "taxable_value"),
+        "cgst": (_parse_money_field, "cgst"),
+        "sgst": (_parse_money_field, "sgst"),
+        "igst": (_parse_money_field, "igst"),
+        "round_off": (_parse_money_field, "round_off"),
+        "invoice_value": (_parse_money_field, "invoice_value"),
+        "due_date": (date.fromisoformat, "due_date"),
+        "job_id": (lambda raw: raw or None, "job_id"),
+    }
+
     @app.route("/registers/sales-dn/edit", methods=["POST"])
     @requires_role("maker")
     def sales_dn_row_edit():
@@ -1672,10 +1694,15 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         row's own real sales_dn_register.id - Branch+Voucher+Party alone
         would also work for this register (it's UNIQUE), but id is what
         Store.edit_sales_dn_row and the audit trail actually key on.
+
+        Every editable field is posted pre-filled with its current value
+        (the Edit panel's own form), so this diffs the submission against
+        the row as it stands right now and only passes Store the field(s)
+        that actually changed - submitting the form with nothing touched
+        changes nothing, rather than a no-op write to every column.
         """
         as_of_raw = request.form.get("as_of", "")
         raw_row_id = request.form.get("row_id", "")
-        raw_new_value = request.form.get("new_invoice_value", "").strip()
         reason = request.form.get("reason", "").strip()
 
         def _redisplay(message: str):
@@ -1688,14 +1715,29 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Select a valid row to edit.")
         if not reason:
             return _redisplay("Enter a reason for this edit.")
-        try:
-            new_value = to_money(Decimal(raw_new_value))
-        except InvalidOperation:
-            return _redisplay(f"'{raw_new_value}' is not a valid invoice value.")
 
         store = get_store()
+        current = store.get_sales_dn_row_by_id(row_id)
+        if current is None:
+            store.close()
+            return _redisplay(f"No sales_dn_register row with id={row_id}")
+
+        changes: dict[str, Decimal | date | str | None] = {}
+        for field_name, (parse, attr) in _SALES_DN_EDIT_FIELDS.items():
+            raw = request.form.get(field_name, "").strip()
+            try:
+                parsed = parse(raw)
+            except (InvalidOperation, ValueError):
+                store.close()
+                return _redisplay(f"'{raw}' is not a valid {field_name.replace('_', ' ')}.")
+            if parsed != getattr(current, attr):
+                changes[field_name] = parsed
+        if not changes:
+            store.close()
+            return _redisplay("Nothing to update - every field matches its current value.")
+
         try:
-            store.edit_sales_dn_row(row_id, new_value, reason, MAKER_ATTRIBUTION, datetime.now())
+            store.edit_sales_dn_row(row_id, reason, MAKER_ATTRIBUTION, datetime.now(), **changes)
         except ValueError as exc:
             store.close()
             return _redisplay(str(exc))
