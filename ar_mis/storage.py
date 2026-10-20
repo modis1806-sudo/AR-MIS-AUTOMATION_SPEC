@@ -1505,6 +1505,19 @@ class Store:
         )
         self.conn.commit()
 
+    def _credit_note_row_from_row(self, r) -> CreditNoteRegisterRow:
+        return CreditNoteRegisterRow(
+            branch_id=r["branch_id"],
+            cn_date=date.fromisoformat(r["cn_date"]),
+            voucher_number=r["voucher_number"],
+            party_id=r["party_id"],
+            cn_amount=Decimal(r["cn_amount"]),
+            bill_allocation_reference=r["bill_allocation_reference"],
+            classification=RegisterClassification(r["classification"]),
+            reason=r["reason"],
+            id=r["id"],
+        )
+
     def all_credit_note_rows(self, branch_id: str | None = None) -> list[CreditNoteRegisterRow]:
         self.conn.row_factory = sqlite3.Row
         if branch_id is None:
@@ -1513,20 +1526,15 @@ class Store:
             cur = self.conn.execute(
                 "SELECT * FROM credit_note_register WHERE branch_id=? ORDER BY cn_date", (branch_id,)
             )
-        return [
-            CreditNoteRegisterRow(
-                branch_id=r["branch_id"],
-                cn_date=date.fromisoformat(r["cn_date"]),
-                voucher_number=r["voucher_number"],
-                party_id=r["party_id"],
-                cn_amount=Decimal(r["cn_amount"]),
-                bill_allocation_reference=r["bill_allocation_reference"],
-                classification=RegisterClassification(r["classification"]),
-                reason=r["reason"],
-                id=r["id"],
-            )
-            for r in cur.fetchall()
-        ]
+        return [self._credit_note_row_from_row(r) for r in cur.fetchall()]
+
+    def get_credit_note_row_by_id(self, row_id: int) -> CreditNoteRegisterRow | None:
+        """For the Edit form to pre-fill/diff against - same purpose as
+        get_sales_dn_row_by_id.
+        """
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute("SELECT * FROM credit_note_register WHERE id=?", (row_id,)).fetchone()
+        return self._credit_note_row_from_row(r) if r is not None else None
 
     def resolve_credit_note_classification(
         self, branch_id: str, voucher_number: str, party_id: str, classification: RegisterClassification, reason: str
@@ -1616,6 +1624,20 @@ class Store:
             )
         self.conn.commit()
 
+    def _receipt_journal_row_from_row(self, r) -> ReceiptJournalRegisterRow:
+        return ReceiptJournalRegisterRow(
+            branch_id=r["branch_id"],
+            txn_date=date.fromisoformat(r["txn_date"]),
+            voucher_type=r["voucher_type"],
+            voucher_number=r["voucher_number"],
+            party_id=r["party_id"],
+            amount=Decimal(r["amount"]),
+            target_doc_no=r["target_doc_no"],
+            classification=RegisterClassification(r["classification"]),
+            narration=r["narration"],
+            id=r["id"],
+        )
+
     def all_receipt_journal_rows(self, branch_id: str | None = None) -> list[ReceiptJournalRegisterRow]:
         self.conn.row_factory = sqlite3.Row
         if branch_id is None:
@@ -1624,21 +1646,15 @@ class Store:
             cur = self.conn.execute(
                 "SELECT * FROM receipt_journal_register WHERE branch_id=? ORDER BY txn_date", (branch_id,)
             )
-        return [
-            ReceiptJournalRegisterRow(
-                branch_id=r["branch_id"],
-                txn_date=date.fromisoformat(r["txn_date"]),
-                voucher_type=r["voucher_type"],
-                voucher_number=r["voucher_number"],
-                party_id=r["party_id"],
-                amount=Decimal(r["amount"]),
-                target_doc_no=r["target_doc_no"],
-                classification=RegisterClassification(r["classification"]),
-                narration=r["narration"],
-                id=r["id"],
-            )
-            for r in cur.fetchall()
-        ]
+        return [self._receipt_journal_row_from_row(r) for r in cur.fetchall()]
+
+    def get_receipt_journal_row_by_id(self, row_id: int) -> ReceiptJournalRegisterRow | None:
+        """For the Edit form to pre-fill/diff against - same purpose as
+        get_sales_dn_row_by_id.
+        """
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute("SELECT * FROM receipt_journal_register WHERE id=?", (row_id,)).fetchone()
+        return self._receipt_journal_row_from_row(r) if r is not None else None
 
     def promote_receipt_journal_row_to_matched(self, row_id: int) -> None:
         """Auto-recheck's own row-level promotion (registers.find_pending_
@@ -1825,14 +1841,67 @@ class Store:
         self.conn.commit()
         return audit_id
 
+    _CREDIT_NOTE_EDITABLE_COLUMNS = ["cn_amount", "bill_allocation_reference"]
+
+    def _reference_resolves(self, branch_id: str, party_id: str, reference: str | None) -> bool:
+        """True when `reference` names a Sales & DN row this branch/party
+        actually tracks - the same question build_bill_reference_lookup
+        answers from an in-memory list, asked here as a direct SQL lookup
+        (storage.py never imports ar_mis.registers) for the one row Edit
+        just changed, rather than loading the whole register into memory
+        for a single-row check.
+        """
+        if reference is None:
+            return False
+        row = self.conn.execute(
+            "SELECT 1 FROM sales_dn_register WHERE branch_id=? AND party_id=? AND bill_allocation_reference=? LIMIT 1",
+            (branch_id, party_id, reference),
+        ).fetchone()
+        return row is not None
+
     def edit_credit_note_row(
-        self, row_id: int, new_cn_amount: Decimal, reason: str, edited_by: str, edited_at: datetime
+        self, row_id: int, reason: str, edited_by: str, edited_at: datetime,
+        **changes: Decimal | str | None,
     ) -> int:
+        """Client's own ask (point 7): Tally itself never recorded a bill
+        allocation for some CNs, so Edit must let a Maker assign the real
+        reference by hand, not just correct the amount. Unlike Sales &
+        DN's own edit_sales_dn_row, changing `bill_allocation_reference`
+        here has a real side effect - the row's own Classification is
+        always recomputed from the NEW reference (never left stale):
+        cleared to None -> CURRENT/Unapplied; set to a reference this
+        branch/party's Sales & DN Register actually tracks -> CURRENT/
+        Matched; set to anything else -> PENDING_REVIEW, same as a fresh
+        extraction would classify it. `changes` is a diff dict, same
+        contract as edit_sales_dn_row - only an actually-changed field is
+        written. Refuses to touch a row currently PRE_MIS_ADJUSTMENT
+        (its reference's "no match" is a confirmed human judgment call,
+        reversed only through Revert, never silently reshuffled by Edit).
+        """
         before = self._fetch_row_dict("credit_note_register", row_id)
         if before is None:
             raise ValueError(f"No credit_note_register row with id={row_id}")
-        self.conn.execute("UPDATE credit_note_register SET cn_amount=? WHERE id=?", (str(new_cn_amount), row_id))
-        after = dict(before, cn_amount=str(new_cn_amount))
+        unknown = set(changes) - set(self._CREDIT_NOTE_EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"Not an editable field: {', '.join(sorted(unknown))}")
+        if not changes:
+            raise ValueError("Nothing to update - every field matches its current value.")
+        if "bill_allocation_reference" in changes and before["classification"] == RegisterClassification.PRE_MIS_ADJUSTMENT.value:
+            raise ValueError("This CN is a confirmed Pre-MIS Adjustment - Revert it first before changing its reference.")
+
+        serialized = {col: (str(value) if col == "cn_amount" else value) for col, value in changes.items()}
+        if "bill_allocation_reference" in changes:
+            new_reference = changes["bill_allocation_reference"]
+            serialized["classification"] = (
+                RegisterClassification.CURRENT.value
+                if new_reference is None or self._reference_resolves(before["branch_id"], before["party_id"], new_reference)
+                else RegisterClassification.PENDING_REVIEW.value
+            )
+        set_clause = ", ".join(f"{col}=?" for col in serialized)
+        self.conn.execute(
+            f"UPDATE credit_note_register SET {set_clause} WHERE id=?", (*serialized.values(), row_id)
+        )
+        after = dict(before, **serialized)
         audit_id = self._record_register_audit(
             "credit_note", "EDIT", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
             [before], [after], reason, edited_by, edited_at,
@@ -1852,21 +1921,56 @@ class Store:
         self.conn.commit()
         return audit_id
 
+    _RECEIPT_JOURNAL_EDITABLE_COLUMNS = ["amount", "target_doc_no"]
+
     def edit_receipt_journal_row(
-        self, row_id: int, new_amount: Decimal, reason: str, edited_by: str, edited_at: datetime, whole_voucher: bool
+        self, row_id: int, reason: str, edited_by: str, edited_at: datetime,
+        whole_voucher: bool = False, **changes: Decimal | str | None,
     ) -> int:
         """`whole_voucher` is the Maker's own explicit choice (client's
         call: never a hardcoded default) for a voucher spanning several
-        bill-allocation lines. True collapses every line of the voucher
-        into one, carrying `new_amount` - the first line's own txn_date/
-        target_doc_no/classification/narration are kept, the rest
-        dropped, same convention the old Correct Amount action always
-        used. False edits only the one selected line.
+        bill-allocation lines, and only ever applies to an Amount edit.
+        True collapses every line of the voucher into one, carrying the
+        new amount - the first line's own txn_date/target_doc_no/
+        classification/narration are kept, the rest dropped, same
+        convention the old Correct Amount action always used. False
+        edits only the one selected line.
+
+        `changes` is a diff dict, same contract as edit_sales_dn_row.
+        Target Doc No. is also editable now (client's own ask, point 7:
+        Tally itself never recorded a bill allocation for some vouchers,
+        so a Maker needs to assign the real reference by hand) - exactly
+        like edit_credit_note_row's own bill_allocation_reference,
+        changing it always recomputes Classification from the NEW
+        reference (cleared -> CURRENT/Unapplied; resolves to a tracked
+        Sales & DN row -> CURRENT/Matched; anything else -> PENDING_
+        REVIEW), and is refused combined with whole_voucher (collapsing
+        several lines' own distinct references into one makes no sense)
+        or on a row currently PRE_MIS_ADJUSTMENT (Revert first).
         """
         anchor = self._fetch_row_dict("receipt_journal_register", row_id)
         if anchor is None:
             raise ValueError(f"No receipt_journal_register row with id={row_id}")
+        unknown = set(changes) - set(self._RECEIPT_JOURNAL_EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"Not an editable field: {', '.join(sorted(unknown))}")
+        if not changes:
+            raise ValueError("Nothing to update - every field matches its current value.")
+        if "target_doc_no" in changes and whole_voucher:
+            raise ValueError("Can't change Target Doc No. while collapsing into the whole voucher - edit this line directly instead.")
+        if "target_doc_no" in changes and anchor["classification"] == RegisterClassification.PRE_MIS_ADJUSTMENT.value:
+            raise ValueError("This line is a confirmed Pre-MIS Adjustment - Revert it first before changing its reference.")
+
         branch_id, voucher_number, party_id = anchor["branch_id"], anchor["voucher_number"], anchor["party_id"]
+
+        serialized = {col: (str(value) if col == "amount" else value) for col, value in changes.items()}
+        if "target_doc_no" in changes:
+            new_target = changes["target_doc_no"]
+            serialized["classification"] = (
+                RegisterClassification.CURRENT.value
+                if new_target is None or self._reference_resolves(branch_id, party_id, new_target)
+                else RegisterClassification.PENDING_REVIEW.value
+            )
 
         if whole_voucher:
             self.conn.row_factory = sqlite3.Row
@@ -1881,7 +1985,7 @@ class Store:
                 "DELETE FROM receipt_journal_register WHERE branch_id=? AND voucher_number=? AND party_id=?",
                 (branch_id, voucher_number, party_id),
             )
-            new_row = dict(before[0], amount=str(new_amount))
+            new_row = dict(before[0], **serialized)
             cols = self._RECEIPT_JOURNAL_AUDIT_COLUMNS
             self.conn.execute(
                 f"INSERT INTO receipt_journal_register ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
@@ -1889,9 +1993,12 @@ class Store:
             )
             after = [new_row]
         else:
-            self.conn.execute("UPDATE receipt_journal_register SET amount=? WHERE id=?", (str(new_amount), row_id))
+            set_clause = ", ".join(f"{col}=?" for col in serialized)
+            self.conn.execute(
+                f"UPDATE receipt_journal_register SET {set_clause} WHERE id=?", (*serialized.values(), row_id)
+            )
             before = [anchor]
-            after = [dict(anchor, amount=str(new_amount))]
+            after = [dict(anchor, **serialized)]
 
         audit_id = self._record_register_audit(
             "receipt_journal", "EDIT", row_id, branch_id, voucher_number, party_id,

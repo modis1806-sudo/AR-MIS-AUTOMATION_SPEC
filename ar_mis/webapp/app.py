@@ -2054,9 +2054,15 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     @app.route("/registers/credit-notes/edit", methods=["POST"])
     @requires_role("maker")
     def credit_note_row_edit():
+        """Client's own ask (point 7, live testing): Tally itself never
+        recorded a bill allocation for some CNs, so Edit must let a Maker
+        assign the real reference by hand, not just correct the amount -
+        Store.edit_credit_note_row recomputes Classification from the new
+        reference automatically. Same diff-against-current-values contract
+        as sales_dn_row_edit.
+        """
         as_of_raw = request.form.get("as_of", "")
         raw_row_id = request.form.get("row_id", "")
-        raw_new_amount = request.form.get("new_cn_amount", "").strip()
         reason = request.form.get("reason", "").strip()
 
         def _redisplay(message: str):
@@ -2069,19 +2075,38 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Select a valid row to edit.")
         if not reason:
             return _redisplay("Enter a reason for this edit.")
-        try:
-            new_amount = to_money(Decimal(raw_new_amount))
-        except InvalidOperation:
-            return _redisplay(f"'{raw_new_amount}' is not a valid CN amount.")
 
         store = get_store()
+        current = store.get_credit_note_row_by_id(row_id)
+        if current is None:
+            store.close()
+            return _redisplay(f"No credit_note_register row with id={row_id}")
+
+        raw_amount = request.form.get("new_cn_amount", "").strip()
         try:
-            store.edit_credit_note_row(row_id, new_amount, reason, MAKER_ATTRIBUTION, datetime.now())
+            new_amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            store.close()
+            return _redisplay(f"'{raw_amount}' is not a valid CN amount.")
+        raw_reference = request.form.get("bill_allocation_reference", "").strip()
+        new_reference = raw_reference or None
+
+        changes: dict[str, Decimal | str | None] = {}
+        if new_amount != current.cn_amount:
+            changes["cn_amount"] = new_amount
+        if new_reference != current.bill_allocation_reference:
+            changes["bill_allocation_reference"] = new_reference
+        if not changes:
+            store.close()
+            return _redisplay("Nothing to update - every field matches its current value.")
+
+        try:
+            store.edit_credit_note_row(row_id, reason, MAKER_ATTRIBUTION, datetime.now(), **changes)
         except ValueError as exc:
             store.close()
             return _redisplay(str(exc))
         store.close()
-        flash("CN amount updated.", "success")
+        flash("Credit note updated.", "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
     @app.route("/registers/credit-notes/delete", methods=["POST"])
@@ -2374,11 +2399,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         default (client's own call): "line" edits only the one selected
         bill-allocation line; "voucher" collapses every line of this
         voucher into one, carrying the new amount - only meaningful when
-        more than one line actually exists.
+        more than one line actually exists, and only for Amount (Store.
+        edit_receipt_journal_row refuses to combine it with a Target Doc
+        No. change).
+
+        Target Doc No. is also editable now (client's own ask, point 7:
+        Tally itself never recorded a bill allocation for some vouchers,
+        so a Maker needs to assign the real reference by hand) - Store
+        recomputes Classification from the new reference automatically.
         """
         as_of_raw = request.form.get("as_of", "")
         raw_row_id = request.form.get("row_id", "")
-        raw_new_amount = request.form.get("new_amount", "").strip()
         reason = request.form.get("reason", "").strip()
         scope = request.form.get("scope", "")
 
@@ -2394,21 +2425,40 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Choose whether this edit applies to this line only or the whole voucher.")
         if not reason:
             return _redisplay("Enter a reason for this edit.")
-        try:
-            new_amount = to_money(Decimal(raw_new_amount))
-        except InvalidOperation:
-            return _redisplay(f"'{raw_new_amount}' is not a valid amount.")
 
         store = get_store()
+        current = store.get_receipt_journal_row_by_id(row_id)
+        if current is None:
+            store.close()
+            return _redisplay(f"No receipt_journal_register row with id={row_id}")
+
+        raw_amount = request.form.get("new_amount", "").strip()
+        try:
+            new_amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            store.close()
+            return _redisplay(f"'{raw_amount}' is not a valid amount.")
+        raw_target = request.form.get("target_doc_no", "").strip()
+        new_target = raw_target or None
+
+        changes: dict[str, Decimal | str | None] = {}
+        if new_amount != current.amount:
+            changes["amount"] = new_amount
+        if new_target != current.target_doc_no:
+            changes["target_doc_no"] = new_target
+        if not changes:
+            store.close()
+            return _redisplay("Nothing to update - every field matches its current value.")
+
         try:
             store.edit_receipt_journal_row(
-                row_id, new_amount, reason, MAKER_ATTRIBUTION, datetime.now(), whole_voucher=(scope == "voucher")
+                row_id, reason, MAKER_ATTRIBUTION, datetime.now(), whole_voucher=(scope == "voucher"), **changes
             )
         except ValueError as exc:
             store.close()
             return _redisplay(str(exc))
         store.close()
-        flash("Amount updated.", "success")
+        flash("Receipt/Journal line updated.", "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals/delete", methods=["POST"])

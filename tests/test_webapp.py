@@ -5087,6 +5087,72 @@ def test_credit_note_row_edit_updates_cn_amount(client):
     assert Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL")[0].cn_amount == Decimal("300.00")
 
 
+def test_credit_note_row_edit_sets_a_reference_that_resolves_to_matched(client):
+    # Client's own ask (point 7): Tally itself never recorded a bill
+    # allocation for this CN, so a Maker must be able to assign the real
+    # reference by hand - and Classification must update automatically.
+    from ar_mis.models import RegisterClassification
+
+    row_id = _seed_credit_note_row(client)
+    _seed_sales_dn_row(client, voucher_number="SB/1")
+    resp = client.post(
+        "/registers/credit-notes/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_id), "new_cn_amount": "250.00",
+            "bill_allocation_reference": "SB/1", "reason": "Assigning the real reference Tally never recorded",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    row = Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL")[0]
+    assert row.bill_allocation_reference == "SB/1"
+    assert row.classification == RegisterClassification.CURRENT
+
+
+def test_credit_note_row_edit_sets_a_reference_that_doesnt_resolve_to_pending_review(client):
+    from ar_mis.models import RegisterClassification
+
+    row_id = _seed_credit_note_row(client)
+    resp = client.post(
+        "/registers/credit-notes/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_id), "new_cn_amount": "250.00",
+            "bill_allocation_reference": "SB/UNKNOWN", "reason": "Assigning a reference to review",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    row = Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL")[0]
+    assert row.bill_allocation_reference == "SB/UNKNOWN"
+    assert row.classification == RegisterClassification.PENDING_REVIEW
+
+
+def test_credit_note_row_edit_refuses_a_reference_change_on_a_pre_mis_row(client):
+    from ar_mis.models import CreditNoteRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_credit_note_row(CreditNoteRegisterRow(
+        branch_id="KOL", cn_date=date(2026, 4, 2), voucher_number="CN/PM", party_id="ACME",
+        cn_amount=Decimal("250.00"), classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+    ))
+    row_id = store.all_credit_note_rows("KOL")[0].id
+    store.close()
+
+    resp = client.post(
+        "/registers/credit-notes/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_id), "new_cn_amount": "250.00",
+            "bill_allocation_reference": "SB/1", "reason": "Trying to change a confirmed Pre-MIS row",
+        },
+        follow_redirects=True,
+    )
+    assert b"Revert it first" in resp.data
+    assert Store(client.application.config["DB_PATH"]).all_credit_note_rows("KOL")[0].bill_allocation_reference is None
+
+
 def test_credit_note_row_delete_removes_the_row(client):
     row_id = _seed_credit_note_row(client)
     resp = client.post(
@@ -5171,7 +5237,7 @@ def test_receipt_journal_row_edit_this_line_only(client):
         "/registers/receipts-journals/edit",
         data={
             "as_of": "2026-04-07", "row_id": str(row_ids["SB/1"]), "new_amount": "350.00",
-            "reason": "Register captured the wrong figure", "scope": "line",
+            "target_doc_no": "SB/1", "reason": "Register captured the wrong figure", "scope": "line",
         },
         follow_redirects=True,
     )
@@ -5191,7 +5257,7 @@ def test_receipt_journal_row_edit_whole_voucher_collapses_to_one_line(client):
         "/registers/receipts-journals/edit",
         data={
             "as_of": "2026-04-07", "row_id": str(row_ids["SB/1"]), "new_amount": "900.00",
-            "reason": "Collapsing into one on-account receipt", "scope": "voucher",
+            "target_doc_no": "SB/1", "reason": "Collapsing into one on-account receipt", "scope": "voucher",
         },
         follow_redirects=True,
     )
@@ -5200,6 +5266,66 @@ def test_receipt_journal_row_edit_whole_voucher_collapses_to_one_line(client):
     rows = Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")
     assert len(rows) == 1
     assert rows[0].amount == Decimal("900.00")
+
+
+def test_receipt_journal_row_edit_sets_a_target_doc_no_that_resolves_to_matched(client):
+    from ar_mis.models import RegisterClassification
+
+    row_ids = _seed_receipt_journal_voucher(client)
+    row_id = next(iter(row_ids.values()))
+    _seed_sales_dn_row(client, voucher_number="SB/1")
+    resp = client.post(
+        "/registers/receipts-journals/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_id), "new_amount": "500.00",
+            "target_doc_no": "SB/1", "reason": "Assigning the real reference Tally never recorded", "scope": "line",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    row = Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")[0]
+    assert row.target_doc_no == "SB/1"
+    assert row.classification == RegisterClassification.CURRENT
+
+
+def test_receipt_journal_row_edit_sets_a_target_doc_no_that_doesnt_resolve_to_pending_review(client):
+    from ar_mis.models import RegisterClassification
+
+    row_ids = _seed_receipt_journal_voucher(client)
+    row_id = next(iter(row_ids.values()))
+    resp = client.post(
+        "/registers/receipts-journals/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_id), "new_amount": "500.00",
+            "target_doc_no": "SB/UNKNOWN", "reason": "Assigning a reference to review", "scope": "line",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    from ar_mis.storage import Store
+    row = Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")[0]
+    assert row.target_doc_no == "SB/UNKNOWN"
+    assert row.classification == RegisterClassification.PENDING_REVIEW
+
+
+def test_receipt_journal_row_edit_refuses_target_doc_no_change_combined_with_whole_voucher(client):
+    row_ids = _seed_receipt_journal_voucher(client, lines=[
+        {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
+        {"target_doc_no": None, "amount": Decimal("200.00")},
+    ])
+    resp = client.post(
+        "/registers/receipts-journals/edit",
+        data={
+            "as_of": "2026-04-07", "row_id": str(row_ids["SB/1"]), "new_amount": "300.00",
+            "target_doc_no": "SB/2", "reason": "test", "scope": "voucher",
+        },
+        follow_redirects=True,
+    )
+    assert b"Can&#39;t change Target Doc No." in resp.data or b"Can't change Target Doc No." in resp.data
+    from ar_mis.storage import Store
+    rows = {r.target_doc_no: r for r in Store(client.application.config["DB_PATH"]).all_receipt_journal_rows("KOL")}
+    assert "SB/1" in rows  # untouched - the edit was refused
 
 
 def test_receipt_journal_row_edit_requires_a_scope_choice(client):
