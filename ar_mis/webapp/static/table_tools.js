@@ -462,10 +462,54 @@
       });
       row.classList.toggle("tt-row-highlighted", checked || anyOpen);
     }
+    // Measured live against a 650-row register: baking a full pre-filled
+    // Edit form into every single row made the page take over 20 seconds
+    // to load and the search box visibly lag on every keystroke - real
+    // numbers, not a guess. A <details data-tt-lazy="NAME"> starts with
+    // only its own <summary> in the HTML; the actual form is built once,
+    // the first time a Maker actually opens it, by cloning a page-level
+    // <template data-tt-lazy-template="NAME"> (defined once per page,
+    // never once per row) and filling every element carrying
+    // data-tt-field="COL" from this row's own already-rendered cell
+    // (data-tt-col="COL") - no second server round-trip, and every row
+    // that's never opened costs nothing beyond its own summary button.
+    function fillLazyField(el, row, rowId) {
+      var field = el.getAttribute("data-tt-field");
+      if (field === "row_id") {
+        el.value = rowId || "";
+        return;
+      }
+      var cell = row.querySelector('[data-tt-col="' + field + '"]');
+      if (cell) {
+        var raw = cell.getAttribute("data-value");
+        el.value = raw !== null ? raw : cell.textContent.trim();
+        return;
+      }
+      // No visible column carries this field (e.g. Receipt & Journal's
+      // "amount" is split display-side into applied_amount/unapplied_balance,
+      // only one of which has a real data-value on any given row) - fall
+      // back to a same-named data-tt-row-FIELD attribute on the row itself.
+      var rowAttr = row.getAttribute("data-tt-row-" + field);
+      if (rowAttr !== null) el.value = rowAttr;
+    }
     Array.prototype.forEach.call(table.querySelectorAll("tr[data-tt-row] details"), function (details) {
       var row = details.closest("tr[data-tt-row]");
       if (!row) return;
+      var lazyName = details.getAttribute("data-tt-lazy");
+      var built = false;
       details.addEventListener("toggle", function () {
+        if (lazyName && details.open && !built) {
+          built = true;
+          var tpl = document.querySelector('template[data-tt-lazy-template="' + lazyName + '"]');
+          if (tpl) {
+            var clone = tpl.content.cloneNode(true);
+            var rowId = row.getAttribute("data-tt-row-id");
+            Array.prototype.forEach.call(clone.querySelectorAll("[data-tt-field]"), function (el) {
+              fillLazyField(el, row, rowId);
+            });
+            details.appendChild(clone);
+          }
+        }
         updateRowHighlight(row);
       });
     });
