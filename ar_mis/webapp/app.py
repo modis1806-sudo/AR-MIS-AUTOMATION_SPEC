@@ -1238,10 +1238,24 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
+        # Client's explicit ask: the Edit panel must also cover a Misc
+        # Adjustment - but an invoice can carry more than one (partial
+        # amounts are allowed), and the Edit panel only ever shows one.
+        # The client's own call: edit the latest one (by its own
+        # effective date, ties broken by id) - an older one stays on
+        # record, editable only via Undo on the Register Row Audit Log.
+        latest_misc_by_invoice: dict[tuple[str, str, str], MiscAdjustment] = {}
+        for m in misc_rows:
+            key = (m.branch_id, m.voucher_number, m.party_id)
+            existing = latest_misc_by_invoice.get(key)
+            if existing is None or (m.adjustment_date, m.id) > (existing.adjustment_date, existing.id):
+                latest_misc_by_invoice[key] = m
+
         display_rows = []
         for row in sales_dn_rows:
             position = compute_invoice_position(row, cn_rows, rj_rows, as_of, misc_rows)
             tb_balance = tb_balances.get((row.party_id, row.branch_id))
+            misc_adjustment = latest_misc_by_invoice.get((row.branch_id, row.voucher_number, row.party_id))
             follow_up = follow_ups.get((row.branch_id, row.voucher_number, row.party_id))
             ptp_status = None
             if follow_up is not None and follow_up.ptp_date is not None:
@@ -1274,6 +1288,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     # as a mismatch there - still editable for a genuinely
                     # earlier real Tally entry.
                     "tb_as_of": tb_balance.as_of.isoformat() if tb_balance else None,
+                    "misc_adjustment": misc_adjustment,
                 }
             )
         return display_rows, freshness
@@ -1588,6 +1603,131 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         )
         store.close()
         flash(f"Misc Adjustment of {format_inr(amount)} recorded against {voucher_number}.", "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+    @app.route("/registers/sales-dn/misc-adjustment/edit", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_misc_adjustment_edit():
+        """Client's explicit ask: the Sales & DN row's own Edit panel
+        must also be able to fix a Misc Adjustment it already carries -
+        a real mutate-in-place of the misc_adjustment row, logged via
+        Store.edit_misc_adjustment into the same register_row_audit
+        trail (and the same Undo) the invoice's own fields already get.
+
+        `amount`/`adjustment_date` are re-validated the same way the
+        initial record does: the new amount is capped at what the
+        invoice's Open Amount would be AS OF the new effective date IF
+        this specific adjustment did not exist yet (never the figure
+        that already includes this adjustment's own old amount - that
+        would double-subtract it and silently let an edit over-close an
+        invoice that's actually nowhere near fully adjusted).
+        """
+        as_of_raw = request.form.get("as_of", "")
+        raw_misc_adjustment_id = request.form.get("misc_adjustment_id", "")
+        raw_amount = request.form.get("misc_amount", "").strip()
+        raw_adjustment_date = request.form.get("misc_adjustment_date", "").strip()
+        misc_reason = request.form.get("misc_reason", "").strip()
+        edit_reason = request.form.get("misc_edit_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        try:
+            misc_adjustment_id = int(raw_misc_adjustment_id)
+        except ValueError:
+            return _redisplay("Select a valid Misc Adjustment to edit.")
+        if not misc_reason:
+            return _redisplay("Enter a reason for the Misc Adjustment.")
+        if not edit_reason:
+            return _redisplay("Enter a reason for this edit.")
+        try:
+            amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_amount}' is not a valid amount.")
+        if amount <= 0:
+            return _redisplay("Enter an amount greater than zero.")
+        try:
+            adjustment_date = date.fromisoformat(raw_adjustment_date) if raw_adjustment_date else date.today()
+        except ValueError:
+            return _redisplay("Enter a valid adjustment date.")
+
+        store = get_store()
+        current = store.get_misc_adjustment_by_id(misc_adjustment_id)
+        if current is None:
+            store.close()
+            return _redisplay(f"No Misc Adjustment with id={misc_adjustment_id}")
+
+        row = next(
+            (r for r in store.all_sales_dn_rows(current.branch_id)
+             if r.voucher_number == current.voucher_number and r.party_id == current.party_id),
+            None,
+        )
+        if row is None:
+            store.close()
+            return _redisplay(f"No invoice found for {current.voucher_number}.")
+
+        cn_rows = store.all_credit_note_rows(current.branch_id)
+        rj_rows = store.all_receipt_journal_rows(current.branch_id)
+        other_misc_rows = [m for m in store.all_misc_adjustments(current.branch_id) if m.id != misc_adjustment_id]
+        open_without_this = compute_invoice_position(row, cn_rows, rj_rows, adjustment_date, other_misc_rows).open_amount
+        if amount > open_without_this:
+            store.close()
+            return _redisplay(
+                f"{current.voucher_number}'s Open Amount as of {adjustment_date.isoformat()}, excluding this "
+                f"adjustment's own old amount, is {format_inr(open_without_this)} - {format_inr(amount)} would over-close it."
+            )
+
+        changes = {}
+        if amount != current.amount:
+            changes["amount"] = amount
+        if misc_reason != current.reason:
+            changes["reason"] = misc_reason
+        if adjustment_date != current.adjustment_date:
+            changes["adjustment_date"] = adjustment_date
+        if not changes:
+            store.close()
+            return _redisplay("Nothing to update - every field matches its current value.")
+
+        try:
+            store.edit_misc_adjustment(misc_adjustment_id, edit_reason, MAKER_ATTRIBUTION, datetime.now(), **changes)
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash(f"Misc Adjustment on {current.voucher_number} updated.", "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+    @app.route("/registers/sales-dn/misc-adjustment/delete", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_misc_adjustment_delete():
+        """Removes a Misc Adjustment recorded by mistake entirely - see
+        Store.delete_misc_adjustment. Also undoable, same as every other
+        Delete in this app, via the Register Row Audit Log.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        raw_misc_adjustment_id = request.form.get("misc_adjustment_id", "")
+        reason = request.form.get("misc_delete_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        try:
+            misc_adjustment_id = int(raw_misc_adjustment_id)
+        except ValueError:
+            return _redisplay("Select a valid Misc Adjustment to delete.")
+        if not reason:
+            return _redisplay("Enter a reason for this delete.")
+
+        store = get_store()
+        try:
+            store.delete_misc_adjustment(misc_adjustment_id, reason, MAKER_ATTRIBUTION, datetime.now())
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Misc Adjustment deleted.", "success")
         return redirect(url_for("sales_dn_register", as_of=as_of_raw))
 
     @app.route("/registers/sales-dn/follow-up", methods=["POST"])
@@ -2784,8 +2924,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
     _REGISTER_LABEL = {
         "sales_dn": "Sales & DN Register", "credit_note": "Credit Note Register", "receipt_journal": "Receipt & Journal Register",
+        "misc_adjustment": "Misc Adjustment Register",
     }
-    _AMOUNT_FIELD_BY_REGISTER = {"sales_dn": "invoice_value", "credit_note": "cn_amount", "receipt_journal": "amount"}
+    _AMOUNT_FIELD_BY_REGISTER = {
+        "sales_dn": "invoice_value", "credit_note": "cn_amount", "receipt_journal": "amount", "misc_adjustment": "amount",
+    }
 
     def _audit_entry_display(entry):
         amount_field = _AMOUNT_FIELD_BY_REGISTER[entry.register]

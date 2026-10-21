@@ -5175,6 +5175,181 @@ def test_misc_adjustment_register_report_lists_recorded_adjustments(client):
     assert b"Misc Adjustment Register" in resp_home.data
 
 
+def _record_a_misc_adjustment(client, voucher_number="SB/1", party_id="ACME", amount="1000.00", adjustment_date="2026-05-15", reason="Purchase voucher PV/45 netted against this invoice in Tally"):
+    client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": voucher_number, "party_id": party_id,
+            "amount": amount, "adjustment_date": adjustment_date, "reason": reason,
+        },
+        follow_redirects=True,
+    )
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    misc_id = store.all_misc_adjustments("KOL")[-1].id
+    store.close()
+    return misc_id
+
+
+def test_sales_dn_misc_adjustment_edit_updates_amount_reason_and_date(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    misc_id = _record_a_misc_adjustment(client, amount="400.00")
+
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment/edit",
+        data={
+            "as_of": "2026-06-01", "misc_adjustment_id": str(misc_id),
+            "misc_amount": "600.00", "misc_adjustment_date": "2026-05-20",
+            "misc_reason": "Corrected: Purchase voucher PV/46, not PV/45",
+            "misc_edit_reason": "Wrong voucher number was entered originally",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"updated" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    adj = store.get_misc_adjustment_by_id(misc_id)
+    store.close()
+    assert adj.amount == Decimal("600.00")
+    assert adj.adjustment_date == date(2026, 5, 20)
+    assert adj.reason == "Corrected: Purchase voucher PV/46, not PV/45"
+
+
+def test_sales_dn_misc_adjustment_edit_rejects_amount_that_would_over_close(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    misc_id = _record_a_misc_adjustment(client, amount="400.00")
+
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment/edit",
+        data={
+            "as_of": "2026-06-01", "misc_adjustment_id": str(misc_id),
+            "misc_amount": "1500.00", "misc_adjustment_date": "2026-05-15",
+            "misc_reason": "Too much", "misc_edit_reason": "trying to over-close",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"over-close it" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    adj = store.get_misc_adjustment_by_id(misc_id)
+    store.close()
+    assert adj.amount == Decimal("400.00")  # untouched
+
+
+def test_sales_dn_misc_adjustment_edit_amount_up_to_the_full_invoice_is_allowed(client):
+    # The cap check must exclude THIS adjustment's own old amount, not
+    # double-subtract it - editing a 400.00 adjustment up to the full
+    # 1000.00 open invoice must be allowed, not rejected as "over" 400.
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    misc_id = _record_a_misc_adjustment(client, amount="400.00")
+
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment/edit",
+        data={
+            "as_of": "2026-06-01", "misc_adjustment_id": str(misc_id),
+            "misc_amount": "1000.00", "misc_adjustment_date": "2026-05-15",
+            "misc_reason": "Actually the full invoice was netted", "misc_edit_reason": "Found the rest",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"updated" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    adj = store.get_misc_adjustment_by_id(misc_id)
+    store.close()
+    assert adj.amount == Decimal("1000.00")
+
+
+def test_sales_dn_misc_adjustment_delete_removes_it(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    misc_id = _record_a_misc_adjustment(client, amount="400.00")
+
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment/delete",
+        data={"as_of": "2026-06-01", "misc_adjustment_id": str(misc_id), "misc_delete_reason": "Recorded by mistake"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"deleted" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.get_misc_adjustment_by_id(misc_id) is None
+    store.close()
+
+
+def test_sales_dn_misc_adjustment_edit_and_delete_are_undoable_via_audit_log(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    misc_id = _record_a_misc_adjustment(client, amount="400.00")
+
+    client.post(
+        "/registers/sales-dn/misc-adjustment/edit",
+        data={
+            "as_of": "2026-06-01", "misc_adjustment_id": str(misc_id),
+            "misc_amount": "600.00", "misc_adjustment_date": "2026-05-15",
+            "misc_reason": "Corrected amount", "misc_edit_reason": "typo",
+        },
+        follow_redirects=True,
+    )
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    edit_audit = [e for e in store.all_register_row_audit() if e.register == "misc_adjustment" and e.action == "EDIT"][0]
+    store.close()
+
+    resp = client.post(
+        "/registers/audit-log/undo", data={"audit_ids": [str(edit_audit.id)]}, follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Undone 1 of 1" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    adj = store2.get_misc_adjustment_by_id(misc_id)
+    store2.close()
+    assert adj.amount == Decimal("400.00")  # restored to before the edit
+
+    resp2 = client.get("/registers/audit-log")
+    assert resp2.status_code == 200
+    assert b"Misc Adjustment Register" in resp2.data
+
+
+def test_checker_cannot_edit_or_delete_a_misc_adjustment(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "maker"})
+    _seed_sales_dn_row(roleless_client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    misc_id = _record_a_misc_adjustment(roleless_client, amount="400.00")
+    roleless_client.post("/choose-role", data={"role": "checker"})
+
+    resp1 = roleless_client.post(
+        "/registers/sales-dn/misc-adjustment/edit",
+        data={
+            "as_of": "2026-06-01", "misc_adjustment_id": str(misc_id),
+            "misc_amount": "600.00", "misc_adjustment_date": "2026-05-15",
+            "misc_reason": "x", "misc_edit_reason": "x",
+        },
+        follow_redirects=True,
+    )
+    assert b"isn&#39;t available for your role" in resp1.data or b"isn't available for your role" in resp1.data
+
+    resp2 = roleless_client.post(
+        "/registers/sales-dn/misc-adjustment/delete",
+        data={"as_of": "2026-06-01", "misc_adjustment_id": str(misc_id), "misc_delete_reason": "x"},
+        follow_redirects=True,
+    )
+    assert b"isn&#39;t available for your role" in resp2.data or b"isn't available for your role" in resp2.data
+
+    from ar_mis.storage import Store
+    store = Store(roleless_client.application.config["DB_PATH"])
+    adj = store.get_misc_adjustment_by_id(misc_id)
+    store.close()
+    assert adj.amount == Decimal("400.00")  # untouched by either attempt
+
+
 def _sales_dn_edit_form(client, row_id, as_of="2026-04-07", reason="test", **overrides):
     # Mirrors the real Edit form: every editable field pre-filled with
     # the row's own current value, so a real submission only ever

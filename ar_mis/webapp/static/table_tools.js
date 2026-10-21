@@ -517,6 +517,17 @@
             Array.prototype.forEach.call(clone.querySelectorAll("[data-tt-field]"), function (el) {
               fillLazyField(el, row, rowId);
             });
+            // A lazy template can carry a section that only makes sense
+            // once a given field actually has something in it (e.g. the
+            // Sales & DN Edit panel's own Misc Adjustment sub-form, which
+            // only applies when this invoice actually carries one) -
+            // hidden here, after fill, rather than needing a second
+            // per-row template variant for "has one" vs "doesn't".
+            Array.prototype.forEach.call(clone.querySelectorAll("[data-tt-hide-unless]"), function (wrapper) {
+              var field = wrapper.getAttribute("data-tt-hide-unless");
+              var idField = clone.querySelector('[data-tt-field="' + field + '"]');
+              if (!idField || !idField.value) wrapper.style.display = "none";
+            });
             details.appendChild(clone);
           }
         }

@@ -1069,6 +1069,79 @@ class Store:
             for r in cur.fetchall()
         ]
 
+    def get_misc_adjustment_by_id(self, row_id: int) -> MiscAdjustment | None:
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute("SELECT * FROM misc_adjustment WHERE id=?", (row_id,)).fetchone()
+        if r is None:
+            return None
+        return MiscAdjustment(
+            id=r["id"], branch_id=r["branch_id"], voucher_number=r["voucher_number"], party_id=r["party_id"],
+            amount=Decimal(r["amount"]), reason=r["reason"], adjusted_by=r["adjusted_by"],
+            adjustment_date=date.fromisoformat(r["adjustment_date"]),
+        )
+
+    def edit_misc_adjustment(
+        self, row_id: int, edit_reason: str, edited_by: str, edited_at: datetime,
+        **changes: Decimal | date | str,
+    ) -> int:
+        """Client's explicit ask: the Sales & DN row's own Edit panel
+        must also be able to fix a Misc Adjustment it already carries,
+        not just the invoice's own fields - same real mutate-in-place
+        mechanics edit_sales_dn_row already gives the invoice itself,
+        reusing the exact same generic register_row_audit machinery
+        (Store.undo_register_row_audit needs nothing new to Undo this -
+        "misc_adjustment" is just another entry in _AUDIT_TABLE_BY_
+        REGISTER/_AUDIT_COLUMNS_BY_REGISTER). `changes` is a dict of
+        column -> new value, restricted to _MISC_ADJUSTMENT_EDITABLE_
+        COLUMNS; `edit_reason` is the reason for THIS edit (audit trail)
+        - named apart from `reason`, which is itself a valid key of
+        `changes` (the adjustment's own business-reason text being
+        corrected), to avoid exactly the keyword collision that would
+        otherwise follow from reusing the same name for both.
+        """
+        before = self._fetch_row_dict("misc_adjustment", row_id)
+        if before is None:
+            raise ValueError(f"No misc_adjustment row with id={row_id}")
+        unknown = set(changes) - set(self._MISC_ADJUSTMENT_EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"Not an editable field: {', '.join(sorted(unknown))}")
+        if not changes:
+            raise ValueError("Nothing to update - every field matches its current value.")
+
+        def _serialize(col: str, value) -> str:
+            if col == "adjustment_date":
+                return value.isoformat()
+            return str(value)
+
+        serialized = {col: _serialize(col, value) for col, value in changes.items()}
+        set_clause = ", ".join(f"{col}=?" for col in serialized)
+        self.conn.execute(
+            f"UPDATE misc_adjustment SET {set_clause} WHERE id=?", (*serialized.values(), row_id)
+        )
+        after = dict(before, **serialized)
+        audit_id = self._record_register_audit(
+            "misc_adjustment", "EDIT", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
+            [before], [after], edit_reason, edited_by, edited_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def delete_misc_adjustment(self, row_id: int, reason: str, deleted_by: str, deleted_at: datetime) -> int:
+        """Removes a Misc Adjustment recorded by mistake entirely - no
+        cascade (nothing else in this app references a misc_adjustment
+        row by id), unlike delete_sales_dn_row.
+        """
+        before = self._fetch_row_dict("misc_adjustment", row_id)
+        if before is None:
+            raise ValueError(f"No misc_adjustment row with id={row_id}")
+        self.conn.execute("DELETE FROM misc_adjustment WHERE id=?", (row_id,))
+        audit_id = self._record_register_audit(
+            "misc_adjustment", "DELETE", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
+            [before], None, reason, deleted_by, deleted_at,
+        )
+        self.conn.commit()
+        return audit_id
+
     def customer_master_exists(self, party_id: str, branch_id: str) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM customer_master WHERE party_id=? AND branch_id=?", (party_id, branch_id)
@@ -1783,11 +1856,21 @@ class Store:
         "branch_id", "txn_date", "voucher_type", "voucher_number", "party_id",
         "amount", "target_doc_no", "classification", "narration",
     ]
+    # Misc Adjustment's own audit columns (client's explicit ask: the
+    # Sales & DN row's own Edit panel must also cover its one Misc
+    # Adjustment, same Edit/Delete/Undo mechanics the three master
+    # registers already get - this table slots into the exact same
+    # generic machinery below, it just isn't one of the three).
+    _MISC_ADJUSTMENT_AUDIT_COLUMNS = [
+        "branch_id", "voucher_number", "party_id", "amount", "reason", "adjusted_by", "adjustment_date",
+    ]
     _AUDIT_TABLE_BY_REGISTER = {
         "sales_dn": "sales_dn_register", "credit_note": "credit_note_register", "receipt_journal": "receipt_journal_register",
+        "misc_adjustment": "misc_adjustment",
     }
     _AUDIT_COLUMNS_BY_REGISTER = {
         "sales_dn": _SALES_DN_AUDIT_COLUMNS, "credit_note": _CREDIT_NOTE_AUDIT_COLUMNS, "receipt_journal": _RECEIPT_JOURNAL_AUDIT_COLUMNS,
+        "misc_adjustment": _MISC_ADJUSTMENT_AUDIT_COLUMNS,
     }
 
     # Sales & DN's own editable field whitelist (client's call: money/
@@ -1799,6 +1882,11 @@ class Store:
     _SALES_DN_EDITABLE_COLUMNS = [
         "taxable_value", "cgst", "sgst", "igst", "round_off", "invoice_value", "due_date", "job_id",
     ]
+
+    # Never branch_id/voucher_number/party_id - those are this entry's
+    # own identity (which invoice it applies against), same reasoning as
+    # _SALES_DN_EDITABLE_COLUMNS excluding its own identity fields.
+    _MISC_ADJUSTMENT_EDITABLE_COLUMNS = ["amount", "reason", "adjustment_date"]
 
     def _fetch_row_dict(self, table: str, row_id: int) -> dict | None:
         self.conn.row_factory = sqlite3.Row
