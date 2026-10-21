@@ -168,6 +168,49 @@ class PreMisAdjustment:
 
 
 @dataclass(frozen=True)
+class MiscAdjustment:
+    """An explicit, logged, one-off movement against one specific tracked
+    invoice - identified by the same (branch_id, voucher_number, party_id)
+    identity as its own SalesDNRegisterRow, never produced by the weekly
+    pipeline, only by a deliberate manual action. Client's explicit ask
+    (real case: a Purchase voucher - a voucher type this app never
+    parses for the Sundry Debtor side - netted against a receivable
+    directly in Tally, with no corresponding Credit Note or Receipt this
+    app's registers will ever see for it): a way to close that one
+    invoice, and keep the TB Cross-Check and this party's ageing telling
+    the same true story Tally itself already does, without needing every
+    counterparty to book the correction as a Journal against this
+    ledger - something this tool can ask for but never enforce.
+
+    Applied exactly like a CN/Receipt's own application against that one
+    invoice would be: subtracted from its Open Amount
+    (ar_mis.registers.compute_invoice_position) AND counted as a
+    movement in the party's own TB Cross-Check closing (ar_mis.
+    rollforward.PartyMovement.misc_adjustments) - never just one of the
+    two, or the register and the TB Cross-Check would disagree about
+    whether this invoice is still open.
+
+    `amount` is always positive (the reduction applied) - capped at the
+    invoice's own current open balance by the caller
+    (ar_mis.webapp.app.sales_dn_misc_adjustment), never enforced here,
+    since this record can also be Decimal-compared against a position
+    computed as of a date other than today (e.g. ageing re-evaluated
+    for an earlier as-of). `adjustment_date` is the effective date used
+    for that as-of filtering, same role as a CN's cn_date or a Receipt's
+    txn_date - not just a log timestamp.
+    """
+
+    branch_id: str
+    voucher_number: str
+    party_id: str
+    amount: Decimal
+    reason: str
+    adjusted_by: str
+    adjustment_date: date
+    id: int | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
 class WeeklySnapshotRow:
     """Layer 2. One row per party per branch per run. All amounts are
     post-sign-flip. `closing_extracted` is the YTD Trial Balance closing

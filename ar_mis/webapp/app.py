@@ -42,7 +42,7 @@ from ar_mis.exception_register import (
     compute_unresolved_references,
 )
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
-from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp, PreMisAdjustment, RegisterClassification
+from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp, MiscAdjustment, PreMisAdjustment, RegisterClassification
 from ar_mis.money import to_money
 from ar_mis.drift_correction import (
     DriftFindingAlreadyIncorporated,
@@ -1206,7 +1206,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return {key: balance.closing_extracted for key, balance in store.all_party_tb_balances(branch_id).items()}
 
     def _default_ptp_amount_to_open_balance(
-        sales_dn_row, cn_rows: list, rj_rows: list, as_of: date
+        sales_dn_row, cn_rows: list, rj_rows: list, as_of: date, misc_rows: list = ()
     ) -> Decimal | None:
         """Client's own catch while testing the batch PTP tool: setting a
         PTP Date with no amount silently left PTP Amount blank, even
@@ -1217,7 +1217,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         entered, and the field stays a normal editable box afterward for
         a genuinely partial promise.
         """
-        position = compute_invoice_position(sales_dn_row, cn_rows, rj_rows, as_of)
+        position = compute_invoice_position(sales_dn_row, cn_rows, rj_rows, as_of, misc_rows)
         return position.open_amount if position.open_amount > 0 else None
 
     def _build_sales_dn_display_rows(as_of: date):
@@ -1229,6 +1229,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
+        misc_rows = store.all_misc_adjustments()
         follow_ups = {(f.branch_id, f.voucher_number, f.party_id): f for f in store.all_invoice_follow_ups()}
         groupings = {
             (r["party_id"], r["branch_id"]): r["grouping"] for r in store.all_customer_master_records()
@@ -1238,7 +1239,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
         display_rows = []
         for row in sales_dn_rows:
-            position = compute_invoice_position(row, cn_rows, rj_rows, as_of)
+            position = compute_invoice_position(row, cn_rows, rj_rows, as_of, misc_rows)
             follow_up = follow_ups.get((row.branch_id, row.voucher_number, row.party_id))
             ptp_status = None
             if follow_up is not None and follow_up.ptp_date is not None:
@@ -1479,7 +1480,98 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "sales_dn_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
             freshness=freshness, summary=summary, search_query=request.args.get("q", ""),
+            today=date.today().isoformat(),
         )
+
+    @app.route("/registers/sales-dn/misc-adjustment", methods=["POST"])
+    @requires_role("maker")
+    def sales_dn_misc_adjustment():
+        """Client's explicit ask (the SWATI ENTERPRISERS case): a real
+        netting happens directly in Tally, through a voucher type this
+        app never parses for the Sundry Debtor side (e.g. a Purchase
+        voucher offset against this same receivable), so no Credit Note
+        or Receipt this app's registers will ever see closes it - the
+        invoice sits open and ageing forever, and the TB Cross-Check
+        mismatches by exactly that amount, even though Tally's own books
+        are correct and already reflect it. This records a Misc
+        Adjustment against that one invoice instead of inventing a
+        parallel override mechanism (models.MiscAdjustment's own
+        docstring has the full rationale).
+
+        `amount` is capped here at the invoice's own current Open Amount,
+        computed as of the adjustment's own effective date (never trusted
+        from whatever the page showed on load) - a partial amount is
+        allowed (client's own call: covers a partial netting too, not
+        just a full close), but never more than what's actually still
+        open as of that date.
+
+        `adjustment_date` is a real date the Maker picks (defaulting to
+        today on the form, but editable) - the real-world date of
+        whatever Tally entry actually did the netting (e.g. that Purchase
+        voucher's own date), not just "whenever this was clicked". This
+        matters because the adjustment is as-of-date filtered everywhere
+        it's read (ar_mis.registers.compute_invoice_position, ar_mis.
+        rollforward's TB Cross-Check closing), the same role a CN's own
+        cn_date or a Receipt's own txn_date plays - hardcoding "today"
+        the way record_pre_mis_adjustment's routes do would silently fail
+        to fix a TB reading dated earlier than today, which is exactly
+        the mismatch this feature exists to close.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        branch_id = request.form.get("branch_id", "")
+        voucher_number = request.form.get("voucher_number", "")
+        party_id = request.form.get("party_id", "")
+        raw_amount = request.form.get("amount", "").strip()
+        raw_adjustment_date = request.form.get("adjustment_date", "").strip()
+        reason = request.form.get("reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("sales_dn_register", as_of=as_of_raw))
+
+        if not reason:
+            return _redisplay("Enter a reason for this Misc Adjustment.")
+        try:
+            amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_amount}' is not a valid amount.")
+        if amount <= 0:
+            return _redisplay("Enter an amount greater than zero.")
+        try:
+            adjustment_date = date.fromisoformat(raw_adjustment_date) if raw_adjustment_date else date.today()
+        except ValueError:
+            return _redisplay("Enter a valid adjustment date.")
+
+        store = get_store()
+        row = next(
+            (r for r in store.all_sales_dn_rows(branch_id)
+             if r.voucher_number == voucher_number and r.party_id == party_id),
+            None,
+        )
+        if row is None:
+            store.close()
+            return _redisplay(f"No invoice found for {voucher_number}.")
+
+        cn_rows = store.all_credit_note_rows(branch_id)
+        rj_rows = store.all_receipt_journal_rows(branch_id)
+        misc_rows = store.all_misc_adjustments(branch_id)
+        current_open = compute_invoice_position(row, cn_rows, rj_rows, adjustment_date, misc_rows).open_amount
+        if amount > current_open:
+            store.close()
+            return _redisplay(
+                f"{voucher_number}'s Open Amount as of {adjustment_date.isoformat()} is {format_inr(current_open)} - "
+                f"a Misc Adjustment of {format_inr(amount)} would over-close it."
+            )
+
+        store.record_misc_adjustment(
+            MiscAdjustment(
+                branch_id=branch_id, voucher_number=voucher_number, party_id=party_id,
+                amount=amount, reason=reason, adjusted_by=MAKER_ATTRIBUTION, adjustment_date=adjustment_date,
+            )
+        )
+        store.close()
+        flash(f"Misc Adjustment of {format_inr(amount)} recorded against {voucher_number}.", "success")
+        return redirect(url_for("sales_dn_register", as_of=as_of_raw))
 
     @app.route("/registers/sales-dn/follow-up", methods=["POST"])
     @requires_role("maker")
@@ -1536,6 +1628,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                 ptp_amount = _default_ptp_amount_to_open_balance(
                     matching_row, store.all_credit_note_rows(branch_id),
                     store.all_receipt_journal_rows(branch_id), _parse_as_of_form_value(as_of_raw),
+                    store.all_misc_adjustments(branch_id),
                 )
         store.upsert_invoice_follow_up(
             InvoiceFollowUp(
@@ -1596,6 +1689,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         }
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
+        misc_rows = store.all_misc_adjustments()
         updated_count = 0
         skipped_closed_count = 0
         for identity in selected:
@@ -1605,7 +1699,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             branch_id, voucher_number, party_id = parts
             matching_row = sales_dn_rows_by_identity.get((branch_id, voucher_number, party_id))
             position = (
-                compute_invoice_position(matching_row, cn_rows, rj_rows, as_of_for_default)
+                compute_invoice_position(matching_row, cn_rows, rj_rows, as_of_for_default, misc_rows)
                 if matching_row is not None else None
             )
             if raw_ptp_date and position is not None and position.open_amount <= 0:
@@ -2770,6 +2864,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
+        misc_rows = store.all_misc_adjustments()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         follow_ups = store.all_invoice_follow_ups()
         tally_closing_by_party = _current_tb_closing_by_party(store)
@@ -2780,7 +2875,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         ptp_rate = compute_ptp_kept_rate(follow_ups, sales_dn_by_identity, cn_rows, rj_rows, as_of)
 
         snapshot = compute_ar_snapshot(
-            sales_dn_rows, cn_rows, rj_rows, customer_masters, ptp_rate, as_of, tally_closing_by_party
+            sales_dn_rows, cn_rows, rj_rows, customer_masters, ptp_rate, as_of, tally_closing_by_party, misc_rows
         )
         return render_template(
             "ar_snapshot.html", snapshot=snapshot, as_of=as_of.isoformat(), freshness=freshness
@@ -2809,6 +2904,22 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         return render_template(
             "pre_mis_register.html", summaries=summaries, adjustments=list(reversed(adjustments)),
             freshness=freshness,
+        )
+
+    @app.route("/reports/misc-adjustments")
+    def misc_adjustment_register_report():
+        """Durable audit trail for sales_dn_misc_adjustment - the client's
+        own explicit ask: every Misc Adjustment ever recorded, in one
+        place, same spirit as Pre-MIS Adjustment Register and Register
+        Exceptions Review. Newest first, since the most recently recorded
+        one is the one most likely still being double-checked.
+        """
+        store = get_store()
+        adjustments = store.all_misc_adjustments()
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+        return render_template(
+            "misc_adjustment_register.html", adjustments=list(reversed(adjustments)), freshness=freshness,
         )
 
     @app.route("/reports/pre-mis-adjustments/export.xlsx")
@@ -2845,15 +2956,16 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
+        misc_rows = store.all_misc_adjustments()
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
         unapplied_cash = compute_unapplied_cash_exceptions(rj_rows)
         unapplied_cn = compute_unapplied_cn_exceptions(cn_rows)
-        negative_open = compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of)
-        non_active = compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of)
+        negative_open = compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of, misc_rows)
+        non_active = compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of, misc_adjustment_rows=misc_rows)
         unresolved = compute_unresolved_references(cn_rows, rj_rows)
-        top_overdue = compute_top_overdue_customers(sales_dn_rows, cn_rows, rj_rows, as_of)
+        top_overdue = compute_top_overdue_customers(sales_dn_rows, cn_rows, rj_rows, as_of, misc_adjustment_rows=misc_rows)
 
         return render_template(
             "exception_register.html",
@@ -2879,16 +2991,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
+        misc_rows = store.all_misc_adjustments()
         store.close()
 
         wb = build_exception_register_workbook(
             as_of,
             unapplied_cash=compute_unapplied_cash_exceptions(rj_rows),
             unapplied_cn=compute_unapplied_cn_exceptions(cn_rows),
-            negative_open=compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of),
-            non_active=compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of),
+            negative_open=compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of, misc_rows),
+            non_active=compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of, misc_adjustment_rows=misc_rows),
             unresolved=compute_unresolved_references(cn_rows, rj_rows),
-            top_overdue=compute_top_overdue_customers(sales_dn_rows, cn_rows, rj_rows, as_of),
+            top_overdue=compute_top_overdue_customers(sales_dn_rows, cn_rows, rj_rows, as_of, misc_adjustment_rows=misc_rows),
         )
         buf = BytesIO()
         wb.save(buf)
@@ -2915,6 +3028,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
+        misc_rows = store.all_misc_adjustments()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         tally_closing_by_party = _current_tb_closing_by_party(store)
         freshness = _freshness(store.last_extraction_at())
@@ -2928,9 +3042,9 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             selected_fy = ""
             scoped_sales_dn_rows = sales_dn_rows
 
-        branch_rows = compute_branch_ageing_schedule(scoped_sales_dn_rows, cn_rows, rj_rows, as_of)
+        branch_rows = compute_branch_ageing_schedule(scoped_sales_dn_rows, cn_rows, rj_rows, as_of, misc_rows)
         customer_rows = compute_ageing_matrix(
-            scoped_sales_dn_rows, cn_rows, rj_rows, customer_masters, tally_closing_by_party, as_of
+            scoped_sales_dn_rows, cn_rows, rj_rows, customer_masters, tally_closing_by_party, as_of, misc_rows
         )
         bucket_order = AGEING_BUCKET_ORDER
 
@@ -3011,12 +3125,14 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         sales_dn_rows = store.all_sales_dn_rows()
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
+        misc_rows = store.all_misc_adjustments()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         tally_closing_by_party = _current_tb_closing_by_party(store)
 
         snapshot = compute_ar_snapshot(
             sales_dn_rows, cn_rows, rj_rows, customer_masters,
             ptp_kept_rate=None, as_of=week_ending, tally_closing_by_party=tally_closing_by_party,
+            misc_adjustment_rows=misc_rows,
         )
         row = build_weekly_movement_row(snapshot, week_ending, recorded_at=datetime.now())
         store.record_weekly_movement(row)

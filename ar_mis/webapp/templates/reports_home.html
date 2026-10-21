@@ -67,5 +67,11 @@
     <p>Every party that ever carried a Pre-MIS balance — original seed, every logged adjustment, current balance. Pre-MIS Outstanding never moves except through a deliberate, audited action; this is that audit trail.</p>
     <a class="btn" href="{{ url_for('pre_mis_register_report') }}">Open Pre-MIS Adjustment Register</a>
   </div>
+
+  <div class="card">
+    <h2>Misc Adjustment Register</h2>
+    <p>Every one-off adjustment recorded against a specific invoice from the Sales &amp; DN Register — a real netting Tally itself reflects through a voucher type this app never parses for the Sundry Debtor side (e.g. a Purchase voucher offset against a receivable). Who, when, why, and how much, for every one ever made.</p>
+    <a class="btn" href="{{ url_for('misc_adjustment_register_report') }}">Open Misc Adjustment Register</a>
+  </div>
 </div>
 {% endblock %}

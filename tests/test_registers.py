@@ -788,6 +788,61 @@ def test_compute_invoice_position_filters_to_as_of_date():
     assert position.is_overdue is False
 
 
+def test_compute_invoice_position_subtracts_a_misc_adjustment():
+    from ar_mis.models import MiscAdjustment
+
+    invoice = build_sales_dn_register_row(
+        sales_voucher(
+            [
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-1000.00"), bill_name="INV001", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales Revenue", amount_as_extracted=Decimal("1000.00")),
+            ]
+        ),
+        CUSTOMER,
+        RegisterBuildExceptions(),
+    )
+    misc_rows = [
+        MiscAdjustment(
+            branch_id="B1", voucher_number="INV001", party_id="ACME", amount=Decimal("300.00"),
+            reason="Purchase voucher netted against this receivable in Tally", adjusted_by="Maker",
+            adjustment_date=date(2026, 4, 20),
+        ),
+        # Different invoice entirely - must not apply here.
+        MiscAdjustment(
+            branch_id="B1", voucher_number="INV999", party_id="ACME", amount=Decimal("50.00"),
+            reason="unrelated", adjusted_by="Maker", adjustment_date=date(2026, 4, 20),
+        ),
+    ]
+    position = compute_invoice_position(invoice, [], [], as_of=date(2026, 5, 1), misc_adjustment_rows=misc_rows)
+    assert position.misc_adjustment_applied == Decimal("300.00")
+    assert position.open_amount == Decimal("700.00")
+
+
+def test_compute_invoice_position_ignores_a_misc_adjustment_dated_after_as_of():
+    from ar_mis.models import MiscAdjustment
+
+    invoice = build_sales_dn_register_row(
+        sales_voucher(
+            [
+                LedgerEntry(party_ledger_name="ACME", amount_as_extracted=Decimal("-1000.00"), bill_name="INV001", bill_type="New Ref"),
+                LedgerEntry(party_ledger_name="Sales Revenue", amount_as_extracted=Decimal("1000.00")),
+            ]
+        ),
+        CUSTOMER,
+        RegisterBuildExceptions(),
+    )
+    misc_rows = [
+        MiscAdjustment(
+            branch_id="B1", voucher_number="INV001", party_id="ACME", amount=Decimal("300.00"),
+            reason="not yet effective as of this as_of", adjusted_by="Maker",
+            adjustment_date=date(2026, 6, 1),
+        ),
+    ]
+    position = compute_invoice_position(invoice, [], [], as_of=date(2026, 5, 1), misc_adjustment_rows=misc_rows)
+    assert position.misc_adjustment_applied == Decimal("0.00")
+    assert position.open_amount == Decimal("1000.00")
+
+
 def test_compute_invoice_position_overdue_and_ageing_bucket():
     from ar_mis.models import CreditNoteRegisterRow, ReceiptJournalRegisterRow
 

@@ -37,6 +37,7 @@ def test_sales_dn_register_workbook_contains_headers_and_row_values():
     row = _sales_dn_row()
     position = InvoicePosition(
         row=row, linked_cn_amount=Decimal("0.00"), receipts_applied=Decimal("200000.00"),
+        misc_adjustment_applied=Decimal("0.00"),
         open_amount=Decimal("264300.00"), is_overdue=True, days_past_due=64, ageing_bucket="61-90",
         notional_interest=Decimal("4641.53"),
     )
@@ -77,6 +78,7 @@ def test_sales_dn_register_workbook_includes_nonzero_round_off():
     )
     position = InvoicePosition(
         row=row, linked_cn_amount=Decimal("0.00"), receipts_applied=Decimal("0.00"),
+        misc_adjustment_applied=Decimal("0.00"),
         open_amount=Decimal("1179.00"), is_overdue=False, days_past_due=0, ageing_bucket="Current",
         notional_interest=Decimal("0.00"),
     )
@@ -191,6 +193,7 @@ def test_sales_dn_register_workbook_applies_indian_format_to_amount_columns_only
     row = _sales_dn_row()
     position = InvoicePosition(
         row=row, linked_cn_amount=Decimal("0.00"), receipts_applied=Decimal("200000.00"),
+        misc_adjustment_applied=Decimal("0.00"),
         open_amount=Decimal("264300.00"), is_overdue=True, days_past_due=64, ageing_bucket="61-90",
         notional_interest=Decimal("4641.53"),
     )

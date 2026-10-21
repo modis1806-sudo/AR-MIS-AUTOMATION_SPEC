@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Misc Adjustment Register{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+{% include "_back_to_reports.html" %}
+<h1>Misc Adjustment Register</h1>
+<p class="subtitle">Every Misc Adjustment ever recorded — a deliberate, logged, one-off reduction against one specific invoice for a real netting Tally itself already reflects through a voucher type this app never parses for the Sundry Debtor side (e.g. a Purchase voucher offset against a receivable). Recorded from the invoice's own row on the <a href="{{ url_for('sales_dn_register') }}">Sales &amp; DN Register</a>, where it's also subtracted from that invoice's Open Amount and counted in the TB Cross-Check's own closing — this page is the audit trail, not a separate working figure.</p>
+
+{% include "_freshness.html" %}
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Branch</th><th>Voucher No.</th><th>Party</th><th>Effective Date</th><th>Amount</th><th>Reason</th><th>Adjusted By</th></tr></thead>
+  <tbody>
+  {% for adj in adjustments %}
+    <tr>
+      <td>{{ adj.branch_id }}</td>
+      <td><a href="{{ url_for('sales_dn_register', q=adj.voucher_number) }}" title="Find this invoice on the Sales &amp; DN Register">{{ adj.voucher_number }}</a></td>
+      <td>{{ adj.party_id }}</td>
+      <td>{{ adj.adjustment_date }}</td>
+      <td>{{ adj.amount|inr }}</td>
+      <td>{{ adj.reason }}</td>
+      <td>{{ adj.adjusted_by }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="empty">No Misc Adjustments recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

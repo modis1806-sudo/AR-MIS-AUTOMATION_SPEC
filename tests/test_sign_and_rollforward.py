@@ -132,6 +132,40 @@ def test_compute_party_closings_as_of_sums_every_movement_type_on_or_before_as_o
     store.close()
 
 
+def test_compute_party_closings_as_of_subtracts_a_misc_adjustment(tmp_path):
+    from ar_mis.models import MiscAdjustment
+
+    store = Store(str(tmp_path / "t.db"))
+    store.upsert_customer_master(CustomerMasterRecord("Acme", "Acme", "KOL", Decimal("0.00")))
+    store.append_sales_dn_row(
+        SalesDNRegisterRow(
+            branch_id="KOL", invoice_date=date(2026, 1, 1), note_type=NoteType.INVOICE,
+            voucher_number="SB/1", bill_allocation_reference="SB/1", party_id="Acme",
+            taxable_value=Decimal("1000.00"), cgst=Decimal("0.00"), sgst=Decimal("0.00"),
+            igst=Decimal("0.00"), invoice_value=Decimal("1000.00"), due_date=date(2026, 2, 1),
+        )
+    )
+    # Tally's own TB already reflects an out-of-band netting this app never
+    # parsed a voucher for - closing_computed must agree once the Misc
+    # Adjustment is recorded, same as compute_invoice_position agrees for
+    # this one invoice's own Open Amount.
+    store.record_misc_adjustment(
+        MiscAdjustment(
+            branch_id="KOL", voucher_number="SB/1", party_id="Acme", amount=Decimal("1000.00"),
+            reason="Purchase voucher netted against this receivable in Tally", adjusted_by="Maker",
+            adjustment_date=date(2026, 1, 15),
+        )
+    )
+    movements = compute_party_closings_as_of(store, "KOL", {"Acme"}, date(2026, 2, 1))
+    assert movements["Acme"].closing_computed == Decimal("0.00")
+    # The boundary is as-of-date filtered exactly like every other
+    # movement - a day before the adjustment's own effective date, it
+    # must not have happened yet.
+    movements_before = compute_party_closings_as_of(store, "KOL", {"Acme"}, date(2026, 1, 14))
+    assert movements_before["Acme"].closing_computed == Decimal("1000.00")
+    store.close()
+
+
 def test_compute_party_closings_as_of_excludes_rows_dated_after_as_of(tmp_path):
     # The CHARZE INDUSTRIES incident this whole redesign traces back to:
     # a backdated voucher's own real date can land earlier than register

@@ -64,6 +64,7 @@ from decimal import Decimal
 from ar_mis.models import (
     CreditNoteRegisterRow,
     CustomerMasterRecord,
+    MiscAdjustment,
     PartyGrouping,
     ReceiptJournalRegisterRow,
     SalesDNRegisterRow,
@@ -90,6 +91,7 @@ def _total_ar_as_of(
     receipt_journal_rows: list[ReceiptJournalRegisterRow],
     pre_mis_outstanding_total: Decimal,
     as_of: date,
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> Decimal:
     """Total AR = sum of Open Amount across every tracked invoice, as of
     the given date, PLUS the Pre-MIS Outstanding baseline - invoices
@@ -100,7 +102,7 @@ def _total_ar_as_of(
     """
     open_ar = sum(
         (
-            compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of).open_amount
+            compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows).open_amount
             for row in sales_dn_rows
         ),
         Decimal("0.00"),
@@ -139,6 +141,7 @@ def compute_ar_snapshot(
     ptp_kept_rate: Decimal | None,
     as_of: date,
     tally_closing_by_party: dict[tuple[str, str], Decimal],
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> ARSnapshot:
     """`customer_masters` is keyed (party_id, branch_id), matching
     SalesDNRegisterRow's own (party_id, branch_id) fields - needed for
@@ -192,11 +195,12 @@ def compute_ar_snapshot(
     # Reconciliation Check (below) is the one deliberate bridge back to
     # the Tally-sourced total_ar above.
     workings_total_ar = _total_ar_as_of(
-        sales_dn_rows, credit_note_rows, receipt_journal_rows, pre_mis_outstanding_total, as_of
+        sales_dn_rows, credit_note_rows, receipt_journal_rows, pre_mis_outstanding_total, as_of, misc_adjustment_rows
     )
 
     positions = [
-        (row, compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of)) for row in sales_dn_rows
+        (row, compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows))
+        for row in sales_dn_rows
     ]
 
     open_ar_by_fy: dict[str, Decimal] = {}
@@ -227,7 +231,8 @@ def compute_ar_snapshot(
     dso = compute_dso(workings_total_ar, sales_in_window)
 
     opening_ar_for_ce = _total_ar_as_of(
-        sales_dn_rows, credit_note_rows, receipt_journal_rows, pre_mis_outstanding_total, window_start
+        sales_dn_rows, credit_note_rows, receipt_journal_rows, pre_mis_outstanding_total, window_start,
+        misc_adjustment_rows,
     )
     collected_in_window = compute_collections_in_window(receipt_journal_rows, window_start, as_of)
     collection_efficiency = compute_collection_efficiency(opening_ar_for_ce, sales_in_window, collected_in_window)
@@ -259,7 +264,7 @@ def compute_ar_snapshot(
         branch_rows = [row for row in sales_dn_rows if row.branch_id == branch_id]
         branch_open_ar = sum(
             (
-                compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of).open_amount
+                compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows).open_amount
                 for row in branch_rows
             ),
             Decimal("0.00"),
@@ -305,6 +310,7 @@ def compute_branch_ageing_schedule(
     credit_note_rows: list[CreditNoteRegisterRow],
     receipt_journal_rows: list[ReceiptJournalRegisterRow],
     as_of: date,
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> list[BranchAgeingRow]:
     """Design doc item 15: one ageing-bucket row per branch, plus a final
     "All Branches" total row. Every bucket in _AGEING_BUCKET_ORDER is
@@ -322,7 +328,7 @@ def compute_branch_ageing_schedule(
         for row in sales_dn_rows:
             if row.branch_id != branch_id:
                 continue
-            position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of)
+            position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows)
             buckets[position.ageing_bucket] += position.open_amount
             grand_total_buckets[position.ageing_bucket] += position.open_amount
         rows.append(BranchAgeingRow(branch_id=branch_id, buckets=buckets, total=sum(buckets.values(), Decimal("0.00"))))

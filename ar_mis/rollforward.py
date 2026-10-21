@@ -25,6 +25,7 @@ from ar_mis.money import to_money
 from ar_mis.sign import flip_sign
 from ar_mis.models import (
     CreditNoteRegisterRow,
+    MiscAdjustment,
     NoteType,
     ReceiptJournalRegisterRow,
     SalesDNRegisterRow,
@@ -50,6 +51,14 @@ class PartyMovement:
     debit_notes: Decimal
     receipts: Decimal
     journals: Decimal
+    # Always <= 0 - a MiscAdjustment is a reduction applied against one
+    # specific invoice (models.MiscAdjustment's own docstring), carried
+    # here with the same already-negative sign convention credit_notes/
+    # receipts already use, so it's simply added, never subtracted.
+    # Defaults to 0.00 so every pre-existing caller/test that builds a
+    # PartyMovement directly, without knowing about Misc Adjustments,
+    # still gets the exact closing_computed it always did.
+    misc_adjustments: Decimal = Decimal("0.00")
 
     @property
     def closing_computed(self) -> Decimal:
@@ -60,6 +69,7 @@ class PartyMovement:
             + self.debit_notes
             + self.receipts
             + self.journals
+            + self.misc_adjustments
         )
 
 
@@ -109,14 +119,21 @@ def compute_party_closings_as_of(
     on or before `as_of`, summed through the same aggregate_party_
     movements_from_registers a normal weekly run always used for its
     own week's movement - this just widens the row set to the party's
-    entire history instead of one run's own vouchers.
+    entire history instead of one run's own vouchers. Every Misc
+    Adjustment on record for that party dated on or before `as_of` is
+    summed in exactly the same way, so this figure agrees with the
+    identical date-filtering ar_mis.registers.compute_invoice_position
+    applies when it subtracts that same adjustment from one specific
+    invoice's own Open Amount - they must never disagree about whether
+    one has "happened yet" as of a given date.
     """
     sales_dn = [r for r in store.all_sales_dn_rows(branch_id) if r.invoice_date <= as_of]
     cn = [r for r in store.all_credit_note_rows(branch_id) if r.cn_date <= as_of]
     rj = [r for r in store.all_receipt_journal_rows(branch_id) if r.txn_date <= as_of]
+    misc = [r for r in store.all_misc_adjustments(branch_id) if r.adjustment_date <= as_of]
 
     pre_mis_openings = {party: store.get_original_pre_mis_outstanding(party, branch_id) for party in party_ledger_names}
-    return aggregate_party_movements_from_registers(sales_dn, cn, rj, party_ledger_names, pre_mis_openings)
+    return aggregate_party_movements_from_registers(sales_dn, cn, rj, party_ledger_names, pre_mis_openings, misc)
 
 
 def aggregate_party_movements(
@@ -167,6 +184,7 @@ def aggregate_party_movements_from_registers(
     rj_rows: list[ReceiptJournalRegisterRow],
     party_ledger_names: set[str],
     openings: dict[str, Decimal],
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> dict[str, PartyMovement]:
     """Section 4.2's "TB vs Registers" redesign (docs/registers_and_
     reporting_design.md item 56) - TB Cross-Check's own "our side" number,
@@ -254,6 +272,12 @@ def aggregate_party_movements_from_registers(
     for key, amount in journal_raw.items():
         totals[key[2]]["journals"] += flip_sign(amount)
 
+    misc_adjustment_totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0.00"))
+    for adj in misc_adjustment_rows:
+        if adj.party_id not in party_ledger_names:
+            continue
+        misc_adjustment_totals[adj.party_id] -= adj.amount
+
     movements: dict[str, PartyMovement] = {}
     for party_name in party_ledger_names:
         t = totals[party_name]
@@ -266,5 +290,6 @@ def aggregate_party_movements_from_registers(
             debit_notes=t["debit_notes"],
             receipts=t["receipts"],
             journals=t["journals"],
+            misc_adjustments=misc_adjustment_totals[party_name],
         )
     return movements

@@ -36,7 +36,13 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, ReceiptJournalRegisterRow, SalesDNRegisterRow
+from ar_mis.models import (
+    CreditNoteRegisterRow,
+    CustomerMasterRecord,
+    MiscAdjustment,
+    ReceiptJournalRegisterRow,
+    SalesDNRegisterRow,
+)
 from ar_mis.registers import AGEING_BUCKET_ORDER, compute_invoice_position
 
 _AGEING_BUCKET_ORDER = AGEING_BUCKET_ORDER
@@ -62,6 +68,7 @@ def compute_ageing_matrix(
     customer_masters: dict[tuple[str, str], CustomerMasterRecord],
     tally_closing_by_party: dict[tuple[str, str], Decimal],
     as_of: date,
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> list[AgeingMatrixRow]:
     """One row per (party_id, branch_id) that has at least one tracked
     Sales/DN invoice. `sales_dn_rows` should already be FY-filtered by the
@@ -83,7 +90,7 @@ def compute_ageing_matrix(
         for row in sales_dn_rows:
             if row.party_id != party_id or row.branch_id != branch_id:
                 continue
-            position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of)
+            position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows)
             buckets[position.ageing_bucket] += position.open_amount
             notional_interest_cost += position.notional_interest
         total_open = sum(buckets.values(), Decimal("0.00"))

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from ar_mis.models import LedgerEntry, Voucher, VoucherType
+from ar_mis.registers import compute_invoice_position
 from ar_mis.webapp.app import create_app
 
 
@@ -4951,6 +4952,181 @@ def test_sales_dn_register_shows_edit_delete_for_maker(client):
     assert resp.status_code == 200
     assert b">Edit<" in resp.data
     assert b">Delete<" in resp.data
+
+
+# ---- Misc Adjustment (client's explicit ask: the SWATI ENTERPRISERS case -
+# a real netting Tally itself reflects through a voucher type this app
+# never parses for the Sundry Debtor side) --------------------------------
+
+
+def test_sales_dn_misc_adjustment_reduces_open_amount_and_records_the_log(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "1000.00", "adjustment_date": "2026-05-15",
+            "reason": "Purchase voucher PV/45 netted against this invoice in Tally",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Misc Adjustment of" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    adjustments = store.all_misc_adjustments("KOL")
+    row = store.all_sales_dn_rows("KOL")[0]
+    cn_rows = store.all_credit_note_rows("KOL")
+    rj_rows = store.all_receipt_journal_rows("KOL")
+    store.close()
+
+    assert len(adjustments) == 1
+    assert adjustments[0].amount == Decimal("1000.00")
+    assert adjustments[0].adjustment_date == date(2026, 5, 15)
+    assert adjustments[0].adjusted_by == "Maker"
+
+    position = compute_invoice_position(row, cn_rows, rj_rows, date(2026, 6, 1), adjustments)
+    assert position.misc_adjustment_applied == Decimal("1000.00")
+    assert position.open_amount == Decimal("0.00")
+    assert position.ageing_bucket == "Closed"
+
+
+def test_sales_dn_misc_adjustment_allows_a_partial_amount(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "400.00", "adjustment_date": "2026-05-15", "reason": "Partial netting",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    row = store.all_sales_dn_rows("KOL")[0]
+    adjustments = store.all_misc_adjustments("KOL")
+    store.close()
+    position = compute_invoice_position(row, [], [], date(2026, 6, 1), adjustments)
+    assert position.open_amount == Decimal("600.00")
+
+
+def test_sales_dn_misc_adjustment_rejects_an_amount_over_the_open_balance(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "1500.00", "adjustment_date": "2026-05-15", "reason": "Too much",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"over-close it" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_misc_adjustments("KOL") == []
+    store.close()
+
+
+def test_sales_dn_misc_adjustment_requires_a_reason(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "100.00", "adjustment_date": "2026-05-15", "reason": "",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Enter a reason" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_misc_adjustments("KOL") == []
+    store.close()
+
+
+def test_sales_dn_misc_adjustment_rejects_a_non_positive_amount(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "0.00", "adjustment_date": "2026-05-15", "reason": "Zero makes no sense",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"greater than zero" in resp.data
+
+
+def test_sales_dn_misc_adjustment_is_as_of_date_filtered(client):
+    # Dated AFTER the view's own as_of - must not apply yet, same as a CN
+    # or Receipt dated in the future wouldn't.
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "1000.00", "adjustment_date": "2026-07-01", "reason": "Effective later",
+        },
+        follow_redirects=True,
+    )
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    row = store.all_sales_dn_rows("KOL")[0]
+    adjustments = store.all_misc_adjustments("KOL")
+    store.close()
+    position_before = compute_invoice_position(row, [], [], date(2026, 6, 1), adjustments)
+    assert position_before.open_amount == Decimal("1000.00")
+    position_after = compute_invoice_position(row, [], [], date(2026, 7, 1), adjustments)
+    assert position_after.open_amount == Decimal("0.00")
+
+
+def test_checker_cannot_record_a_misc_adjustment(roleless_client):
+    _seed_sales_dn_row(roleless_client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    roleless_client.post("/choose-role", data={"role": "checker"})
+    resp = roleless_client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "100.00", "adjustment_date": "2026-05-15", "reason": "Shouldn't be allowed",
+        },
+        follow_redirects=True,
+    )
+    assert b"isn&#39;t available for your role" in resp.data or b"isn't available for your role" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(roleless_client.application.config["DB_PATH"])
+    assert store.all_misc_adjustments("KOL") == []
+    store.close()
+
+
+def test_misc_adjustment_register_report_lists_recorded_adjustments(client):
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "250.00", "adjustment_date": "2026-05-15", "reason": "Purchase voucher PV/9 netting",
+        },
+        follow_redirects=True,
+    )
+    resp = client.get("/reports/misc-adjustments")
+    assert resp.status_code == 200
+    assert b"SB/1" in resp.data
+    assert b"Purchase voucher PV/9 netting" in resp.data
+    assert b"250.00" in resp.data
+
+    resp_home = client.get("/reports")
+    assert resp_home.status_code == 200
+    assert b"Misc Adjustment Register" in resp_home.data
 
 
 def _sales_dn_edit_form(client, row_id, as_of="2026-04-07", reason="test", **overrides):

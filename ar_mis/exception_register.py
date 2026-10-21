@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from ar_mis.models import (
     CreditNoteRegisterRow,
+    MiscAdjustment,
     ReceiptJournalRegisterRow,
     RegisterClassification,
     SalesDNRegisterRow,
@@ -65,6 +66,7 @@ def compute_negative_open_amount_invoices(
     credit_note_rows: list[CreditNoteRegisterRow],
     receipt_journal_rows: list[ReceiptJournalRegisterRow],
     as_of: date,
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> list[NegativeOpenAmountRow]:
     """An invoice whose linked CN + applied receipts exceed its own
     invoice value - an overpayment or an over-issued credit note against
@@ -73,7 +75,7 @@ def compute_negative_open_amount_invoices(
     """
     rows = []
     for row in sales_dn_rows:
-        position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of)
+        position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows)
         if position.open_amount < 0:
             rows.append(NegativeOpenAmountRow(row=row, open_amount=position.open_amount))
     return sorted(rows, key=lambda r: r.open_amount)
@@ -94,6 +96,7 @@ def compute_non_active_debtors(
     receipt_journal_rows: list[ReceiptJournalRegisterRow],
     as_of: date,
     inactivity_threshold_days: int = _NON_ACTIVE_THRESHOLD_DAYS,
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> list[NonActiveDebtorRow]:
     """A party who still owes money but hasn't shown up in ANY register
     (a new sale, a credit note, a receipt/journal) in over the threshold
@@ -109,7 +112,10 @@ def compute_non_active_debtors(
     for party_id, branch_id in parties:
         party_invoices = [row for row in sales_dn_rows if row.party_id == party_id and row.branch_id == branch_id]
         total_open = sum(
-            (compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of).open_amount for row in party_invoices),
+            (
+                compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows).open_amount
+                for row in party_invoices
+            ),
             Decimal("0.00"),
         )
         if total_open <= 0:
@@ -191,12 +197,13 @@ def compute_top_overdue_customers(
     receipt_journal_rows: list[ReceiptJournalRegisterRow],
     as_of: date,
     limit: int = _TOP_OVERDUE_LIMIT,
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> list[TopOverdueCustomerRow]:
     """Every overdue invoice's Open Amount, summed per (party, branch),
     largest total first, capped at `limit` (20 per the design doc)."""
     totals: dict[tuple[str, str], Decimal] = {}
     for row in sales_dn_rows:
-        position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of)
+        position = compute_invoice_position(row, credit_note_rows, receipt_journal_rows, as_of, misc_adjustment_rows)
         if not position.is_overdue:
             continue
         key = (row.party_id, row.branch_id)

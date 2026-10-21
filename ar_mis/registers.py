@@ -21,6 +21,7 @@ from ar_mis.models import (
     CustomerMasterRecord,
     InvoiceFollowUp,
     LedgerEntry,
+    MiscAdjustment,
     NoteType,
     ReceiptJournalRegisterRow,
     RegisterClassification,
@@ -816,6 +817,7 @@ class InvoicePosition:
     row: SalesDNRegisterRow
     linked_cn_amount: Decimal
     receipts_applied: Decimal
+    misc_adjustment_applied: Decimal
     open_amount: Decimal
     is_overdue: bool
     days_past_due: int
@@ -828,6 +830,7 @@ def compute_invoice_position(
     credit_note_rows: list[CreditNoteRegisterRow],
     receipt_journal_rows: list[ReceiptJournalRegisterRow],
     as_of: date,
+    misc_adjustment_rows: list[MiscAdjustment] = (),
 ) -> InvoicePosition:
     """Item 14: filters both underlying registers to `transaction date <=
     as_of` before aggregating, so the same invoice can be correctly
@@ -845,12 +848,20 @@ def compute_invoice_position(
     than the newest invoice on record - which is the common case, not
     an edge case, every time a report is viewed for an earlier date
     than "now").
+
+    `misc_adjustment_rows` is every MiscAdjustment on record (any branch/
+    party - filtered here, same as credit_note_rows/receipt_journal_rows
+    already are, to this one invoice's own identity and adjustment_date
+    <= as_of). Defaults to empty so every pre-existing caller that hasn't
+    been updated yet still gets the exact behaviour it always had, not a
+    silent behaviour change.
     """
     if row.invoice_date > as_of:
         return InvoicePosition(
             row=row,
             linked_cn_amount=Decimal("0.00"),
             receipts_applied=Decimal("0.00"),
+            misc_adjustment_applied=Decimal("0.00"),
             open_amount=Decimal("0.00"),
             is_overdue=False,
             days_past_due=0,
@@ -892,8 +903,17 @@ def compute_invoice_position(
         ),
         Decimal("0.00"),
     )
+    misc_adjustment_applied = sum(
+        (
+            adj.amount
+            for adj in misc_adjustment_rows
+            if adj.adjustment_date <= as_of
+            and (adj.party_id, adj.branch_id, adj.voucher_number) == (row.party_id, row.branch_id, row.voucher_number)
+        ),
+        Decimal("0.00"),
+    )
     net_receivable = row.invoice_value - linked_cn_amount
-    open_amount = net_receivable - receipts_applied
+    open_amount = net_receivable - receipts_applied - misc_adjustment_applied
     days_past_due = (as_of - row.due_date).days
     is_overdue = open_amount > 0 and days_past_due > 0
     # Live-confirmed real bug: an invoice fully paid off (open_amount == 0)
@@ -928,6 +948,7 @@ def compute_invoice_position(
         row=row,
         linked_cn_amount=linked_cn_amount,
         receipts_applied=receipts_applied,
+        misc_adjustment_applied=misc_adjustment_applied,
         open_amount=open_amount,
         is_overdue=is_overdue,
         days_past_due=days_past_due_display,

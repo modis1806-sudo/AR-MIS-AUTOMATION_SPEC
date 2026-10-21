@@ -28,6 +28,7 @@ from ar_mis.models import (
     FYRolloverSnapshot,
     InvoiceFollowUp,
     LedgerEntry,
+    MiscAdjustment,
     NoteType,
     PartyGrouping,
     PartyTBBalance,
@@ -65,7 +66,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -619,6 +620,27 @@ CREATE TABLE IF NOT EXISTS register_row_audit (
     # displayed", read back via COALESCE at the Python layer, never
     # backfilled with a guessed number.
     20: "ALTER TABLE sales_dn_register ADD COLUMN round_off TEXT;",
+    # Misc Adjustment (client's explicit ask): a logged, one-off movement
+    # against one specific tracked invoice - identified the same way its
+    # own sales_dn_register row is (branch_id, voucher_number, party_id)
+    # - for a real-world netting this app's own tracked voucher types
+    # will never see on their own (models.MiscAdjustment's own docstring
+    # has the real case). `amount` is always positive. `adjustment_date`
+    # is the effective date used for as-of filtering everywhere this is
+    # read, the same role a CN's cn_date or a Receipt's txn_date plays -
+    # not just a log timestamp.
+    21: """
+CREATE TABLE IF NOT EXISTS misc_adjustment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT NOT NULL,
+    voucher_number TEXT NOT NULL,
+    party_id TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    adjusted_by TEXT NOT NULL,
+    adjustment_date TEXT NOT NULL
+);
+""",
 }
 
 
@@ -995,6 +1017,54 @@ class Store:
                 reason=r["reason"],
                 adjusted_by=r["adjusted_by"],
                 adjusted_at=date.fromisoformat(r["adjusted_at"]),
+            )
+            for r in cur.fetchall()
+        ]
+
+    def record_misc_adjustment(self, adj: MiscAdjustment) -> None:
+        """Logs a Misc Adjustment - unlike record_pre_mis_adjustment, there
+        is no running total anywhere to update here: every reader that
+        cares (ar_mis.registers.compute_invoice_position, ar_mis.
+        rollforward.compute_party_closings_as_of) re-sums all_misc_
+        adjustments fresh, filtered to its own as_of, exactly like a
+        CN/Receipt's own application already is. This is purely the
+        append.
+        """
+        self.conn.execute(
+            "INSERT INTO misc_adjustment"
+            " (branch_id, voucher_number, party_id, amount, reason, adjusted_by, adjustment_date)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                adj.branch_id, adj.voucher_number, adj.party_id, str(adj.amount),
+                adj.reason, adj.adjusted_by, adj.adjustment_date.isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def all_misc_adjustments(self, branch_id: str | None = None) -> list[MiscAdjustment]:
+        """Oldest first, same ordering convention as all_pre_mis_adjustments
+        - a running "how did we get here" log reads naturally in that
+        order. `branch_id` narrows to one branch's own invoices, same as
+        every other all_*_rows reader in this module.
+        """
+        self.conn.row_factory = sqlite3.Row
+        if branch_id is None:
+            cur = self.conn.execute("SELECT * FROM misc_adjustment ORDER BY adjustment_date ASC, id ASC")
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM misc_adjustment WHERE branch_id=? ORDER BY adjustment_date ASC, id ASC",
+                (branch_id,),
+            )
+        return [
+            MiscAdjustment(
+                id=r["id"],
+                branch_id=r["branch_id"],
+                voucher_number=r["voucher_number"],
+                party_id=r["party_id"],
+                amount=Decimal(r["amount"]),
+                reason=r["reason"],
+                adjusted_by=r["adjusted_by"],
+                adjustment_date=date.fromisoformat(r["adjustment_date"]),
             )
             for r in cur.fetchall()
         ]
