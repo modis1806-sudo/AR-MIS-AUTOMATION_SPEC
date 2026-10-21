@@ -1872,10 +1872,26 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         and this is the only way to say so. Only the Pre-MIS target makes
         sense from Unapplied (it has no reference to "correct" back to
         Current - it's already Current), so "current" is refused from that
-        starting state. Restricted otherwise to Pending Review, so this
-        can't be used to flip an already-resolved or Matched row, and so a
-        double-submit can't double-count the balance adjustment (once
-        resolved, the row is no longer Pending Review/Unapplied).
+        starting state.
+
+        Also reachable from a PRE_MIS_ADJUSTMENT row whose reference now
+        resolves to a tracked invoice - client's own catch after live-
+        testing the dedicated "revert flagged Pre-MIS rows" action this
+        was first built as: that was needless duplication of this same
+        Resolve step, since "a row the system has flagged as now provable"
+        is just another case of "what should this row's classification
+        be", not a different action. Only the Matched target makes sense
+        from Pre-MIS (there's nothing left to confirm as Pre-MIS), and the
+        reference is re-verified against the CURRENT register here, never
+        trusted from whatever the page showed when it was loaded; reverses
+        the original Pre-MIS Outstanding move with its own opposite-sign
+        entry, same as credit_note_revert_to_pending_review already does
+        for the "this was a mistake" case.
+
+        Restricted otherwise to Pending Review, so this can't be used to
+        flip an already-Matched row, and so a double-submit can't double-
+        count a balance adjustment (once resolved, the row is no longer
+        Pending Review/Unapplied/a resolvable Pre-MIS row).
         """
         as_of_raw = request.form.get("as_of", "")
         branch_id = request.form.get("branch_id", "")
@@ -1899,13 +1915,36 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if not rows:
             store.close()
             return _redisplay(f"No credit note found for {voucher_number}.")
-        is_unapplied = rows[0].classification == RegisterClassification.CURRENT and rows[0].bill_allocation_reference is None
-        if rows[0].classification != RegisterClassification.PENDING_REVIEW and not is_unapplied:
+        row = rows[0]
+        is_unapplied = row.classification == RegisterClassification.CURRENT and row.bill_allocation_reference is None
+        is_pre_mis_now_resolvable = (
+            row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+            and row.bill_allocation_reference is not None
+            and (row.party_id, row.bill_allocation_reference) in build_bill_reference_lookup(store.all_sales_dn_rows())
+        )
+        eligible = row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied or is_pre_mis_now_resolvable
+        if not eligible:
             store.close()
-            return _redisplay(f"{voucher_number} is not Pending Review or Unapplied - nothing to resolve.")
+            return _redisplay(f"{voucher_number} is not Pending Review, Unapplied, or a Pre-MIS row that now resolves - nothing to resolve.")
         if is_unapplied and target != "pre_mis":
             store.close()
             return _redisplay(f"{voucher_number} is Unapplied - it can only be resolved to Pre-MIS Adjustment.")
+        if is_pre_mis_now_resolvable and target != "current":
+            store.close()
+            return _redisplay(f"{voucher_number} is a Pre-MIS row that now resolves - it can only be reverted to Matched.")
+
+        if is_pre_mis_now_resolvable:
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=party_id, branch_id=branch_id, amount=row.cn_amount,
+                    reason=f"Reversal of CN {voucher_number} Pre-MIS Adjustment (reference now resolves - reverted to Matched)",
+                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                )
+            )
+            store.resolve_credit_note_classification(branch_id, voucher_number, party_id, RegisterClassification.CURRENT, "")
+            store.close()
+            flash(f"{voucher_number} resolved as Current.", "success")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
@@ -1914,7 +1953,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         if target == "pre_mis":
             store.record_pre_mis_adjustment(
                 PreMisAdjustment(
-                    party_id=party_id, branch_id=branch_id, amount=-rows[0].cn_amount,
+                    party_id=party_id, branch_id=branch_id, amount=-row.cn_amount,
                     reason=f"CN {voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
                 )
             )
@@ -1929,10 +1968,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         explicit ask: resolve every selected Pending Review CN in a
         filtered range at once (e.g. "all 24-25 CNs"), not one at a
         time. Silently skips any selected row that isn't currently
-        Pending Review or Unapplied, and - matching credit_note_
-        reclassify's own single-row rule - also skips an Unapplied row
-        when the batch's own shared target isn't Pre-MIS (its only valid
-        target), rather than forcing it to "current" regardless.
+        Pending Review, Unapplied, or a Pre-MIS row that now resolves
+        (see credit_note_reclassify's own docstring for that last case -
+        client's own catch that a separate "revert flagged Pre-MIS rows"
+        action duplicated this same Resolve step), and - matching the
+        single-row rule - also skips an Unapplied row when the batch's
+        own shared target isn't Pre-MIS, and a Pre-MIS-resolvable row
+        when the target isn't Matched.
         """
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
@@ -1952,6 +1994,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
         )
         store = get_store()
+        lookup = build_bill_reference_lookup(store.all_sales_dn_rows())
         rows_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in store.all_credit_note_rows()}
 
         identities = set()
@@ -1965,9 +2008,28 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         for branch_id, voucher_number, party_id in identities:
             row = rows_by_identity.get((branch_id, voucher_number, party_id))
             is_unapplied = row is not None and row.classification == RegisterClassification.CURRENT and row.bill_allocation_reference is None
-            eligible = row is not None and (row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied)
-            if not eligible or (is_unapplied and target != "pre_mis"):
+            is_pre_mis_now_resolvable = (
+                row is not None
+                and row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+                and row.bill_allocation_reference is not None
+                and (row.party_id, row.bill_allocation_reference) in lookup
+            )
+            eligible = row is not None and (
+                row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied or is_pre_mis_now_resolvable
+            )
+            if not eligible or (is_unapplied and target != "pre_mis") or (is_pre_mis_now_resolvable and target != "current"):
                 skipped_count += 1
+                continue
+            if is_pre_mis_now_resolvable:
+                store.record_pre_mis_adjustment(
+                    PreMisAdjustment(
+                        party_id=party_id, branch_id=branch_id, amount=row.cn_amount,
+                        reason=f"Reversal of CN {voucher_number} Pre-MIS Adjustment (reference now resolves - reverted to Matched)",
+                        adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                    )
+                )
+                store.resolve_credit_note_classification(branch_id, voucher_number, party_id, RegisterClassification.CURRENT, "")
+                resolved_count += 1
                 continue
             store.resolve_credit_note_classification(branch_id, voucher_number, party_id, new_classification, reason)
             if target == "pre_mis":
@@ -1982,7 +2044,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         message = f"Resolved {resolved_count} of {len(identities)} selected as {new_classification.value}."
         if skipped_count:
-            message += f" {skipped_count} skipped (not Pending Review/Unapplied, or Unapplied with a non-Pre-MIS target)."
+            message += f" {skipped_count} skipped (not Pending Review/Unapplied/a resolvable Pre-MIS row, or an ineligible target for its own state)."
         flash(message, "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
@@ -2049,72 +2111,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.resolve_credit_note_classification(branch_id, voucher_number, party_id, revert_target, "")
         store.close()
         flash(f"{voucher_number} reverted to {revert_label}.", "success")
-        return redirect(url_for("credit_note_register", as_of=as_of_raw))
-
-    @app.route("/registers/credit-notes/revert-to-matched/batch", methods=["POST"])
-    @requires_role("maker")
-    def credit_note_revert_pre_mis_batch():
-        """Client's own ask (live-testing): a Pre-MIS Adjustment CN whose
-        reference has since started resolving to a tracked invoice (the
-        invoice simply hadn't been extracted yet when a human confirmed
-        Pre-MIS) is a fact that's become checkable, not a human judgment
-        call any more - batch-reverts every selected row straight to
-        Matched. Re-verifies server-side that each selected row is still
-        Pre-MIS AND its reference still resolves, never trusting the
-        selection alone (the same filtered view a Maker selects from can
-        go stale between page load and submit). Reverses each row's own
-        Pre-MIS Outstanding adjustment with its own opposite-sign entry,
-        same as the single-row Revert already does.
-        """
-        as_of_raw = request.form.get("as_of", "")
-        selected = request.form.getlist("selected")
-
-        def _redisplay(message: str):
-            flash(message, "error")
-            return redirect(url_for("credit_note_register", as_of=as_of_raw))
-
-        if not selected:
-            return _redisplay("Select at least one row to revert.")
-
-        store = get_store()
-        lookup = build_bill_reference_lookup(store.all_sales_dn_rows())
-        rows_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in store.all_credit_note_rows()}
-
-        identities = set()
-        for identity in selected:
-            parts = identity.split("|", 2)
-            if len(parts) == 3:
-                identities.add(tuple(parts))
-
-        reverted_count = 0
-        skipped_count = 0
-        for branch_id, voucher_number, party_id in identities:
-            row = rows_by_identity.get((branch_id, voucher_number, party_id))
-            resolves = (
-                row is not None
-                and row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
-                and row.bill_allocation_reference is not None
-                and (row.party_id, row.bill_allocation_reference) in lookup
-            )
-            if not resolves:
-                skipped_count += 1
-                continue
-            store.record_pre_mis_adjustment(
-                PreMisAdjustment(
-                    party_id=party_id, branch_id=branch_id, amount=row.cn_amount,
-                    reason=f"Reversal of CN {voucher_number} Pre-MIS Adjustment (reference now resolves - reverted to Matched)",
-                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
-                )
-            )
-            store.resolve_credit_note_classification(
-                branch_id, voucher_number, party_id, RegisterClassification.CURRENT, ""
-            )
-            reverted_count += 1
-        store.close()
-        message = f"Reverted {reverted_count} of {len(identities)} selected row(s) to Matched."
-        if skipped_count:
-            message += f" {skipped_count} skipped (not Pre-MIS, or reference no longer resolves)."
-        flash(message, "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
     @app.route("/registers/credit-notes/edit", methods=["POST"])
@@ -2271,6 +2267,15 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         whichever one a query happened to return first, not necessarily
         the line actually selected - see Store.resolve_receipt_journal_
         row_classification's own docstring).
+
+        Also reachable from a PRE_MIS_ADJUSTMENT row whose reference now
+        resolves to a tracked invoice - same reasoning and the same
+        client catch as credit_note_reclassify's own docstring (a
+        dedicated "revert flagged Pre-MIS rows" action duplicated this
+        same Resolve step). Only the Matched target makes sense from
+        Pre-MIS; the reference is re-verified against the CURRENT
+        register here, never trusted from whatever the page showed when
+        it was loaded.
         """
         as_of_raw = request.form.get("as_of", "")
         raw_row_id = request.form.get("row_id", "")
@@ -2294,12 +2299,37 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             store.close()
             return _redisplay(f"No receipt_journal_register row with id={row_id}")
         is_unapplied = row.classification == RegisterClassification.CURRENT and row.target_doc_no is None
-        if row.classification != RegisterClassification.PENDING_REVIEW and not is_unapplied:
+        is_pre_mis_now_resolvable = (
+            row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+            and row.target_doc_no is not None
+            and (row.party_id, row.target_doc_no) in build_bill_reference_lookup(store.all_sales_dn_rows())
+        )
+        eligible = row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied or is_pre_mis_now_resolvable
+        if not eligible:
             store.close()
-            return _redisplay(f"{row.voucher_number} is not Pending Review or Unapplied - nothing to resolve.")
+            return _redisplay(f"{row.voucher_number} is not Pending Review, Unapplied, or a Pre-MIS row that now resolves - nothing to resolve.")
         if is_unapplied and target != "pre_mis":
             store.close()
             return _redisplay(f"{row.voucher_number} is Unapplied - it can only be resolved to Pre-MIS Adjustment.")
+        if is_pre_mis_now_resolvable and target != "current":
+            store.close()
+            return _redisplay(f"{row.voucher_number} is a Pre-MIS row that now resolves - it can only be reverted to Matched.")
+
+        if is_pre_mis_now_resolvable:
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=row.party_id, branch_id=row.branch_id, amount=row.amount,
+                    reason=(
+                        f"Reversal of {row.voucher_type} {row.voucher_number} Pre-MIS Adjustment"
+                        " (reference now resolves - reverted to Matched)"
+                    ),
+                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                )
+            )
+            store.resolve_receipt_journal_row_classification(row_id, RegisterClassification.CURRENT)
+            store.close()
+            flash(f"{row.voucher_number} resolved as Current.", "success")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
@@ -2326,9 +2356,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         classification's own docstring for why): `selected` carries each
         row's own id now, not a branch+voucher+party identity that could
         collapse several distinct lines together. Silently skips any
-        selected row that isn't currently Pending Review or Unapplied,
-        and also skips an Unapplied one when the batch's own shared
-        target isn't Pre-MIS.
+        selected row that isn't currently Pending Review, Unapplied, or a
+        Pre-MIS row that now resolves (see receipt_journal_reclassify's
+        own docstring for that last case), and also skips an Unapplied
+        row when the batch's own shared target isn't Pre-MIS, and a
+        Pre-MIS-resolvable row when the target isn't Matched.
         """
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
@@ -2348,6 +2380,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
         )
         store = get_store()
+        lookup = build_bill_reference_lookup(store.all_sales_dn_rows())
         row_ids = set()
         for raw in selected:
             try:
@@ -2360,9 +2393,31 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         for row_id in row_ids:
             row = store.get_receipt_journal_row_by_id(row_id)
             is_unapplied = row is not None and row.classification == RegisterClassification.CURRENT and row.target_doc_no is None
-            eligible = row is not None and (row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied)
-            if not eligible or (is_unapplied and target != "pre_mis"):
+            is_pre_mis_now_resolvable = (
+                row is not None
+                and row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+                and row.target_doc_no is not None
+                and (row.party_id, row.target_doc_no) in lookup
+            )
+            eligible = row is not None and (
+                row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied or is_pre_mis_now_resolvable
+            )
+            if not eligible or (is_unapplied and target != "pre_mis") or (is_pre_mis_now_resolvable and target != "current"):
                 skipped_count += 1
+                continue
+            if is_pre_mis_now_resolvable:
+                store.record_pre_mis_adjustment(
+                    PreMisAdjustment(
+                        party_id=row.party_id, branch_id=row.branch_id, amount=row.amount,
+                        reason=(
+                            f"Reversal of {row.voucher_type} {row.voucher_number} Pre-MIS Adjustment"
+                            " (reference now resolves - reverted to Matched)"
+                        ),
+                        adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                    )
+                )
+                store.resolve_receipt_journal_row_classification(row_id, RegisterClassification.CURRENT)
+                resolved_count += 1
                 continue
             store.resolve_receipt_journal_row_classification(row_id, new_classification)
             if target == "pre_mis":
@@ -2377,7 +2432,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.close()
         message = f"Resolved {resolved_count} of {len(row_ids)} selected as {new_classification.value}."
         if skipped_count:
-            message += f" {skipped_count} skipped (not Pending Review/Unapplied, or Unapplied with a non-Pre-MIS target)."
+            message += f" {skipped_count} skipped (not Pending Review/Unapplied/a resolvable Pre-MIS row, or an ineligible target for its own state)."
         flash(message, "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
@@ -2435,66 +2490,6 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.resolve_receipt_journal_row_classification(row_id, revert_target)
         store.close()
         flash(f"{row.voucher_number} reverted to {revert_label}.", "success")
-        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
-
-    @app.route("/registers/receipts-journals/revert-to-matched/batch", methods=["POST"])
-    @requires_role("maker")
-    def receipt_journal_revert_pre_mis_batch():
-        """Batch counterpart to credit_note_revert_pre_mis_batch - see its
-        own docstring for the rationale. `selected` carries each row's
-        own id (same as every other RJ batch action), re-verified
-        server-side that it's still Pre-MIS and its reference still
-        resolves before touching anything.
-        """
-        as_of_raw = request.form.get("as_of", "")
-        selected = request.form.getlist("selected")
-
-        def _redisplay(message: str):
-            flash(message, "error")
-            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
-
-        if not selected:
-            return _redisplay("Select at least one row to revert.")
-
-        store = get_store()
-        lookup = build_bill_reference_lookup(store.all_sales_dn_rows())
-        row_ids = set()
-        for raw in selected:
-            try:
-                row_ids.add(int(raw))
-            except ValueError:
-                continue
-
-        reverted_count = 0
-        skipped_count = 0
-        for row_id in row_ids:
-            row = store.get_receipt_journal_row_by_id(row_id)
-            resolves = (
-                row is not None
-                and row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
-                and row.target_doc_no is not None
-                and (row.party_id, row.target_doc_no) in lookup
-            )
-            if not resolves:
-                skipped_count += 1
-                continue
-            store.record_pre_mis_adjustment(
-                PreMisAdjustment(
-                    party_id=row.party_id, branch_id=row.branch_id, amount=row.amount,
-                    reason=(
-                        f"Reversal of {row.voucher_type} {row.voucher_number} Pre-MIS Adjustment"
-                        " (reference now resolves - reverted to Matched)"
-                    ),
-                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
-                )
-            )
-            store.resolve_receipt_journal_row_classification(row_id, RegisterClassification.CURRENT)
-            reverted_count += 1
-        store.close()
-        message = f"Reverted {reverted_count} of {len(row_ids)} selected row(s) to Matched."
-        if skipped_count:
-            message += f" {skipped_count} skipped (not Pre-MIS, or reference no longer resolves)."
-        flash(message, "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals")

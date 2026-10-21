@@ -164,7 +164,7 @@
         {% endfor %}
         </tbody>
       </table>
-      <p style="font-size:12px; color:#6b7280;">Filter Classification to "Pre-MIS Adjustment" on the <a href="{{ url_for('credit_note_register') }}">Credit Note Register</a> or <a href="{{ url_for('receipt_journal_register') }}">Receipt & Journal Register</a>, tick these rows, and use "Batch: revert flagged Pre-MIS rows to Matched".</p>
+      <p style="font-size:12px; color:#6b7280;">Filter Classification to "Pre-MIS Adjustment" on the <a href="{{ url_for('credit_note_register') }}">Credit Note Register</a> or <a href="{{ url_for('receipt_journal_register') }}">Receipt & Journal Register</a>, tick these rows, choose Matched in "Batch: resolve selected rows", and Apply - or use the row's own "Resolve" control for just one.</p>
       {% endif %}
 
       {% if cr.ytd_debtor_pull_error %}

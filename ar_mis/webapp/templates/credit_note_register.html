@@ -53,24 +53,19 @@
   <span class="tt-selected" data-tt-selected-count>0 selected</span>
 </div>
 <details class="card" style="margin-bottom:16px;">
-  <summary style="cursor:pointer; font-weight:600;">Batch: resolve selected Pending Review rows</summary>
-  <p style="font-size:12px; color:#6b7280; margin:8px 0;">Applies only to selected rows that are currently Pending Review — anything else you've ticked is left untouched. Tick the rows below, then Apply.</p>
+  <summary style="cursor:pointer; font-weight:600;">Batch: resolve selected rows</summary>
+  <p style="font-size:12px; color:#6b7280; margin:8px 0;">Applies only to selected rows that are eligible for the chosen resolution — anything else you've ticked is left untouched, and the message after Apply says how many were skipped and why. Covers three cases: a Pending Review or Unapplied row resolved to Pre-MIS Adjustment or Matched, and (choosing Matched) a Pre-MIS Adjustment row whose reference has since started resolving to a tracked invoice - the invoice simply didn't exist yet when a human confirmed Pre-MIS, so this reverts it and its Pre-MIS Outstanding move automatically, re-verified against the current register, never guessed from what the page showed on load. Tick the rows below, then Apply.</p>
   <form id="creditnotes-batch-form" method="post" action="{{ url_for('credit_note_reclassify_batch') }}" style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
     <input type="hidden" name="as_of" value="{{ as_of }}">
     <div>
       <label style="display:block; font-size:12px; font-weight:600;">Resolve as</label>
       <select name="target_classification" required>
         <option value="pre_mis">Pre-MIS Adjustment (reduces Pre-MIS Outstanding)</option>
-        <option value="current">Matched (data-entry correction)</option>
+        <option value="current">Matched (data-entry correction, or a Pre-MIS row that now resolves)</option>
       </select>
     </div>
     <button class="btn" type="submit">Apply to selected</button>
   </form>
-</details>
-<details class="card" style="margin-bottom:16px;">
-  <summary style="cursor:pointer; font-weight:600;">Batch: revert flagged Pre-MIS rows to Matched</summary>
-  <p style="font-size:12px; color:#6b7280; margin:8px 0;">For a Pre-MIS Adjustment row whose reference has since started resolving to a tracked invoice - the invoice simply didn't exist yet when a human confirmed Pre-MIS. Filter Classification to "Pre-MIS Adjustment" and check Linked Invoice Date/Value: a row showing a real date/value there is a candidate. Tick it and Apply - anything not currently Pre-MIS, or whose reference no longer resolves, is skipped automatically.</p>
-  <button class="btn" type="submit" form="creditnotes-batch-form" formaction="{{ url_for('credit_note_revert_pre_mis_batch') }}">Revert selected to Matched</button>
 </details>
 <details class="card" style="margin-bottom:16px;">
   <summary style="cursor:pointer; font-weight:600;">Batch: delete selected rows</summary>
@@ -150,6 +145,20 @@
         {% else %}
           {% set revert_label = "Unapplied" if row.bill_allocation_reference is none else "Pending Review" %}
           <span class="pill class-premis">Pre-MIS Adjustment</span>
+          {% if d.fields.linked_invoice_date %}
+          <details>
+            <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Resolve</summary>
+            <form method="post" action="{{ url_for('credit_note_reclassify') }}" style="margin-top:6px; min-width:230px;">
+              <input type="hidden" name="as_of" value="{{ as_of }}">
+              <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
+              <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
+              <input type="hidden" name="party_id" value="{{ row.party_id }}">
+              <input type="hidden" name="target_classification" value="current">
+              <div style="font-size:11px; color:#6b7280;">This reference now points to a tracked invoice (see Linked Invoice Date/Value) - the Pre-MIS Outstanding reduction recorded when this was confirmed will be reversed.</div>
+              <button class="btn" type="submit" style="padding:4px 10px;">Mark as Matched</button>
+            </form>
+          </details>
+          {% endif %}
           <details>
             <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Revert</summary>
             <form method="post" action="{{ url_for('credit_note_revert_to_pending_review') }}" style="margin-top:6px; min-width:200px;"

@@ -2810,15 +2810,17 @@ def test_credit_note_revert_pre_mis_batch_reverts_only_rows_that_now_resolve(cli
     _seed_sales_dn_row(client, voucher_number="SB/1")  # the invoice that now makes CN/RESOLVES provable
 
     resp = client.post(
-        "/registers/credit-notes/revert-to-matched/batch",
+        "/registers/credit-notes/reclassify/batch",
         data={
             "as_of": "2026-06-01",
             "selected": ["KOL|CN/RESOLVES|ACME", "KOL|CN/STILL_UNKNOWN|ACME"],
+            "target_classification": "current",
+            "reason": "Data-entry typo, not Pre-MIS",
         },
         follow_redirects=True,
     )
     assert resp.status_code == 200
-    assert b"Reverted 1 of 2 selected row(s) to Matched" in resp.data
+    assert b"Resolved 1 of 2 selected as Current" in resp.data
     assert b"1 skipped" in resp.data
 
     store2 = Store(client.application.config["DB_PATH"])
@@ -2890,7 +2892,7 @@ def test_credit_note_reclassify_rejects_a_matched_row(client):
         follow_redirects=True,
     )
     assert resp.status_code == 200
-    assert b"not Pending Review or Unapplied" in resp.data
+    assert b"not Pending Review, Unapplied, or a Pre-MIS row that now resolves" in resp.data
 
 
 def test_credit_note_reclassify_rejects_an_unapplied_row_with_a_non_pre_mis_target(client):
@@ -3303,15 +3305,17 @@ def test_receipt_journal_revert_pre_mis_batch_reverts_only_rows_that_now_resolve
     _seed_sales_dn_row(client, voucher_number="SB/1")  # the invoice that now makes RCPT/RESOLVES provable
 
     resp = client.post(
-        "/registers/receipts-journals/revert-to-matched/batch",
+        "/registers/receipts-journals/reclassify/batch",
         data={
             "as_of": "2026-06-01",
             "selected": [str(row_ids["SB/1"]), str(row_ids["SB/UNKNOWN"])],
+            "target_classification": "current",
+            "reason": "Data-entry typo, not Pre-MIS",
         },
         follow_redirects=True,
     )
     assert resp.status_code == 200
-    assert b"Reverted 1 of 2 selected row(s) to Matched" in resp.data
+    assert b"Resolved 1 of 2 selected as Current" in resp.data
     assert b"1 skipped" in resp.data
 
     store2 = Store(client.application.config["DB_PATH"])
@@ -3476,7 +3480,7 @@ def test_credit_note_reclassify_batch_resolves_all_selected_pending_review_rows(
     )
     assert resp.status_code == 200
     assert b"Resolved 2 of 3 selected as Pre-MIS Adjustment" in resp.data
-    assert b"1 skipped (not Pending Review/Unapplied, or Unapplied with a non-Pre-MIS target)" in resp.data
+    assert b"1 skipped (not Pending Review/Unapplied/a resolvable Pre-MIS row, or an ineligible target for its own state)" in resp.data
 
     store2 = Store(client.application.config["DB_PATH"])
     customer = store2.get_customer_master("ACME", "KOL")
