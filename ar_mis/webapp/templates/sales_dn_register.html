@@ -100,7 +100,7 @@
     {% set row = d.row %}
     {% set pos = d.position %}
     {% set fu = d.follow_up %}
-    <tr data-tt-row data-tt-row-id="{{ row.id }}">
+    <tr data-tt-row data-tt-row-id="{{ row.id }}" data-tt-row-tb_as_of="{{ d.tb_as_of or today }}">
       <td><input type="checkbox" data-tt-row-select form="salesdn-batch-form" name="selected" value="{{ row.branch_id }}|{{ row.voucher_number }}|{{ row.party_id }}"></td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.invoice_date }}</td>
@@ -199,7 +199,8 @@
     <label style="font-size:11px; font-weight:600;">Open Amount shown above ({{ as_of }})</label>
     <input type="text" readonly data-tt-field="open_amount" style="background:#f3f4f6;">
     <label style="font-size:11px; font-weight:600;">Effective date (the real Tally entry's own date)</label>
-    <input type="date" name="adjustment_date" value="{{ today }}" required>
+    <input type="date" name="adjustment_date" data-tt-field="tb_as_of" required>
+    <div style="font-size:11px; color:#6b7280;">Defaults to this party's last Tally reading date, so it resolves what's currently showing on the TB Cross-Check - move it earlier only if the real Tally entry actually happened before that.</div>
     <label style="font-size:11px; font-weight:600;">Amount to adjust</label>
     <input type="number" step="0.01" name="amount" required>
     <label style="font-size:11px; font-weight:600;">Reason</label>

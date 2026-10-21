@@ -1230,6 +1230,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         misc_rows = store.all_misc_adjustments()
+        tb_balances = store.all_party_tb_balances()
         follow_ups = {(f.branch_id, f.voucher_number, f.party_id): f for f in store.all_invoice_follow_ups()}
         groupings = {
             (r["party_id"], r["branch_id"]): r["grouping"] for r in store.all_customer_master_records()
@@ -1240,6 +1241,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         display_rows = []
         for row in sales_dn_rows:
             position = compute_invoice_position(row, cn_rows, rj_rows, as_of, misc_rows)
+            tb_balance = tb_balances.get((row.party_id, row.branch_id))
             follow_up = follow_ups.get((row.branch_id, row.voucher_number, row.party_id))
             ptp_status = None
             if follow_up is not None and follow_up.ptp_date is not None:
@@ -1257,6 +1259,21 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
                     "follow_up": follow_up,
                     "ptp_status": ptp_status,
                     "grouping": groupings.get((row.party_id, row.branch_id)),
+                    # Misc Adjustment's own default effective date (client's
+                    # own live-testing catch): defaulting it to "today"
+                    # silently failed to fix the TB Cross-Check whenever
+                    # the party's own last Tally reading is dated earlier
+                    # than today, which is the ordinary case between
+                    # extractions - compute_party_closings_as_of filters
+                    # every movement, Misc Adjustment included, to on-or-
+                    # before that reading's own as_of, so an adjustment
+                    # dated after it simply hasn't "happened yet" from
+                    # that reading's own point of view. Defaulting to the
+                    # reading's own as_of instead means the adjustment
+                    # immediately resolves whatever's currently showing
+                    # as a mismatch there - still editable for a genuinely
+                    # earlier real Tally entry.
+                    "tb_as_of": tb_balance.as_of.isoformat() if tb_balance else None,
                 }
             )
         return display_rows, freshness

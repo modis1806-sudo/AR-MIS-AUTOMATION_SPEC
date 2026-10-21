@@ -5089,6 +5089,52 @@ def test_sales_dn_misc_adjustment_is_as_of_date_filtered(client):
     assert position_after.open_amount == Decimal("0.00")
 
 
+def test_sales_dn_misc_adjustment_panel_defaults_effective_date_to_the_partys_tb_reading(client):
+    # Client's own live-testing catch: a Maker who fills in only amount
+    # and reason, leaving the date field exactly as the page offered it,
+    # found the fix took effect on the Sales & DN Register but not on
+    # the TB Cross-Check. Root cause: the party's own last Tally reading
+    # (party_tb_balance.as_of) is almost always dated earlier than
+    # "today" (the time between extractions), and compute_party_
+    # closings_as_of filters every movement, this adjustment included, to
+    # on-or-before that reading's own date - defaulting to "today" would
+    # silently miss it every time. The row must offer the reading's own
+    # date instead, not today's, so a Maker who never touches the date
+    # field still fixes what they're actually looking at.
+    from ar_mis.models import CustomerMasterRecord
+    from ar_mis.storage import Store
+
+    _seed_sales_dn_row(client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    store.replace_party_tb_balances_for_branch("KOL", date(2026, 6, 1), {"ACME": Decimal("0.00")})
+    store.close()
+
+    resp = client.get("/registers/sales-dn")
+    assert resp.status_code == 200
+    assert b'data-tt-row-tb_as_of="2026-06-01"' in resp.data
+
+    # Submit exactly as the form offers it - no adjustment_date field
+    # touched by this test either, matching what a Maker who accepted
+    # the pre-filled default would actually send.
+    resp = client.post(
+        "/registers/sales-dn/misc-adjustment",
+        data={
+            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "SB/1", "party_id": "ACME",
+            "amount": "1000.00", "adjustment_date": "2026-06-01",
+            "reason": "Purchase voucher netted against this invoice in Tally",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+
+    from ar_mis.rollforward import compute_party_closings_as_of
+    store2 = Store(client.application.config["DB_PATH"])
+    movements = compute_party_closings_as_of(store2, "KOL", {"ACME"}, date(2026, 6, 1))
+    store2.close()
+    assert movements["ACME"].closing_computed == Decimal("0.00")
+
+
 def test_checker_cannot_record_a_misc_adjustment(roleless_client):
     _seed_sales_dn_row(roleless_client, voucher_number="SB/1", party_id="ACME", invoice_value=Decimal("1000.00"))
     roleless_client.post("/choose-role", data={"role": "checker"})
