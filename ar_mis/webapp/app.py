@@ -2051,6 +2051,72 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash(f"{voucher_number} reverted to {revert_label}.", "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
+    @app.route("/registers/credit-notes/revert-to-matched/batch", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_revert_pre_mis_batch():
+        """Client's own ask (live-testing): a Pre-MIS Adjustment CN whose
+        reference has since started resolving to a tracked invoice (the
+        invoice simply hadn't been extracted yet when a human confirmed
+        Pre-MIS) is a fact that's become checkable, not a human judgment
+        call any more - batch-reverts every selected row straight to
+        Matched. Re-verifies server-side that each selected row is still
+        Pre-MIS AND its reference still resolves, never trusting the
+        selection alone (the same filtered view a Maker selects from can
+        go stale between page load and submit). Reverses each row's own
+        Pre-MIS Outstanding adjustment with its own opposite-sign entry,
+        same as the single-row Revert already does.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to revert.")
+
+        store = get_store()
+        lookup = build_bill_reference_lookup(store.all_sales_dn_rows())
+        rows_by_identity = {(r.branch_id, r.voucher_number, r.party_id): r for r in store.all_credit_note_rows()}
+
+        identities = set()
+        for identity in selected:
+            parts = identity.split("|", 2)
+            if len(parts) == 3:
+                identities.add(tuple(parts))
+
+        reverted_count = 0
+        skipped_count = 0
+        for branch_id, voucher_number, party_id in identities:
+            row = rows_by_identity.get((branch_id, voucher_number, party_id))
+            resolves = (
+                row is not None
+                and row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+                and row.bill_allocation_reference is not None
+                and (row.party_id, row.bill_allocation_reference) in lookup
+            )
+            if not resolves:
+                skipped_count += 1
+                continue
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=party_id, branch_id=branch_id, amount=row.cn_amount,
+                    reason=f"Reversal of CN {voucher_number} Pre-MIS Adjustment (reference now resolves - reverted to Matched)",
+                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                )
+            )
+            store.resolve_credit_note_classification(
+                branch_id, voucher_number, party_id, RegisterClassification.CURRENT, ""
+            )
+            reverted_count += 1
+        store.close()
+        message = f"Reverted {reverted_count} of {len(identities)} selected row(s) to Matched."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not Pre-MIS, or reference no longer resolves)."
+        flash(message, "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
     @app.route("/registers/credit-notes/edit", methods=["POST"])
     @requires_role("maker")
     def credit_note_row_edit():
@@ -2369,6 +2435,66 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         store.resolve_receipt_journal_row_classification(row_id, revert_target)
         store.close()
         flash(f"{row.voucher_number} reverted to {revert_label}.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/revert-to-matched/batch", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_revert_pre_mis_batch():
+        """Batch counterpart to credit_note_revert_pre_mis_batch - see its
+        own docstring for the rationale. `selected` carries each row's
+        own id (same as every other RJ batch action), re-verified
+        server-side that it's still Pre-MIS and its reference still
+        resolves before touching anything.
+        """
+        as_of_raw = request.form.get("as_of", "")
+        selected = request.form.getlist("selected")
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        if not selected:
+            return _redisplay("Select at least one row to revert.")
+
+        store = get_store()
+        lookup = build_bill_reference_lookup(store.all_sales_dn_rows())
+        row_ids = set()
+        for raw in selected:
+            try:
+                row_ids.add(int(raw))
+            except ValueError:
+                continue
+
+        reverted_count = 0
+        skipped_count = 0
+        for row_id in row_ids:
+            row = store.get_receipt_journal_row_by_id(row_id)
+            resolves = (
+                row is not None
+                and row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+                and row.target_doc_no is not None
+                and (row.party_id, row.target_doc_no) in lookup
+            )
+            if not resolves:
+                skipped_count += 1
+                continue
+            store.record_pre_mis_adjustment(
+                PreMisAdjustment(
+                    party_id=row.party_id, branch_id=row.branch_id, amount=row.amount,
+                    reason=(
+                        f"Reversal of {row.voucher_type} {row.voucher_number} Pre-MIS Adjustment"
+                        " (reference now resolves - reverted to Matched)"
+                    ),
+                    adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
+                )
+            )
+            store.resolve_receipt_journal_row_classification(row_id, RegisterClassification.CURRENT)
+            reverted_count += 1
+        store.close()
+        message = f"Reverted {reverted_count} of {len(row_ids)} selected row(s) to Matched."
+        if skipped_count:
+            message += f" {skipped_count} skipped (not Pre-MIS, or reference no longer resolves)."
+        flash(message, "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals")

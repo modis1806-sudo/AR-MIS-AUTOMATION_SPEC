@@ -608,6 +608,50 @@ def find_pending_review_rows_now_resolvable(
     return cn_resolvable, rj_resolvable
 
 
+def find_pre_mis_rows_now_resolvable(
+    cn_rows: list[CreditNoteRegisterRow],
+    rj_rows: list[ReceiptJournalRegisterRow],
+    lookup: dict[tuple[str, str], SalesDNRegisterRow],
+) -> tuple[list[CreditNoteRegisterRow], list[ReceiptJournalRegisterRow]]:
+    """Client's own live-testing catch, the mirror image of find_pending_
+    review_rows_now_resolvable above: a row confirmed PRE_MIS_ADJUSTMENT
+    was a human's own judgment call at the time ("no proof this invoice
+    exists, accept it as pre-go-live debt") - reasonable when made, but
+    that premise can stop being true the moment the real invoice is later
+    extracted (a Catch-Up pull, a backfill out of chronological order).
+    Once the row's own reference resolves to a tracked invoice, "no
+    proof" is no longer a judgment call - it's a fact that's become
+    checkable, exactly like a Pending Review row's own promotion.
+
+    Client's own explicit distinction: going INTO Pre-MIS still needs a
+    human (you're accepting something as unprovable), but coming OUT once
+    proof appears doesn't - UNLIKE find_pending_review_rows_now_
+    resolvable, though, this never auto-applies anything itself. It only
+    DETECTS - the caller surfaces the list for a human to review and
+    batch-approve via its own dedicated action (reverting a Pre-MIS row
+    also reverses a real Pre-MIS Outstanding balance move, which this
+    system never does without a visible, deliberate human step).
+
+    Returns (CN rows flagged, RJ rows flagged) - never mutates anything,
+    and never groups RJ rows by voucher/party the way the Pending-Review
+    recheck does: each Pre-MIS row's own reference is checked entirely on
+    its own merits, independent of any sibling line.
+    """
+    cn_flagged = [
+        row for row in cn_rows
+        if row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+        and row.bill_allocation_reference is not None
+        and (row.party_id, row.bill_allocation_reference) in lookup
+    ]
+    rj_flagged = [
+        row for row in rj_rows
+        if row.classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+        and row.target_doc_no is not None
+        and (row.party_id, row.target_doc_no) in lookup
+    ]
+    return cn_flagged, rj_flagged
+
+
 def compute_unapplied_cash_by_party(
     rows: list[ReceiptJournalRegisterRow],
 ) -> dict[str, Decimal]:

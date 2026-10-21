@@ -2786,6 +2786,50 @@ def test_credit_note_revert_to_pending_review_rejects_a_row_already_pending_revi
     assert customer.pre_mis_outstanding == Decimal("1000.00")  # untouched
 
 
+def test_credit_note_revert_pre_mis_batch_reverts_only_rows_that_now_resolve(client):
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/RESOLVES", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="SB/1",
+            classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+        )
+    )
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 1), voucher_number="CN/STILL_UNKNOWN", party_id="ACME",
+            cn_amount=Decimal("150.00"), bill_allocation_reference="SB/UNKNOWN",
+            classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+        )
+    )
+    store.close()
+    _seed_sales_dn_row(client, voucher_number="SB/1")  # the invoice that now makes CN/RESOLVES provable
+
+    resp = client.post(
+        "/registers/credit-notes/revert-to-matched/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": ["KOL|CN/RESOLVES|ACME", "KOL|CN/STILL_UNKNOWN|ACME"],
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Reverted 1 of 2 selected row(s) to Matched" in resp.data
+    assert b"1 skipped" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    rows = {r.voucher_number: r for r in store2.all_credit_note_rows("KOL")}
+    store2.close()
+    assert rows["CN/RESOLVES"].classification == RegisterClassification.CURRENT
+    assert rows["CN/STILL_UNKNOWN"].classification == RegisterClassification.PRE_MIS_ADJUSTMENT  # untouched
+    assert customer.pre_mis_outstanding == Decimal("1200.00")  # 1000 + 200 (only the reverted row)
+
+
 def test_credit_note_reclassify_as_current_does_not_touch_pre_mis_outstanding(client):
     from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, RegisterClassification
     from ar_mis.storage import Store
@@ -3232,6 +3276,51 @@ def test_receipt_journal_revert_to_pending_review_rejects_a_row_already_pending_
     customer = store2.get_customer_master("ACME", "KOL")
     store2.close()
     assert customer.pre_mis_outstanding == Decimal("1000.00")  # untouched
+
+
+def test_receipt_journal_revert_pre_mis_batch_reverts_only_rows_that_now_resolve(client):
+    from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("1000.00")))
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt",
+                voucher_number="RCPT/RESOLVES", party_id="ACME", amount=Decimal("300.00"),
+                target_doc_no="SB/1", classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+            ),
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 4), voucher_type="Receipt",
+                voucher_number="RCPT/STILL_UNKNOWN", party_id="ACME", amount=Decimal("150.00"),
+                target_doc_no="SB/UNKNOWN", classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+            ),
+        ]
+    )
+    row_ids = {r.target_doc_no: r.id for r in store.all_receipt_journal_rows("KOL")}
+    store.close()
+    _seed_sales_dn_row(client, voucher_number="SB/1")  # the invoice that now makes RCPT/RESOLVES provable
+
+    resp = client.post(
+        "/registers/receipts-journals/revert-to-matched/batch",
+        data={
+            "as_of": "2026-06-01",
+            "selected": [str(row_ids["SB/1"]), str(row_ids["SB/UNKNOWN"])],
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Reverted 1 of 2 selected row(s) to Matched" in resp.data
+    assert b"1 skipped" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    customer = store2.get_customer_master("ACME", "KOL")
+    rows = {r.target_doc_no: r for r in store2.all_receipt_journal_rows("KOL")}
+    store2.close()
+    assert rows["SB/1"].classification == RegisterClassification.CURRENT
+    assert rows["SB/UNKNOWN"].classification == RegisterClassification.PRE_MIS_ADJUSTMENT  # untouched
+    assert customer.pre_mis_outstanding == Decimal("1300.00")  # 1000 + 300 (only the reverted row)
 
 
 # ---- Batch actions on a filtered/selected range ------------------------

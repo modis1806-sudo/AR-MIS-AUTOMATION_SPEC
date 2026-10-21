@@ -64,5 +64,16 @@ class BranchRunOutcome:
     ar_mis.registers.find_pending_review_rows_now_resolvable). register
     is "Credit Note" or "Receipt/Journal".
     """
+    pre_mis_now_resolvable: list[tuple[str, str, str]] = field(default_factory=list)
+    """(register, voucher_number, party_id) 3-tuples currently confirmed
+    PRE_MIS_ADJUSTMENT whose own reference now resolves against the
+    current Sales & DN Register - the invoice that didn't exist when a
+    human confirmed Pre-MIS has since been extracted. Unlike pending_
+    review_auto_matched above, nothing here was changed by this run -
+    reverting a Pre-MIS row moves a real Pre-MIS Outstanding balance, so
+    this is flagged for a human to review and batch-approve on the
+    register itself (ar_mis.registers.find_pre_mis_rows_now_resolvable),
+    never applied automatically.
+    """
 
 

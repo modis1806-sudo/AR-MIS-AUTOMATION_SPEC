@@ -154,6 +154,19 @@
       </table>
       {% endif %}
 
+      {% if cr.outcome.pre_mis_now_resolvable %}
+      <p style="font-weight:600; margin-top:16px; color:#92400e;">Pre-MIS Adjustment rows that now have a resolving reference - the invoice didn't exist when these were confirmed Pre-MIS, but it does now. Nothing has been changed; review and batch-revert to Matched on the register itself:</p>
+      <table>
+        <thead><tr><th>Register</th><th>Voucher</th><th>Party</th></tr></thead>
+        <tbody>
+        {% for register, voucher_number, party_id in cr.outcome.pre_mis_now_resolvable %}
+          <tr><td>{{ register }}</td><td>{{ voucher_number }}</td><td>{{ party_id }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p style="font-size:12px; color:#6b7280;">Filter Classification to "Pre-MIS Adjustment" on the <a href="{{ url_for('credit_note_register') }}">Credit Note Register</a> or <a href="{{ url_for('receipt_journal_register') }}">Receipt & Journal Register</a>, tick these rows, and use "Batch: revert flagged Pre-MIS rows to Matched".</p>
+      {% endif %}
+
       {% if cr.ytd_debtor_pull_error %}
       <p style="color:#991b1b; margin-top:16px;">{{ cr.ytd_debtor_pull_error }}</p>
       {% elif cr.ytd_vs_register_rows %}

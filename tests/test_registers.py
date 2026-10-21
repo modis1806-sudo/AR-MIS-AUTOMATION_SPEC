@@ -41,6 +41,7 @@ from ar_mis.registers import (
     financial_year_label,
     compute_unapplied_cn_by_party,
     find_pending_review_rows_now_resolvable,
+    find_pre_mis_rows_now_resolvable,
     is_discount_ledger,
     is_round_off_ledger,
     RegisterBuildExceptions,
@@ -1551,3 +1552,65 @@ def test_recheck_leaves_the_unapplied_leg_pending_while_a_referenced_sibling_sti
         [], [resolved_line, unresolved_line, unapplied_leg], lookup
     )
     assert rj_resolvable == [resolved_line]
+
+
+# ---- find_pre_mis_rows_now_resolvable (client's own ask, live-testing:
+# a Pre-MIS Adjustment confirmed when the invoice didn't exist yet should
+# be flagged, never auto-applied, once it does) -----------------------
+
+
+def test_find_pre_mis_flags_a_credit_note_whose_reference_now_resolves():
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV001",
+        classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001")}
+    cn_flagged, rj_flagged = find_pre_mis_rows_now_resolvable([cn], [], lookup)
+    assert cn_flagged == [cn]
+    assert rj_flagged == []
+
+
+def test_find_pre_mis_leaves_a_credit_note_alone_when_still_unresolved():
+    cn = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV-UNKNOWN",
+        classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+    )
+    cn_flagged, rj_flagged = find_pre_mis_rows_now_resolvable([cn], [], {})
+    assert cn_flagged == []
+
+
+def test_find_pre_mis_never_touches_a_matched_or_pending_review_credit_note():
+    matched = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/01",
+        party_id="ACME", cn_amount=Decimal("200.00"), bill_allocation_reference="INV001",
+        classification=RegisterClassification.CURRENT,
+    )
+    pending = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 2, 5), voucher_number="CN/02",
+        party_id="ACME", cn_amount=Decimal("300.00"), bill_allocation_reference="INV002",
+        classification=RegisterClassification.PENDING_REVIEW,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001"), ("ACME", "INV002"): _invoice("INV002")}
+    cn_flagged, rj_flagged = find_pre_mis_rows_now_resolvable([matched, pending], [], lookup)
+    assert cn_flagged == []
+
+
+def test_find_pre_mis_flags_a_receipt_journal_line_independent_of_its_sibling():
+    # Each Pre-MIS row's own reference is checked on its own merits - a
+    # still-unresolved sibling in the same voucher never blocks it,
+    # unlike the Pending Review recheck's own unapplied-leg handling.
+    resolves = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
+        classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+    )
+    still_unresolved = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
+        party_id="ACME", amount=Decimal("300.00"), target_doc_no="INV-UNKNOWN",
+        classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+    )
+    lookup = {("ACME", "INV001"): _invoice("INV001")}
+    cn_flagged, rj_flagged = find_pre_mis_rows_now_resolvable([], [resolves, still_unresolved], lookup)
+    assert rj_flagged == [resolves]

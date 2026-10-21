@@ -41,6 +41,7 @@ from ar_mis.registers import (
     build_receipt_journal_register_rows,
     build_sales_dn_register_row,
     find_pending_review_rows_now_resolvable,
+    find_pre_mis_rows_now_resolvable,
 )
 from ar_mis.rollforward import compute_party_closings_as_of
 from ar_mis.sign import flip_sign
@@ -128,6 +129,17 @@ def process_branch_data(
     # picture.
     pending_review_auto_matched = _recheck_pending_review_rows(store, branch_id)
 
+    # Client's own ask (live-testing, the other direction): a row
+    # confirmed Pre-MIS Adjustment was a human's own judgment call at the
+    # time ("no proof this invoice exists") - that premise can stop being
+    # true once the real invoice is later extracted. Unlike the Pending
+    # Review recheck above, this never writes anything itself - reverting
+    # a Pre-MIS row also reverses a real Pre-MIS Outstanding balance
+    # move, which stays a deliberate, visible human step (its own batch-
+    # approve action on each register), never silent. This only flags
+    # what's now resolvable for that step.
+    pre_mis_now_resolvable = _detect_pre_mis_rows_now_resolvable(store, branch_id)
+
     # Live reconciliation, client's explicit call this session: Tally's
     # own stated closing vs one full recompute from EVERY register row
     # on record for that party through week_ending, done fresh here and
@@ -181,6 +193,7 @@ def process_branch_data(
         new_parties=new_parties,
         register_build_exceptions=register_exceptions.unattributable_party,
         pending_review_auto_matched=pending_review_auto_matched,
+        pre_mis_now_resolvable=pre_mis_now_resolvable,
     )
 
 
@@ -213,6 +226,25 @@ def _recheck_pending_review_rows(store: Store, branch_id: str) -> list[tuple[str
         store.resolve_receipt_journal_row_classification(row.id, RegisterClassification.CURRENT)
         promoted.append(("Receipt/Journal", row.voucher_number, row.party_id))
     return promoted
+
+
+def _detect_pre_mis_rows_now_resolvable(store: Store, branch_id: str) -> list[tuple[str, str, str]]:
+    """Read-only counterpart to _recheck_pending_review_rows - calls
+    registers.find_pre_mis_rows_now_resolvable with the branch's current
+    register state and returns what it finds, writing nothing. Reverting
+    a Pre-MIS row moves real money (its own Pre-MIS Outstanding
+    adjustment), so this never acts on its own; the caller surfaces the
+    list for a human to review and batch-approve via the register's own
+    dedicated "revert flagged rows" action.
+    """
+    lookup = build_bill_reference_lookup(store.all_sales_dn_rows(branch_id))
+    cn_rows = store.all_credit_note_rows(branch_id)
+    rj_rows = store.all_receipt_journal_rows(branch_id)
+    cn_flagged, rj_flagged = find_pre_mis_rows_now_resolvable(cn_rows, rj_rows, lookup)
+    return (
+        [("Credit Note", row.voucher_number, row.party_id) for row in cn_flagged]
+        + [("Receipt/Journal", row.voucher_number, row.party_id) for row in rj_flagged]
+    )
 
 
 def _build_and_persist_registers(

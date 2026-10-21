@@ -68,6 +68,11 @@
   </form>
 </details>
 <details class="card" style="margin-bottom:16px;">
+  <summary style="cursor:pointer; font-weight:600;">Batch: revert flagged Pre-MIS rows to Matched</summary>
+  <p style="font-size:12px; color:#6b7280; margin:8px 0;">For a Pre-MIS Adjustment row whose reference has since started resolving to a tracked invoice - the invoice simply didn't exist yet when a human confirmed Pre-MIS. Filter Classification to "Pre-MIS Adjustment" and check Linked Invoice Date/Value: a row showing a real date/value there is a candidate. Tick it and Apply - anything not currently Pre-MIS, or whose reference no longer resolves, is skipped automatically.</p>
+  <button class="btn" type="submit" form="receiptjournal-batch-form" formaction="{{ url_for('receipt_journal_revert_pre_mis_batch') }}">Revert selected to Matched</button>
+</details>
+<details class="card" style="margin-bottom:16px;">
   <summary style="cursor:pointer; font-weight:600;">Batch: delete selected rows</summary>
   <p style="font-size:12px; color:#6b7280; margin:8px 0;">Deletes every row ticked above, exactly like the per-row Delete button but for a whole filtered range at once - choose below whether that applies to each selected line only or collapses its whole voucher. Use the Register Row Audit Log to undo any of these if needed.</p>
   <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">

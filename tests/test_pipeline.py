@@ -386,3 +386,30 @@ def test_a_receipt_line_auto_matches_independently_of_an_unresolved_sibling_line
     rows = {r.target_doc_no: r for r in store.all_receipt_journal_rows("KOL")}
     assert rows["INV001"].classification == RegisterClassification.CURRENT
     assert rows["INV-NEVER-ARRIVES"].classification == RegisterClassification.PENDING_REVIEW
+
+
+def test_a_pre_mis_credit_note_is_flagged_but_not_auto_reverted_once_its_invoice_arrives(store):
+    # Client's own ask (live-testing, the other direction from the test
+    # above): a CN confirmed Pre-MIS because its invoice genuinely didn't
+    # exist yet must be FLAGGED once that invoice later arrives - never
+    # silently reverted, since reverting moves a real Pre-MIS Outstanding
+    # balance, which stays a deliberate human step.
+    store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+    from ar_mis.models import CreditNoteRegisterRow
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 5, 14), voucher_number="CN/01", party_id="ACME",
+            cn_amount=Decimal("200.00"), bill_allocation_reference="INV001",
+            classification=RegisterClassification.PRE_MIS_ADJUSTMENT,
+        )
+    )
+
+    invoice_voucher = _sales_voucher("INV001", "ACME", Decimal("1000.00"), voucher_date=date(2026, 4, 23))
+    outcome = process_branch_data(
+        store, "KOL", "Kolkata", date(2026, 5, 23), [invoice_voucher], {"ACME": Decimal("800.00")}
+    )
+
+    assert outcome.pre_mis_now_resolvable == [("Credit Note", "CN/01", "ACME")]
+    assert outcome.pending_review_auto_matched == []  # never touched - that's a different classification
+    cn = store.all_credit_note_rows("KOL")[0]
+    assert cn.classification == RegisterClassification.PRE_MIS_ADJUSTMENT  # unchanged - flagged, not applied
