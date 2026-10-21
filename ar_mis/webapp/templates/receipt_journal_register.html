@@ -106,7 +106,7 @@
     {% set row = d.row %}
     {% set f = d.fields %}
     <tr data-tt-row data-tt-row-id="{{ row.id }}" data-tt-row-amount="{{ row.amount }}">
-      <td><input type="checkbox" data-tt-row-select form="receiptjournal-batch-form" name="selected" value="{{ row.branch_id }}|{{ row.voucher_number }}|{{ row.party_id }}"></td>
+      <td><input type="checkbox" data-tt-row-select form="receiptjournal-batch-form" name="selected" value="{{ row.id }}"></td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.txn_date }}</td>
       <td data-tt-col="voucher_type">{{ row.voucher_type }}</td>
@@ -130,9 +130,7 @@
               <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Resolve</summary>
               <form method="post" action="{{ url_for('receipt_journal_reclassify') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:230px;">
                 <input type="hidden" name="as_of" value="{{ as_of }}">
-                <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
-                <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
-                <input type="hidden" name="party_id" value="{{ row.party_id }}">
+                <input type="hidden" name="row_id" value="{{ row.id }}">
                 <input type="hidden" name="target_classification" value="pre_mis">
                 <div style="font-size:11px; color:#6b7280;">No reference was ever attempted on this voucher - the only valid resolution is Pre-MIS Adjustment.</div>
                 <button class="btn" type="submit" style="padding:4px 10px;">Mark as Pre-MIS Adjustment</button>
@@ -145,9 +143,7 @@
             <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Resolve</summary>
             <form method="post" action="{{ url_for('receipt_journal_reclassify') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:230px;">
               <input type="hidden" name="as_of" value="{{ as_of }}">
-              <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
-              <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
-              <input type="hidden" name="party_id" value="{{ row.party_id }}">
+              <input type="hidden" name="row_id" value="{{ row.id }}">
               <select name="target_classification" required>
                 <option value="pre_mis">Pre-MIS Adjustment (reduces Pre-MIS Outstanding)</option>
                 <option value="current">Matched (data-entry correction)</option>
@@ -163,9 +159,7 @@
             <form method="post" action="{{ url_for('receipt_journal_revert_to_pending_review') }}" style="margin-top:6px; min-width:200px;"
                   onsubmit="return confirm('Reverse this Pre-MIS Adjustment and send {{ row.voucher_number }} back to {{ revert_label }}?');">
               <input type="hidden" name="as_of" value="{{ as_of }}">
-              <input type="hidden" name="branch_id" value="{{ row.branch_id }}">
-              <input type="hidden" name="voucher_number" value="{{ row.voucher_number }}">
-              <input type="hidden" name="party_id" value="{{ row.party_id }}">
+              <input type="hidden" name="row_id" value="{{ row.id }}">
               <button class="btn secondary" type="submit" style="padding:4px 10px;">Confirm revert</button>
             </form>
           </details>
@@ -212,21 +206,19 @@
 </table>
 </div>
 <template data-tt-lazy-template="receiptjournal-edit">
-  <div style="margin-top:6px; display:flex; flex-direction:column; gap:8px; min-width:220px;">
-    <div style="font-size:11px; color:#6b7280;">Tally itself doesn't always carry a bill allocation here - fix Target Doc No. directly if you know which invoice this really nets against (Classification is recomputed automatically). If this voucher has multiple lines, choose below whether an Amount change applies to this line only or the whole voucher - a Target Doc No. change always applies to this line only.</div>
-    <form method="post" action="{{ url_for('receipt_journal_row_edit') }}" style="display:flex; flex-direction:column; gap:4px;">
-      <input type="hidden" name="as_of" value="{{ as_of }}">
-      <input type="hidden" name="row_id" data-tt-field="row_id">
-      <label style="font-size:11px; font-weight:600;">Amount</label>
-      <input type="number" step="0.01" name="new_amount" data-tt-field="amount" required>
-      <label style="font-size:11px; font-weight:600;">Target Doc No.</label>
-      <input name="target_doc_no" data-tt-field="target_doc_no" placeholder="Blank = Unapplied">
+  <form method="post" action="{{ url_for('receipt_journal_row_edit') }}" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; max-width:620px;">
+    <input type="hidden" name="as_of" value="{{ as_of }}">
+    <input type="hidden" name="row_id" data-tt-field="row_id">
+    <div style="flex-basis:100%; font-size:11px; color:#6b7280;">Tally itself doesn't always carry a bill allocation here - fix Target Doc No. directly if you know which invoice this really nets against (Classification is recomputed automatically). If this voucher has multiple lines, choose below whether an Amount change applies to this line only or the whole voucher - a Target Doc No. change always applies to this line only.</div>
+    <div><label style="display:block; font-size:11px; font-weight:600;">Amount</label><input type="number" step="0.01" name="new_amount" data-tt-field="amount" style="width:110px;" required></div>
+    <div><label style="display:block; font-size:11px; font-weight:600;">Target Doc No.</label><input name="target_doc_no" data-tt-field="target_doc_no" placeholder="Blank = Unapplied" style="width:140px;"></div>
+    <div style="flex-basis:100%;">
       <label style="font-size:11px;"><input type="radio" name="scope" value="line" checked> This line only</label>
       <label style="font-size:11px;"><input type="radio" name="scope" value="voucher"> Whole voucher (Amount only)</label>
-      <input name="reason" placeholder="Reason" required>
-      <button class="btn secondary" type="submit" style="padding:4px 10px;">Save edit</button>
-    </form>
-  </div>
+    </div>
+    <div><label style="display:block; font-size:11px; font-weight:600;">Reason</label><input name="reason" style="width:160px;" required></div>
+    <button class="btn secondary" type="submit" style="padding:6px 12px;">Save edit</button>
+  </form>
 </template>
 {% else %}
 <div class="card empty">No receipts or journals on record yet — run an extraction first.</div>

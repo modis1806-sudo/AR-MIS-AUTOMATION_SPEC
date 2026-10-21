@@ -191,12 +191,11 @@ def _recheck_pending_review_rows(store: Store, branch_id: str) -> list[tuple[str
     promotion. CN uses the same Store method a human clicking Resolve
     already uses (resolve_credit_note_classification), with a reason
     that says this was automatic, never a silent change indistinguishable
-    from a human's own Resolve. RJ promotes row-by-row via
-    Store.promote_receipt_journal_row_to_matched instead - NOT the
-    whole-voucher-group resolve_receipt_journal_classification a human's
-    own Resolve uses, since two referenced lines of the same voucher can
-    now resolve independently of each other (see find_pending_review_
-    rows_now_resolvable's own docstring).
+    from a human's own Resolve. RJ promotes row-by-row via Store.
+    resolve_receipt_journal_row_classification instead - the same method
+    a human's own Resolve/Revert now uses too (see that method's own
+    docstring for why this register's classification is never touched at
+    whole-voucher-group scope any more).
     """
     lookup = build_bill_reference_lookup(store.all_sales_dn_rows(branch_id))
     cn_rows = store.all_credit_note_rows(branch_id)
@@ -211,7 +210,7 @@ def _recheck_pending_review_rows(store: Store, branch_id: str) -> list[tuple[str
         )
         promoted.append(("Credit Note", row.voucher_number, row.party_id))
     for row in rj_resolvable:
-        store.promote_receipt_journal_row_to_matched(row.id)
+        store.resolve_receipt_journal_row_classification(row.id, RegisterClassification.CURRENT)
         promoted.append(("Receipt/Journal", row.voucher_number, row.party_id))
     return promoted
 

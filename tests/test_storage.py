@@ -727,35 +727,12 @@ def test_receipt_journal_rows_round_trip(store):
     assert len(store.all_receipt_journal_rows()) == 2
 
 
-def test_resolve_receipt_journal_classification_promotes_every_line_of_the_voucher(store):
-    rows = [
-        ReceiptJournalRegisterRow(
-            branch_id="B1", txn_date=date(2026, 4, 20), voucher_type="Receipt",
-            voucher_number="RCPT001", party_id="ACME", amount=Decimal("500.00"), target_doc_no="INV001",
-        ),
-        ReceiptJournalRegisterRow(
-            branch_id="B1", txn_date=date(2026, 4, 20), voucher_type="Receipt",
-            voucher_number="RCPT001", party_id="ACME", amount=Decimal("300.00"), target_doc_no=None,
-        ),
-    ]
-    store.append_receipt_journal_rows(rows)
-    store.resolve_receipt_journal_classification("B1", "RCPT001", "ACME", RegisterClassification.PRE_MIS_ADJUSTMENT)
-    classifications = {r.target_doc_no: r.classification for r in store.all_receipt_journal_rows()}
-    assert classifications == {
-        "INV001": RegisterClassification.PRE_MIS_ADJUSTMENT,
-        None: RegisterClassification.PRE_MIS_ADJUSTMENT,
-    }
-
-
-def test_resolve_receipt_journal_classification_raises_for_unknown_voucher(store):
-    with pytest.raises(ValueError, match="No receipt_journal_register rows"):
-        store.resolve_receipt_journal_classification("B1", "GHOST", "ACME", RegisterClassification.CURRENT)
-
-
-def test_promote_receipt_journal_row_to_matched_touches_only_that_one_row(store):
-    # Unlike resolve_receipt_journal_classification above (a human's own
-    # whole-voucher Resolve), the auto-recheck's own row-level promotion
-    # must never sweep a still-unresolved sibling line along with it.
+def test_resolve_receipt_journal_row_classification_touches_only_that_one_row(store):
+    # Client's own live-testing catch: two referenced lines of the same
+    # voucher can now carry different classifications (the voucher-level
+    # invariant was narrowed), so resolving one - whether by a human's
+    # own Resolve or the auto-recheck's own promotion - must never sweep
+    # a still-unresolved sibling line along with it.
     rows = [
         ReceiptJournalRegisterRow(
             branch_id="B1", txn_date=date(2026, 4, 20), voucher_type="Receipt",
@@ -771,18 +748,20 @@ def test_promote_receipt_journal_row_to_matched_touches_only_that_one_row(store)
     store.append_receipt_journal_rows(rows)
     resolving_row = next(r for r in store.all_receipt_journal_rows() if r.target_doc_no == "INV001")
 
-    store.promote_receipt_journal_row_to_matched(resolving_row.id)
+    before = store.resolve_receipt_journal_row_classification(resolving_row.id, RegisterClassification.PRE_MIS_ADJUSTMENT)
 
+    assert before.classification == RegisterClassification.PENDING_REVIEW  # the row as it stood before the update
+    assert before.amount == Decimal("500.00")
     classifications = {r.target_doc_no: r.classification for r in store.all_receipt_journal_rows()}
     assert classifications == {
-        "INV001": RegisterClassification.CURRENT,
+        "INV001": RegisterClassification.PRE_MIS_ADJUSTMENT,
         "INV-UNKNOWN": RegisterClassification.PENDING_REVIEW,
     }
 
 
-def test_promote_receipt_journal_row_to_matched_raises_for_unknown_row(store):
+def test_resolve_receipt_journal_row_classification_raises_for_unknown_row(store):
     with pytest.raises(ValueError, match="No receipt_journal_register row"):
-        store.promote_receipt_journal_row_to_matched(99999)
+        store.resolve_receipt_journal_row_classification(99999, RegisterClassification.CURRENT)
 
 
 # ---- Invoice Follow-Up (item 7 - the one mutable register row) ----------

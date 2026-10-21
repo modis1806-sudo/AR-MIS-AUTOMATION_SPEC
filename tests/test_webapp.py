@@ -2962,7 +2962,13 @@ def test_receipt_journal_register_shows_resolve_action_for_pending_review_rows(c
     assert b'data-tt-filter-value="Pending Review"' in resp.data
 
 
-def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(client):
+def test_receipt_journal_reclassify_as_pre_mis_touches_only_the_selected_line(client):
+    # Client's own live-testing catch: resolving one Pending Review line
+    # of a multi-line voucher must never sweep an unrelated sibling line
+    # (a different, independently-tracked reference) along with it -
+    # the voucher-level invariant was narrowed precisely so two referenced
+    # lines can carry different classifications, and Resolve must respect
+    # that, not silently re-couple them.
     from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
     from ar_mis.storage import Store
 
@@ -2982,13 +2988,14 @@ def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(cli
             ),
         ]
     )
+    row_id = next(r.id for r in store.all_receipt_journal_rows("KOL") if r.target_doc_no == "STALE/REF/1")
     store.close()
 
     resp = client.post(
         "/registers/receipts-journals/reclassify",
         data={
-            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/PENDING", "party_id": "ACME",
-            "target_classification": "pre_mis", "reason": "Both lines relate to Pre-MIS invoices",
+            "as_of": "2026-06-01", "row_id": str(row_id),
+            "target_classification": "pre_mis", "reason": "Relates to a Pre-MIS invoice",
         },
         follow_redirects=True,
     )
@@ -2997,21 +3004,20 @@ def test_receipt_journal_reclassify_as_pre_mis_sums_all_lines_of_the_voucher(cli
 
     store2 = Store(client.application.config["DB_PATH"])
     customer = store2.get_customer_master("ACME", "KOL")
-    rows = [r for r in store2.all_receipt_journal_rows("KOL") if r.voucher_number == "RCPT/PENDING"]
+    rows = {r.target_doc_no: r for r in store2.all_receipt_journal_rows("KOL") if r.voucher_number == "RCPT/PENDING"}
     store2.close()
-    assert customer.pre_mis_outstanding == Decimal("550.00")  # 1000 - 300 - 150
-    assert all(r.classification == RegisterClassification.PRE_MIS_ADJUSTMENT for r in rows)
+    assert customer.pre_mis_outstanding == Decimal("700.00")  # 1000 - 300 only
+    assert rows["STALE/REF/1"].classification == RegisterClassification.PRE_MIS_ADJUSTMENT
+    assert rows["STALE/REF/2"].classification == RegisterClassification.PENDING_REVIEW  # untouched sibling
 
 
-def test_receipt_journal_reclassify_as_pre_mis_uses_the_true_net_when_a_line_reverses_another(client):
+def test_receipt_journal_reclassify_as_pre_mis_uses_the_rows_true_signed_amount(client):
     # Client-caught real bug, reproduced end-to-end against the exact real
-    # voucher: KAY DEE ELECTRIC CO. Receipt No. 9 carried one reversing
-    # (negative) allocation alongside two normal (positive) ones. Summing
-    # their absolute values (20,335.00) instead of their true signed net
-    # (4,835.00) moved 15,500.00 too much out of Pre-MIS Outstanding when
-    # this voucher was resolved - exactly the unexplained Reconciliation
-    # Check residual with no Pending Review item or Unapplied Cash/CN to
-    # explain it.
+    # voucher: KAY DEE ELECTRIC CO. Receipt No. 9 carried a reversing
+    # (negative) allocation. Using abs() instead of the row's own signed
+    # amount would flip the direction of its Pre-MIS Outstanding move -
+    # exactly the unexplained Reconciliation Check residual with no
+    # Pending Review item or Unapplied Cash/CN to explain it.
     from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
     from ar_mis.storage import Store
 
@@ -3024,25 +3030,16 @@ def test_receipt_journal_reclassify_as_pre_mis_uses_the_true_net_when_a_line_rev
                 party_id="KAY DEE ELECTRIC CO.", amount=Decimal("-7750.00"), target_doc_no="5662",
                 classification=RegisterClassification.PENDING_REVIEW,
             ),
-            ReceiptJournalRegisterRow(
-                branch_id="KOL", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
-                party_id="KAY DEE ELECTRIC CO.", amount=Decimal("5750.00"), target_doc_no="CIPL/5284/25-26",
-                classification=RegisterClassification.PENDING_REVIEW,
-            ),
-            ReceiptJournalRegisterRow(
-                branch_id="KOL", txn_date=date(2026, 4, 3), voucher_type="Receipt", voucher_number="9",
-                party_id="KAY DEE ELECTRIC CO.", amount=Decimal("6835.00"), target_doc_no="CIPL/6233/25-26",
-                classification=RegisterClassification.PENDING_REVIEW,
-            ),
         ]
     )
+    row_id = store.all_receipt_journal_rows("KOL")[0].id
     store.close()
 
     resp = client.post(
         "/registers/receipts-journals/reclassify",
         data={
-            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "9", "party_id": "KAY DEE ELECTRIC CO.",
-            "target_classification": "pre_mis", "reason": "Relates to pre-MIS invoices",
+            "as_of": "2026-06-01", "row_id": str(row_id),
+            "target_classification": "pre_mis", "reason": "Relates to a pre-MIS invoice",
         },
         follow_redirects=True,
     )
@@ -3051,9 +3048,9 @@ def test_receipt_journal_reclassify_as_pre_mis_uses_the_true_net_when_a_line_rev
     store2 = Store(client.application.config["DB_PATH"])
     customer = store2.get_customer_master("KAY DEE ELECTRIC CO.", "KOL")
     store2.close()
-    # -(-7750 + 5750 + 6835) = -4835.00 - the true net voucher amount,
-    # not -20335.00 (what abs()-summed lines would have wrongly produced).
-    assert customer.pre_mis_outstanding == Decimal("-4835.00")
+    # -(-7750.00) = 7750.00 - the row's own true signed amount, not
+    # -7750.00 (what abs() would have wrongly produced).
+    assert customer.pre_mis_outstanding == Decimal("7750.00")
 
 
 def test_receipt_journal_reclassify_resolves_an_unapplied_voucher_to_pre_mis(client):
@@ -3073,12 +3070,13 @@ def test_receipt_journal_reclassify_resolves_an_unapplied_voucher_to_pre_mis(cli
             )
         ]
     )
+    row_id = store.all_receipt_journal_rows("KOL")[0].id
     store.close()
 
     resp = client.post(
         "/registers/receipts-journals/reclassify",
         data={
-            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "25", "party_id": "MANOJ LAL",
+            "as_of": "2026-06-01", "row_id": str(row_id),
             "target_classification": "pre_mis", "reason": "test",
         },
         follow_redirects=True,
@@ -3106,12 +3104,13 @@ def test_receipt_journal_reclassify_rejects_an_unapplied_row_with_a_non_pre_mis_
             )
         ]
     )
+    row_id = store.all_receipt_journal_rows("KOL")[0].id
     store.close()
 
     resp = client.post(
         "/registers/receipts-journals/reclassify",
         data={
-            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "1", "party_id": "ACME",
+            "as_of": "2026-06-01", "row_id": str(row_id),
             "target_classification": "current", "reason": "test",
         },
         follow_redirects=True,
@@ -3135,11 +3134,12 @@ def test_receipt_journal_revert_from_pre_mis_goes_back_to_unapplied_not_pending_
             )
         ]
     )
+    row_id = store.all_receipt_journal_rows("KOL")[0].id
     store.close()
 
     resp = client.post(
         "/registers/receipts-journals/revert-to-pending-review",
-        data={"as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "25", "party_id": "MANOJ LAL"},
+        data={"as_of": "2026-06-01", "row_id": str(row_id)},
         follow_redirects=True,
     )
     assert resp.status_code == 200
@@ -3150,13 +3150,11 @@ def test_receipt_journal_revert_from_pre_mis_goes_back_to_unapplied_not_pending_
     store2.close()
 
 
-def test_receipt_journal_revert_to_pending_review_reverses_the_pre_mis_adjustment(client):
-    # Same correction path as the Credit Note Register's own revert test -
-    # the live-testing mistake this fixes was found on a Receipt first:
-    # a batch Resolve scoped by free-text search matched a voucher's OWN
-    # number (which happened to carry an unrelated FY tag), not the
-    # invoice it was actually applied against, and wrongly moved its full
-    # multi-line amount into Pre-MIS Outstanding.
+def test_receipt_journal_revert_to_pending_review_reverses_only_the_reverted_line(client):
+    # Reverting one wrongly-resolved line of a multi-line voucher must
+    # never touch a sibling line's own, separately-tracked classification
+    # or amount (client's own live-testing catch, same reasoning as the
+    # row-scoped Resolve test above).
     from ar_mis.models import CustomerMasterRecord, ReceiptJournalRegisterRow, RegisterClassification
     from ar_mis.storage import Store
 
@@ -3176,25 +3174,20 @@ def test_receipt_journal_revert_to_pending_review_reverses_the_pre_mis_adjustmen
             ),
         ]
     )
+    row_id = next(r.id for r in store.all_receipt_journal_rows("KOL") if r.target_doc_no == "STALE/REF/1")
     store.close()
 
     client.post(
         "/registers/receipts-journals/reclassify",
-        data={
-            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/WRONGLY_RESOLVED",
-            "party_id": "ACME", "target_classification": "pre_mis",
-        },
+        data={"as_of": "2026-06-01", "row_id": str(row_id), "target_classification": "pre_mis"},
     )
     store_mid = Store(client.application.config["DB_PATH"])
-    assert store_mid.get_customer_master("ACME", "KOL").pre_mis_outstanding == Decimal("550.00")
+    assert store_mid.get_customer_master("ACME", "KOL").pre_mis_outstanding == Decimal("700.00")
     store_mid.close()
 
     resp = client.post(
         "/registers/receipts-journals/revert-to-pending-review",
-        data={
-            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/WRONGLY_RESOLVED",
-            "party_id": "ACME",
-        },
+        data={"as_of": "2026-06-01", "row_id": str(row_id)},
         follow_redirects=True,
     )
     assert resp.status_code == 200
@@ -3202,10 +3195,11 @@ def test_receipt_journal_revert_to_pending_review_reverses_the_pre_mis_adjustmen
 
     store2 = Store(client.application.config["DB_PATH"])
     customer = store2.get_customer_master("ACME", "KOL")
-    rows = [r for r in store2.all_receipt_journal_rows("KOL") if r.voucher_number == "RCPT/WRONGLY_RESOLVED"]
+    rows = {r.target_doc_no: r for r in store2.all_receipt_journal_rows("KOL") if r.voucher_number == "RCPT/WRONGLY_RESOLVED"}
     store2.close()
     assert customer.pre_mis_outstanding == Decimal("1000.00")  # fully restored
-    assert all(r.classification == RegisterClassification.PENDING_REVIEW for r in rows)
+    assert rows["STALE/REF/1"].classification == RegisterClassification.PENDING_REVIEW
+    assert rows["STALE/REF/2"].classification == RegisterClassification.PENDING_REVIEW  # untouched throughout
 
 
 def test_receipt_journal_revert_to_pending_review_rejects_a_row_already_pending_review(client):
@@ -3223,13 +3217,12 @@ def test_receipt_journal_revert_to_pending_review_rejects_a_row_already_pending_
             ),
         ]
     )
+    row_id = store.all_receipt_journal_rows("KOL")[0].id
     store.close()
 
     resp = client.post(
         "/registers/receipts-journals/revert-to-pending-review",
-        data={
-            "as_of": "2026-06-01", "branch_id": "KOL", "voucher_number": "RCPT/STILL_PENDING", "party_id": "ACME",
-        },
+        data={"as_of": "2026-06-01", "row_id": str(row_id)},
         follow_redirects=True,
     )
     assert resp.status_code == 200
@@ -3421,13 +3414,14 @@ def test_receipt_journal_reclassify_batch_resolves_all_selected_pending_review_v
             )
         ]
     )
+    row_id = store.all_receipt_journal_rows("KOL")[0].id
     store.close()
 
     resp = client.post(
         "/registers/receipts-journals/reclassify/batch",
         data={
             "as_of": "2026-06-01",
-            "selected": ["KOL|RCPT/OLD|ACME"],
+            "selected": [str(row_id)],
             "target_classification": "pre_mis",
             "reason": "Relates to a 24-25 invoice",
         },
@@ -5359,15 +5353,15 @@ def test_receipt_journal_row_delete_this_line_only(client):
 def test_receipt_journal_row_delete_batch_removes_every_selected_voucher(client):
     from ar_mis.storage import Store
 
-    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1")
-    _seed_receipt_journal_voucher(client, voucher_number="RCPT/2")
+    ids1 = _seed_receipt_journal_voucher(client, voucher_number="RCPT/1")
+    ids2 = _seed_receipt_journal_voucher(client, voucher_number="RCPT/2")
     _seed_receipt_journal_voucher(client, voucher_number="RCPT/3")
 
     resp = client.post(
         "/registers/receipts-journals/delete/batch",
         data={
             "as_of": "2026-04-07",
-            "selected": ["KOL|RCPT/1|ACME", "KOL|RCPT/2|ACME", "KOL|BOGUS/999|ACME"],
+            "selected": [str(next(iter(ids1.values()))), str(next(iter(ids2.values()))), "999999"],
             "delete_reason": "Duplicate batch of vouchers",
             "delete_scope": "line",
         },
@@ -5382,10 +5376,14 @@ def test_receipt_journal_row_delete_batch_removes_every_selected_voucher(client)
     assert remaining == {"RCPT/3"}
 
 
-def test_receipt_journal_row_delete_batch_skips_an_ambiguous_multi_line_voucher_on_line_scope(client):
+def test_receipt_journal_row_delete_batch_line_scope_only_removes_the_selected_line(client):
+    # Each checkbox now carries its own row id (client's own live-testing
+    # catch - see receipt_journal_reclassify_batch's own docstring for
+    # why), so "this line only" on a voucher with several lines is never
+    # ambiguous: it removes exactly the one line selected.
     from ar_mis.storage import Store
 
-    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=[
+    row_ids = _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=[
         {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
         {"target_doc_no": None, "amount": Decimal("200.00")},
     ])
@@ -5394,25 +5392,26 @@ def test_receipt_journal_row_delete_batch_skips_an_ambiguous_multi_line_voucher_
         "/registers/receipts-journals/delete/batch",
         data={
             "as_of": "2026-04-07",
-            "selected": ["KOL|RCPT/1|ACME"],
+            "selected": [str(row_ids["SB/1"])],
             "delete_reason": "test",
             "delete_scope": "line",
         },
         follow_redirects=True,
     )
     assert resp.status_code == 200
-    assert b"Deleted 0 of 1 selected row(s)" in resp.data
-    assert b"ambiguous multi-line voucher" in resp.data
+    assert b"Deleted 1 of 1 selected row(s)" in resp.data
 
     store = Store(client.application.config["DB_PATH"])
-    assert len(store.all_receipt_journal_rows("KOL")) == 2  # untouched
+    remaining = store.all_receipt_journal_rows("KOL")
     store.close()
+    assert len(remaining) == 1
+    assert remaining[0].target_doc_no is None  # the untouched sibling line
 
 
-def test_receipt_journal_row_delete_batch_whole_voucher_scope_is_not_ambiguous(client):
+def test_receipt_journal_row_delete_batch_whole_voucher_scope_removes_every_line(client):
     from ar_mis.storage import Store
 
-    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=[
+    row_ids = _seed_receipt_journal_voucher(client, voucher_number="RCPT/1", lines=[
         {"target_doc_no": "SB/1", "amount": Decimal("300.00")},
         {"target_doc_no": None, "amount": Decimal("200.00")},
     ])
@@ -5421,7 +5420,7 @@ def test_receipt_journal_row_delete_batch_whole_voucher_scope_is_not_ambiguous(c
         "/registers/receipts-journals/delete/batch",
         data={
             "as_of": "2026-04-07",
-            "selected": ["KOL|RCPT/1|ACME"],
+            "selected": [str(row_ids["SB/1"])],
             "delete_reason": "test",
             "delete_scope": "voucher",
         },
@@ -5436,10 +5435,13 @@ def test_receipt_journal_row_delete_batch_whole_voucher_scope_is_not_ambiguous(c
 
 
 def test_receipt_journal_row_delete_batch_requires_a_reason(client):
-    _seed_receipt_journal_voucher(client, voucher_number="RCPT/1")
+    row_ids = _seed_receipt_journal_voucher(client, voucher_number="RCPT/1")
     resp = client.post(
         "/registers/receipts-journals/delete/batch",
-        data={"as_of": "2026-04-07", "selected": ["KOL|RCPT/1|ACME"], "delete_reason": "", "delete_scope": "line"},
+        data={
+            "as_of": "2026-04-07", "selected": [str(next(iter(row_ids.values())))],
+            "delete_reason": "", "delete_scope": "line",
+        },
         follow_redirects=True,
     )
     assert b"Enter a reason for this batch delete" in resp.data

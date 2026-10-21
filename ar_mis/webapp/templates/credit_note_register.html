@@ -179,17 +179,14 @@
 </table>
 </div>
 <template data-tt-lazy-template="creditnotes-edit">
-  <form method="post" action="{{ url_for('credit_note_row_edit') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:220px;">
+  <form method="post" action="{{ url_for('credit_note_row_edit') }}" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; max-width:620px;">
     <input type="hidden" name="as_of" value="{{ as_of }}">
     <input type="hidden" name="row_id" data-tt-field="row_id">
-    <div style="font-size:11px; color:#6b7280;">Every field below is pre-filled with its current value - Tally itself doesn't always carry a bill allocation here, so fix the reference directly if you know which invoice this really nets against.</div>
-    <label style="font-size:11px; font-weight:600;">CN Amount</label>
-    <input type="number" step="0.01" name="new_cn_amount" data-tt-field="cn_amount" required>
-    <label style="font-size:11px; font-weight:600;">Original Invoice/DN Ref</label>
-    <input name="bill_allocation_reference" data-tt-field="bill_allocation_reference" placeholder="Blank = Unapplied">
-    <label style="font-size:11px; font-weight:600;">Reason</label>
-    <input name="reason" placeholder="Reason" required>
-    <button class="btn secondary" type="submit" style="padding:4px 10px;">Save edit</button>
+    <div style="flex-basis:100%; font-size:11px; color:#6b7280;">Every field below is pre-filled with its current value - Tally itself doesn't always carry a bill allocation here, so fix the reference directly if you know which invoice this really nets against.</div>
+    <div><label style="display:block; font-size:11px; font-weight:600;">CN Amount</label><input type="number" step="0.01" name="new_cn_amount" data-tt-field="cn_amount" style="width:100px;" required></div>
+    <div><label style="display:block; font-size:11px; font-weight:600;">Original Invoice/DN Ref</label><input name="bill_allocation_reference" data-tt-field="bill_allocation_reference" placeholder="Blank = Unapplied" style="width:150px;"></div>
+    <div><label style="display:block; font-size:11px; font-weight:600;">Reason</label><input name="reason" style="width:160px;" required></div>
+    <button class="btn secondary" type="submit" style="padding:6px 12px;">Save edit</button>
   </form>
 </template>
 {% else %}

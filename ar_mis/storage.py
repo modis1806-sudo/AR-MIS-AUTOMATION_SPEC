@@ -206,11 +206,14 @@ CREATE TABLE IF NOT EXISTS credit_note_register (
 -- against several invoices at once — see ar_mis.registers), so identity
 -- includes target_doc_no + amount, not just the voucher — mirrors
 -- voucher_log's own reasoning for including amount in its dedup key.
--- classification is set and updated per VOUCHER (item 10's invariant:
--- every line of a flagged voucher travels together) — see
--- resolve_receipt_journal_classification(), which updates every row
--- sharing (branch_id, voucher_number, party_id) in one statement, never
--- a single line in isolation.
+-- classification is set per line, built from each line's own reference
+-- (ar_mis.registers.build_receipt_journal_register_rows) — item 10's
+-- invariant only sweeps an UNAPPLIED line (no reference of its own) into
+-- a referenced sibling's Pending Review/Pre-MIS state, never the other
+-- way around; two referenced lines of the same voucher resolve
+-- independently. See Store.resolve_receipt_journal_row_classification,
+-- which always updates exactly one row by its own id, never a whole
+-- branch_id/voucher_number/party_id group.
 CREATE TABLE IF NOT EXISTS receipt_journal_register (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     branch_id TEXT NOT NULL,
@@ -1656,46 +1659,43 @@ class Store:
         r = self.conn.execute("SELECT * FROM receipt_journal_register WHERE id=?", (row_id,)).fetchone()
         return self._receipt_journal_row_from_row(r) if r is not None else None
 
-    def promote_receipt_journal_row_to_matched(self, row_id: int) -> None:
-        """Auto-recheck's own row-level promotion (registers.find_pending_
-        review_rows_now_resolvable), NOT a human's own Resolve action -
-        touches ONLY the one row whose own reference now resolves to a
-        tracked invoice. Unlike resolve_receipt_journal_classification
-        below (which deliberately still updates the WHOLE voucher/party
-        group, a human's own judgment call), two referenced lines of the
-        same voucher can now resolve independently of each other (client's
-        own live-testing catch), so sweeping a still-unresolved sibling
-        into Matched here would be a brand new, worse bug.
-        """
-        cur = self.conn.execute(
-            "UPDATE receipt_journal_register SET classification=? WHERE id=?",
-            (RegisterClassification.CURRENT.value, row_id),
-        )
-        if cur.rowcount == 0:
-            raise ValueError(f"No receipt_journal_register row with id={row_id}")
-        self.conn.commit()
+    def resolve_receipt_journal_row_classification(
+        self, row_id: int, classification: RegisterClassification
+    ) -> ReceiptJournalRegisterRow:
+        """The ONLY way this register's classification ever changes now -
+        a human's own Resolve/Revert on one row, or the auto-recheck's own
+        promotion (registers.find_pending_review_rows_now_resolvable).
+        Touches ONLY the one row named by `row_id`, never a sibling line.
 
-    def resolve_receipt_journal_classification(
-        self, branch_id: str, voucher_number: str, party_id: str, classification: RegisterClassification
-    ) -> None:
-        """Item 10's voucher-level invariant: updates EVERY line of this
-        voucher in one statement, never a single line in isolation — a
-        split classification within one voucher would recreate the exact
-        phantom-imbalance bug this design is meant to close (see
-        ar_mis.registers.build_receipt_journal_register_rows). This is a
-        human's own Resolve/Revert judgment call - the narrower, row-level
-        promote_receipt_journal_row_to_matched above is for the automatic
-        recheck only, which deliberately does NOT share this method's
-        whole-group scope any more.
+        This used to be two methods: a row-level one for the auto-recheck
+        and a whole-voucher/party-group one (resolve_receipt_journal_
+        classification) for a human's own Resolve/Revert, on the
+        assumption that item 10's voucher-level invariant meant every line
+        of a voucher/party always shared one classification. Client's own
+        live-testing catch disproved that assumption for Resolve/Revert
+        specifically: once two referenced lines of the same voucher could
+        resolve independently (see build_receipt_journal_register_rows'
+        own narrowed invariant), the group-wide version would resolve
+        against whichever row its own query happened to return first -
+        sometimes an already-Matched sibling, not the Pending Review line
+        the Maker actually selected - silently skipping the real request
+        ("Resolved 0 of 1 selected... skipped") or, worse, summing an
+        already-resolved sibling's amount into a fresh Pre-MIS Outstanding
+        adjustment. Row-level removes that ambiguity entirely.
+
+        Returns the row as it stood BEFORE the update, so the caller can
+        compute a Pre-MIS Outstanding adjustment from THIS row's own
+        amount - never a whole voucher's summed amount.
         """
-        cur = self.conn.execute(
-            "UPDATE receipt_journal_register SET classification=?"
-            " WHERE branch_id=? AND voucher_number=? AND party_id=?",
-            (classification.value, branch_id, voucher_number, party_id),
+        row = self.get_receipt_journal_row_by_id(row_id)
+        if row is None:
+            raise ValueError(f"No receipt_journal_register row with id={row_id}")
+        self.conn.execute(
+            "UPDATE receipt_journal_register SET classification=? WHERE id=?",
+            (classification.value, row_id),
         )
-        if cur.rowcount == 0:
-            raise ValueError(f"No receipt_journal_register rows for {branch_id}/{voucher_number}/{party_id}")
         self.conn.commit()
+        return row
 
     # ---- Register row Edit/Delete/Undo (client's explicit redesign this
     # session, replacing register_row_correction's overlay) - real

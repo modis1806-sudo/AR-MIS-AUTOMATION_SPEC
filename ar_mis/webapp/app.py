@@ -2189,70 +2189,77 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
     @requires_role("maker")
     def receipt_journal_reclassify():
         """Same human resolution step as credit_note_reclassify, for a
-        Pending Review Receipt/Journal - also reachable from Unapplied
-        Cash (no reference attempted at all) for the same reason
-        credit_note_reclassify's own docstring explains: an Unapplied
-        voucher is never backdated/edited in Tally practice, only ever
-        netted off by a fresh journal later, so a genuinely Pre-MIS one
-        needs this as its only path. Only the Pre-MIS target is valid
-        from Unapplied. All bill-allocation lines of a voucher share one
-        classification (registers.py's voucher-level invariant), so every
-        row matching this identity is already Pending Review/Unapplied
-        together - the full voucher amount across all its lines is what
-        moves into Pre-MIS Outstanding when confirmed.
+        Pending Review Receipt/Journal line - also reachable from
+        Unapplied Cash (no reference attempted at all) for the same
+        reason credit_note_reclassify's own docstring explains: an
+        Unapplied voucher is never backdated/edited in Tally practice,
+        only ever netted off by a fresh journal later, so a genuinely
+        Pre-MIS one needs this as its only path. Only the Pre-MIS target
+        is valid from Unapplied.
+
+        Targets the one row named by `row_id` - never the whole voucher/
+        party group (client's own live-testing catch: two referenced
+        lines of the same voucher can now carry different classifications
+        since the voucher-level invariant was narrowed, so sweeping every
+        row sharing branch+voucher+party would silently resolve against
+        whichever one a query happened to return first, not necessarily
+        the line actually selected - see Store.resolve_receipt_journal_
+        row_classification's own docstring).
         """
         as_of_raw = request.form.get("as_of", "")
-        branch_id = request.form.get("branch_id", "")
-        voucher_number = request.form.get("voucher_number", "")
-        party_id = request.form.get("party_id", "")
+        raw_row_id = request.form.get("row_id", "")
         target = request.form.get("target_classification", "")
 
         def _redisplay(message: str):
             flash(message, "error")
             return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to resolve.")
         if target not in ("pre_mis", "current"):
             return _redisplay("Choose a valid resolution.")
         reason = _RESOLUTION_REASON_BY_TARGET[target]
 
         store = get_store()
-        rows = [
-            r for r in store.all_receipt_journal_rows(branch_id)
-            if r.voucher_number == voucher_number and r.party_id == party_id
-        ]
-        if not rows:
+        row = store.get_receipt_journal_row_by_id(row_id)
+        if row is None:
             store.close()
-            return _redisplay(f"No receipt or journal found for {voucher_number}.")
-        is_unapplied = rows[0].classification == RegisterClassification.CURRENT and rows[0].target_doc_no is None
-        if rows[0].classification != RegisterClassification.PENDING_REVIEW and not is_unapplied:
+            return _redisplay(f"No receipt_journal_register row with id={row_id}")
+        is_unapplied = row.classification == RegisterClassification.CURRENT and row.target_doc_no is None
+        if row.classification != RegisterClassification.PENDING_REVIEW and not is_unapplied:
             store.close()
-            return _redisplay(f"{voucher_number} is not Pending Review or Unapplied - nothing to resolve.")
+            return _redisplay(f"{row.voucher_number} is not Pending Review or Unapplied - nothing to resolve.")
         if is_unapplied and target != "pre_mis":
             store.close()
-            return _redisplay(f"{voucher_number} is Unapplied - it can only be resolved to Pre-MIS Adjustment.")
+            return _redisplay(f"{row.voucher_number} is Unapplied - it can only be resolved to Pre-MIS Adjustment.")
 
         new_classification = (
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
         )
-        store.resolve_receipt_journal_classification(branch_id, voucher_number, party_id, new_classification)
+        store.resolve_receipt_journal_row_classification(row_id, new_classification)
         if target == "pre_mis":
-            total_amount = sum((r.amount for r in rows), Decimal("0.00"))
             store.record_pre_mis_adjustment(
                 PreMisAdjustment(
-                    party_id=party_id, branch_id=branch_id, amount=-total_amount,
-                    reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION,
+                    party_id=row.party_id, branch_id=row.branch_id, amount=-row.amount,
+                    reason=f"{row.voucher_type} {row.voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION,
                     adjusted_at=date.today(),
                 )
             )
         store.close()
-        flash(f"{voucher_number} resolved as {new_classification.value}.", "success")
+        flash(f"{row.voucher_number} resolved as {new_classification.value}.", "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals/reclassify/batch", methods=["POST"])
     @requires_role("maker")
     def receipt_journal_reclassify_batch():
         """Batch counterpart to receipt_journal_reclassify - same
-        rationale as credit_note_reclassify_batch. Silently skips any
+        rationale as credit_note_reclassify_batch, but row-scoped (client's
+        own live-testing catch - see Store.resolve_receipt_journal_row_
+        classification's own docstring for why): `selected` carries each
+        row's own id now, not a branch+voucher+party identity that could
+        collapse several distinct lines together. Silently skips any
         selected row that isn't currently Pending Review or Unapplied,
         and also skips an Unapplied one when the batch's own shared
         target isn't Pre-MIS.
@@ -2275,39 +2282,34 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             RegisterClassification.PRE_MIS_ADJUSTMENT if target == "pre_mis" else RegisterClassification.CURRENT
         )
         store = get_store()
-        rows_by_identity: dict[tuple[str, str, str], list] = {}
-        for r in store.all_receipt_journal_rows():
-            rows_by_identity.setdefault((r.branch_id, r.voucher_number, r.party_id), []).append(r)
-
-        identities = set()
-        for identity in selected:
-            parts = identity.split("|", 2)
-            if len(parts) == 3:
-                identities.add(tuple(parts))
+        row_ids = set()
+        for raw in selected:
+            try:
+                row_ids.add(int(raw))
+            except ValueError:
+                continue
 
         resolved_count = 0
         skipped_count = 0
-        for key in identities:
-            rows = rows_by_identity.get(key, [])
-            is_unapplied = bool(rows) and rows[0].classification == RegisterClassification.CURRENT and rows[0].target_doc_no is None
-            eligible = bool(rows) and (rows[0].classification == RegisterClassification.PENDING_REVIEW or is_unapplied)
+        for row_id in row_ids:
+            row = store.get_receipt_journal_row_by_id(row_id)
+            is_unapplied = row is not None and row.classification == RegisterClassification.CURRENT and row.target_doc_no is None
+            eligible = row is not None and (row.classification == RegisterClassification.PENDING_REVIEW or is_unapplied)
             if not eligible or (is_unapplied and target != "pre_mis"):
                 skipped_count += 1
                 continue
-            branch_id, voucher_number, party_id = key
-            store.resolve_receipt_journal_classification(branch_id, voucher_number, party_id, new_classification)
+            store.resolve_receipt_journal_row_classification(row_id, new_classification)
             if target == "pre_mis":
-                total_amount = sum((r.amount for r in rows), Decimal("0.00"))
                 store.record_pre_mis_adjustment(
                     PreMisAdjustment(
-                        party_id=party_id, branch_id=branch_id, amount=-total_amount,
-                        reason=f"{rows[0].voucher_type} {voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION,
+                        party_id=row.party_id, branch_id=row.branch_id, amount=-row.amount,
+                        reason=f"{row.voucher_type} {row.voucher_number}: {reason}", adjusted_by=MAKER_ATTRIBUTION,
                         adjusted_at=date.today(),
                     )
                 )
             resolved_count += 1
         store.close()
-        message = f"Resolved {resolved_count} of {len(identities)} selected as {new_classification.value}."
+        message = f"Resolved {resolved_count} of {len(row_ids)} selected as {new_classification.value}."
         if skipped_count:
             message += f" {skipped_count} skipped (not Pending Review/Unapplied, or Unapplied with a non-Pre-MIS target)."
         flash(message, "success")
@@ -2320,53 +2322,53 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         see its own docstring, including why the revert target is
         Unapplied (never Pending Review) when target_doc_no is None - no
         reference was ever attempted on this voucher, so "Pending Review"
-        would wrongly imply a mismatched one exists to resolve. The
-        reversal amount is recomputed fresh from the voucher's own
-        current lines (the same sum receipt_journal_reclassify itself
-        used), never looked up from the original adjustment's log entry,
-        so it's correct regardless of how that entry's reason text was
-        worded.
+        would wrongly imply a mismatched one exists to resolve.
+
+        Targets the one row named by `row_id`, never the whole voucher/
+        party group - same reason as receipt_journal_reclassify above.
+        The reversal amount is this row's own amount, never a whole
+        voucher's summed amount (which could now silently include an
+        already-Matched sibling's amount too).
         """
         as_of_raw = request.form.get("as_of", "")
-        branch_id = request.form.get("branch_id", "")
-        voucher_number = request.form.get("voucher_number", "")
-        party_id = request.form.get("party_id", "")
+        raw_row_id = request.form.get("row_id", "")
 
         def _redisplay(message: str):
             flash(message, "error")
             return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to revert.")
+
         store = get_store()
-        rows = [
-            r for r in store.all_receipt_journal_rows(branch_id)
-            if r.voucher_number == voucher_number and r.party_id == party_id
-        ]
-        if not rows:
+        row = store.get_receipt_journal_row_by_id(row_id)
+        if row is None:
             store.close()
-            return _redisplay(f"No receipt or journal found for {voucher_number}.")
-        current = rows[0].classification
-        is_unapplied = rows[0].target_doc_no is None
+            return _redisplay(f"No receipt_journal_register row with id={row_id}")
+        current = row.classification
+        is_unapplied = row.target_doc_no is None
         revert_target = RegisterClassification.CURRENT if is_unapplied else RegisterClassification.PENDING_REVIEW
         revert_label = "Unapplied" if is_unapplied else "Pending Review"
         if current == revert_target:
             store.close()
-            return _redisplay(f"{voucher_number} is already {revert_label} - nothing to revert.")
+            return _redisplay(f"{row.voucher_number} is already {revert_label} - nothing to revert.")
 
         if current == RegisterClassification.PRE_MIS_ADJUSTMENT:
-            total_amount = sum((r.amount for r in rows), Decimal("0.00"))
             store.record_pre_mis_adjustment(
                 PreMisAdjustment(
-                    party_id=party_id, branch_id=branch_id, amount=total_amount,
+                    party_id=row.party_id, branch_id=row.branch_id, amount=row.amount,
                     reason=(
-                        f"Reversal of {rows[0].voucher_type} {voucher_number} Pre-MIS Adjustment"
+                        f"Reversal of {row.voucher_type} {row.voucher_number} Pre-MIS Adjustment"
                         f" (reverted to {revert_label})"
                     ),
                     adjusted_by=MAKER_ATTRIBUTION, adjusted_at=date.today(),
                 )
             )
-        store.resolve_receipt_journal_classification(branch_id, voucher_number, party_id, revert_target)
+        store.resolve_receipt_journal_row_classification(row_id, revert_target)
         store.close()
-        flash(f"{voucher_number} reverted to {revert_label}.", "success")
+        flash(f"{row.voucher_number} reverted to {revert_label}.", "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals")
@@ -2501,15 +2503,10 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         rationale as sales_dn_row_delete_batch. The chosen scope (this
         line only / whole voucher) applies uniformly to every selected
         row, same as the single-row Delete control already offers.
-
-        The row-select checkbox's own value is branch|voucher|party (the
-        same identity receipt_journal_reclassify_batch already keys on),
-        not a row id - two lines of the same voucher/party (e.g. an
-        Agst-Ref leg and its own on-account leg) are indistinguishable
-        from each other by that value alone. That's harmless for "whole
-        voucher" scope (any one of that identity's rows deletes the lot),
-        but "this line only" on an identity with more than one row can't
-        safely guess which one was meant - skipped rather than guessed.
+        `selected` carries each row's own id (same as the Reclassify
+        batch form now - see receipt_journal_reclassify_batch's own
+        docstring for why), so every row is unambiguous regardless of
+        how many lines its own voucher/party has.
         """
         as_of_raw = request.form.get("as_of", "")
         selected = request.form.getlist("selected")
@@ -2528,35 +2525,28 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay("Enter a reason for this batch delete.")
 
         store = get_store()
-        rows_by_identity: dict[tuple[str, str, str], list] = {}
-        for r in store.all_receipt_journal_rows():
-            rows_by_identity.setdefault((r.branch_id, r.voucher_number, r.party_id), []).append(r)
-
-        identities = set()
-        for identity in selected:
-            parts = identity.split("|", 2)
-            if len(parts) == 3:
-                identities.add(tuple(parts))
+        row_ids = set()
+        for raw in selected:
+            try:
+                row_ids.add(int(raw))
+            except ValueError:
+                continue
 
         deleted_count = 0
         skipped_count = 0
-        for branch_id, voucher_number, party_id in identities:
-            rows = rows_by_identity.get((branch_id, voucher_number, party_id), [])
-            if not rows or (scope == "line" and len(rows) > 1):
-                skipped_count += 1
-                continue
+        for row_id in row_ids:
             try:
                 store.delete_receipt_journal_row(
-                    rows[0].id, reason, MAKER_ATTRIBUTION, datetime.now(), whole_voucher=(scope == "voucher")
+                    row_id, reason, MAKER_ATTRIBUTION, datetime.now(), whole_voucher=(scope == "voucher")
                 )
             except ValueError:
                 skipped_count += 1
                 continue
             deleted_count += 1
         store.close()
-        message = f"Deleted {deleted_count} of {len(identities)} selected row(s)."
+        message = f"Deleted {deleted_count} of {len(row_ids)} selected row(s)."
         if skipped_count:
-            message += f" {skipped_count} skipped (not found, already deleted, or an ambiguous multi-line voucher with 'this line only' selected)."
+            message += f" {skipped_count} skipped (not found or already deleted)."
         flash(message, "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
