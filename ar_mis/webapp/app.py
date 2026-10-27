@@ -42,7 +42,9 @@ from ar_mis.exception_register import (
     compute_unresolved_references,
 )
 from ar_mis.manual_upload import WEEKLY_VOUCHER_SLOTS, ManualUploadRefused, process_manual_upload
-from ar_mis.models import CustomerMasterRecord, InvoiceFollowUp, MiscAdjustment, PreMisAdjustment, RegisterClassification
+from ar_mis.models import (
+    CustomerMasterRecord, InvoiceFollowUp, MiscAdjustment, PreMisAdjustment, RegisterClassification, UnappliedWriteOff,
+)
 from ar_mis.money import to_money
 from ar_mis.drift_correction import (
     DriftFindingAlreadyIncorporated,
@@ -1303,6 +1305,17 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         groupings = {
             (r["party_id"], r["branch_id"]): r["grouping"] for r in store.all_customer_master_records()
         }
+        # Unapplied Write-Off (client's explicit ask: a separate
+        # mechanic from Misc Adjustment, for a CN sitting unapplied
+        # because an untracked Tally voucher already resolved it) - one
+        # at most per row is ever offered for Edit, same reasoning as
+        # Sales & DN's own Misc Adjustment (an invoice/row can carry
+        # more than one, but the Edit panel covers the latest).
+        write_offs_by_row_id: dict[int, UnappliedWriteOff] = {}
+        for w in store.all_unapplied_write_offs("credit_note"):
+            existing = write_offs_by_row_id.get(w.row_id)
+            if existing is None or (w.write_off_date, w.id) > (existing.write_off_date, existing.id):
+                write_offs_by_row_id[w.row_id] = w
         freshness = _freshness(store.last_extraction_at())
         store.close()
         bill_reference_lookup = build_bill_reference_lookup(sales_dn_rows)
@@ -1331,15 +1344,20 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             age_unapplied_days = (
                 max((as_of - row.cn_date).days, 0) if row.bill_allocation_reference is None else None
             )
+            write_off = write_offs_by_row_id.get(row.id)
+            is_unapplied_now = (
+                row.bill_allocation_reference is None
+                and row.classification == RegisterClassification.CURRENT
+                and row.cn_date <= as_of
+            )
             display_rows.append(
                 {
                     "row": row,
                     "grouping": groupings.get((row.party_id, row.branch_id)),
+                    "write_off": write_off,
                     "unapplied_amount": (
-                        row.cn_amount
-                        if row.bill_allocation_reference is None
-                        and row.classification == RegisterClassification.CURRENT
-                        and row.cn_date <= as_of
+                        (row.cn_amount - (write_off.amount if write_off and row.cn_amount > 0 else Decimal("0.00")))
+                        if is_unapplied_now
                         else None
                     ),
                     # Age Unapplied Days is kept here purely to derive the
@@ -1382,6 +1400,15 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         groupings = {
             (r["party_id"], r["branch_id"]): r["grouping"] for r in store.all_customer_master_records()
         }
+        # Unapplied Write-Off (client's explicit ask) - see
+        # _build_credit_note_display_rows' own comment for the same
+        # pattern: at most one per row is ever offered for Edit (the
+        # latest), an older one stays on record via Undo only.
+        write_offs_by_row_id: dict[int, UnappliedWriteOff] = {}
+        for w in store.all_unapplied_write_offs("receipt_journal"):
+            existing = write_offs_by_row_id.get(w.row_id)
+            if existing is None or (w.write_off_date, w.id) > (existing.write_off_date, existing.id):
+                write_offs_by_row_id[w.row_id] = w
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
@@ -1394,15 +1421,24 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         for row in rj_rows:
             key = (row.branch_id, row.voucher_number, row.party_id)
             voucher_line_counts[key] = voucher_line_counts.get(key, 0) + 1
-        display_rows = [
-            {
-                "row": row,
-                "grouping": groupings.get((row.party_id, row.branch_id)),
-                "fields": compute_receipt_journal_display_fields(row, lookup, as_of),
-                "voucher_line_count": voucher_line_counts[(row.branch_id, row.voucher_number, row.party_id)],
-            }
-            for row in rj_rows
-        ]
+        display_rows = []
+        for row in rj_rows:
+            write_off = write_offs_by_row_id.get(row.id)
+            unapplied_balance = (
+                row.amount - (write_off.amount if write_off and row.amount > 0 else Decimal("0.00"))
+                if row.target_doc_no is None
+                else None
+            )
+            display_rows.append(
+                {
+                    "row": row,
+                    "grouping": groupings.get((row.party_id, row.branch_id)),
+                    "fields": compute_receipt_journal_display_fields(row, lookup, as_of),
+                    "voucher_line_count": voucher_line_counts[(row.branch_id, row.voucher_number, row.party_id)],
+                    "write_off": write_off,
+                    "unapplied_balance": unapplied_balance,
+                }
+            )
         return display_rows, freshness
 
     # ---- Register snapshot summaries (client's explicit ask) ------------
@@ -1483,7 +1519,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             if row.target_doc_no:
                 total_applied_amount += row.amount
             else:
-                total_unapplied_amount += row.amount
+                total_unapplied_amount += d["unapplied_balance"]
                 unapplied_count += 1
             if row.classification == RegisterClassification.PENDING_REVIEW:
                 pending_review_amount += row.amount
@@ -2087,7 +2123,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         summary = _credit_note_summary(display_rows, as_of)
         return render_template(
             "credit_note_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
-            freshness=freshness, summary=summary,
+            freshness=freshness, summary=summary, today=date.today().isoformat(),
         )
 
     @app.route("/registers/credit-notes/export.xlsx")
@@ -2422,6 +2458,181 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         flash("Credit note updated.", "success")
         return redirect(url_for("credit_note_register", as_of=as_of_raw))
 
+    @app.route("/registers/credit-notes/write-off", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_write_off():
+        """Client's explicit ask: a separate mechanic from Misc Adjustment
+        (which closes a Sales/DN invoice) - a Credit Note sitting on-
+        account that Tally itself already resolved through a voucher
+        type this app never parses (e.g. absorbed by a Journal this
+        app's own Unapplied total has no way to see). Reduces this one
+        row's own contribution to Unapplied CN (ar_mis.registers.
+        compute_unapplied_cn_by_party) - never the TB Cross-Check, which
+        already counts this CN's real amount regardless of classification
+        (models.UnappliedWriteOff's own docstring has the full reasoning).
+        """
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        raw_amount = request.form.get("amount", "").strip()
+        raw_write_off_date = request.form.get("write_off_date", "").strip()
+        reason = request.form.get("reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to write off.")
+        if not reason:
+            return _redisplay("Enter a reason for this write-off.")
+        try:
+            amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_amount}' is not a valid amount.")
+        if amount <= 0:
+            return _redisplay("Enter an amount greater than zero.")
+        try:
+            write_off_date = date.fromisoformat(raw_write_off_date) if raw_write_off_date else date.today()
+        except ValueError:
+            return _redisplay("Enter a valid write-off date.")
+
+        store = get_store()
+        row = store.get_credit_note_row_by_id(row_id)
+        if row is None:
+            store.close()
+            return _redisplay(f"No credit_note_register row with id={row_id}")
+        if row.bill_allocation_reference is not None or row.classification != RegisterClassification.CURRENT:
+            store.close()
+            return _redisplay(f"{row.voucher_number} is not an Unapplied CN - nothing to write off.")
+
+        already_written_off = sum(
+            (w.amount for w in store.all_unapplied_write_offs("credit_note") if w.row_id == row_id),
+            Decimal("0.00"),
+        )
+        remaining = row.cn_amount - already_written_off
+        if amount > remaining:
+            store.close()
+            return _redisplay(
+                f"{row.voucher_number}'s remaining unapplied balance is {format_inr(remaining)} - "
+                f"a write-off of {format_inr(amount)} would over-write it off."
+            )
+
+        store.record_unapplied_write_off(
+            UnappliedWriteOff(
+                register="credit_note", row_id=row_id, amount=amount, reason=reason,
+                adjusted_by=MAKER_ATTRIBUTION, write_off_date=write_off_date,
+            )
+        )
+        store.close()
+        flash(f"Write-off of {format_inr(amount)} recorded against {row.voucher_number}.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+    @app.route("/registers/credit-notes/write-off/edit", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_write_off_edit():
+        as_of_raw = request.form.get("as_of", "")
+        raw_write_off_id = request.form.get("write_off_id", "")
+        raw_amount = request.form.get("wo_amount", "").strip()
+        raw_write_off_date = request.form.get("wo_write_off_date", "").strip()
+        wo_reason = request.form.get("wo_reason", "").strip()
+        edit_reason = request.form.get("wo_edit_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        try:
+            write_off_id = int(raw_write_off_id)
+        except ValueError:
+            return _redisplay("Select a valid write-off to edit.")
+        if not wo_reason:
+            return _redisplay("Enter a reason for the write-off.")
+        if not edit_reason:
+            return _redisplay("Enter a reason for this edit.")
+        try:
+            amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_amount}' is not a valid amount.")
+        if amount <= 0:
+            return _redisplay("Enter an amount greater than zero.")
+        try:
+            write_off_date = date.fromisoformat(raw_write_off_date) if raw_write_off_date else date.today()
+        except ValueError:
+            return _redisplay("Enter a valid write-off date.")
+
+        store = get_store()
+        current = store.get_unapplied_write_off_by_id(write_off_id)
+        if current is None:
+            store.close()
+            return _redisplay(f"No write-off with id={write_off_id}")
+        row = store.get_credit_note_row_by_id(current.row_id)
+        if row is None:
+            store.close()
+            return _redisplay(f"No credit_note_register row with id={current.row_id}")
+
+        other_total = sum(
+            (w.amount for w in store.all_unapplied_write_offs("credit_note")
+             if w.row_id == current.row_id and w.id != write_off_id),
+            Decimal("0.00"),
+        )
+        remaining_without_this = row.cn_amount - other_total
+        if amount > remaining_without_this:
+            store.close()
+            return _redisplay(
+                f"{row.voucher_number}'s remaining unapplied balance, excluding this write-off's own old amount, "
+                f"is {format_inr(remaining_without_this)} - {format_inr(amount)} would over-write it off."
+            )
+
+        changes = {}
+        if amount != current.amount:
+            changes["amount"] = amount
+        if wo_reason != current.reason:
+            changes["reason"] = wo_reason
+        if write_off_date != current.write_off_date:
+            changes["write_off_date"] = write_off_date
+        if not changes:
+            store.close()
+            return _redisplay("Nothing to update - every field matches its current value.")
+
+        try:
+            store.edit_unapplied_write_off(write_off_id, edit_reason, MAKER_ATTRIBUTION, datetime.now(), **changes)
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash(f"Write-off on {row.voucher_number} updated.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+    @app.route("/registers/credit-notes/write-off/delete", methods=["POST"])
+    @requires_role("maker")
+    def credit_note_write_off_delete():
+        as_of_raw = request.form.get("as_of", "")
+        raw_write_off_id = request.form.get("write_off_id", "")
+        reason = request.form.get("wo_delete_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
+        try:
+            write_off_id = int(raw_write_off_id)
+        except ValueError:
+            return _redisplay("Select a valid write-off to delete.")
+        if not reason:
+            return _redisplay("Enter a reason for this delete.")
+
+        store = get_store()
+        try:
+            store.delete_unapplied_write_off(write_off_id, reason, MAKER_ATTRIBUTION, datetime.now())
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Write-off deleted.", "success")
+        return redirect(url_for("credit_note_register", as_of=as_of_raw))
+
     @app.route("/registers/credit-notes/delete", methods=["POST"])
     @requires_role("maker")
     def credit_note_row_delete():
@@ -2750,7 +2961,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         summary = _receipt_journal_summary(display_rows, as_of)
         return render_template(
             "receipt_journal_register.html", display_rows=display_rows, as_of=as_of.isoformat(),
-            freshness=freshness, summary=summary,
+            freshness=freshness, summary=summary, today=date.today().isoformat(),
         )
 
     @app.route("/registers/receipts-journals/export.xlsx")
@@ -2833,6 +3044,176 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             return _redisplay(str(exc))
         store.close()
         flash("Receipt/Journal line updated.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/write-off", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_write_off():
+        """Same mechanic as credit_note_write_off, for an Unapplied
+        Receipt/Journal line - keyed by this line's own row id (never
+        voucher+party, since one voucher can carry more than one line
+        for the same party - models.UnappliedWriteOff's own docstring).
+        """
+        as_of_raw = request.form.get("as_of", "")
+        raw_row_id = request.form.get("row_id", "")
+        raw_amount = request.form.get("amount", "").strip()
+        raw_write_off_date = request.form.get("write_off_date", "").strip()
+        reason = request.form.get("reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        try:
+            row_id = int(raw_row_id)
+        except ValueError:
+            return _redisplay("Select a valid row to write off.")
+        if not reason:
+            return _redisplay("Enter a reason for this write-off.")
+        try:
+            amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_amount}' is not a valid amount.")
+        if amount <= 0:
+            return _redisplay("Enter an amount greater than zero.")
+        try:
+            write_off_date = date.fromisoformat(raw_write_off_date) if raw_write_off_date else date.today()
+        except ValueError:
+            return _redisplay("Enter a valid write-off date.")
+
+        store = get_store()
+        row = store.get_receipt_journal_row_by_id(row_id)
+        if row is None:
+            store.close()
+            return _redisplay(f"No receipt_journal_register row with id={row_id}")
+        if row.target_doc_no is not None or row.classification != RegisterClassification.CURRENT:
+            store.close()
+            return _redisplay(f"{row.voucher_number} is not an Unapplied Receipt/Journal line - nothing to write off.")
+
+        already_written_off = sum(
+            (w.amount for w in store.all_unapplied_write_offs("receipt_journal") if w.row_id == row_id),
+            Decimal("0.00"),
+        )
+        remaining = row.amount - already_written_off
+        if amount > remaining:
+            store.close()
+            return _redisplay(
+                f"{row.voucher_number}'s remaining unapplied balance is {format_inr(remaining)} - "
+                f"a write-off of {format_inr(amount)} would over-write it off."
+            )
+
+        store.record_unapplied_write_off(
+            UnappliedWriteOff(
+                register="receipt_journal", row_id=row_id, amount=amount, reason=reason,
+                adjusted_by=MAKER_ATTRIBUTION, write_off_date=write_off_date,
+            )
+        )
+        store.close()
+        flash(f"Write-off of {format_inr(amount)} recorded against {row.voucher_number}.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/write-off/edit", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_write_off_edit():
+        as_of_raw = request.form.get("as_of", "")
+        raw_write_off_id = request.form.get("write_off_id", "")
+        raw_amount = request.form.get("wo_amount", "").strip()
+        raw_write_off_date = request.form.get("wo_write_off_date", "").strip()
+        wo_reason = request.form.get("wo_reason", "").strip()
+        edit_reason = request.form.get("wo_edit_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        try:
+            write_off_id = int(raw_write_off_id)
+        except ValueError:
+            return _redisplay("Select a valid write-off to edit.")
+        if not wo_reason:
+            return _redisplay("Enter a reason for the write-off.")
+        if not edit_reason:
+            return _redisplay("Enter a reason for this edit.")
+        try:
+            amount = to_money(Decimal(raw_amount))
+        except InvalidOperation:
+            return _redisplay(f"'{raw_amount}' is not a valid amount.")
+        if amount <= 0:
+            return _redisplay("Enter an amount greater than zero.")
+        try:
+            write_off_date = date.fromisoformat(raw_write_off_date) if raw_write_off_date else date.today()
+        except ValueError:
+            return _redisplay("Enter a valid write-off date.")
+
+        store = get_store()
+        current = store.get_unapplied_write_off_by_id(write_off_id)
+        if current is None:
+            store.close()
+            return _redisplay(f"No write-off with id={write_off_id}")
+        row = store.get_receipt_journal_row_by_id(current.row_id)
+        if row is None:
+            store.close()
+            return _redisplay(f"No receipt_journal_register row with id={current.row_id}")
+
+        other_total = sum(
+            (w.amount for w in store.all_unapplied_write_offs("receipt_journal")
+             if w.row_id == current.row_id and w.id != write_off_id),
+            Decimal("0.00"),
+        )
+        remaining_without_this = row.amount - other_total
+        if amount > remaining_without_this:
+            store.close()
+            return _redisplay(
+                f"{row.voucher_number}'s remaining unapplied balance, excluding this write-off's own old amount, "
+                f"is {format_inr(remaining_without_this)} - {format_inr(amount)} would over-write it off."
+            )
+
+        changes = {}
+        if amount != current.amount:
+            changes["amount"] = amount
+        if wo_reason != current.reason:
+            changes["reason"] = wo_reason
+        if write_off_date != current.write_off_date:
+            changes["write_off_date"] = write_off_date
+        if not changes:
+            store.close()
+            return _redisplay("Nothing to update - every field matches its current value.")
+
+        try:
+            store.edit_unapplied_write_off(write_off_id, edit_reason, MAKER_ATTRIBUTION, datetime.now(), **changes)
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash(f"Write-off on {row.voucher_number} updated.", "success")
+        return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+    @app.route("/registers/receipts-journals/write-off/delete", methods=["POST"])
+    @requires_role("maker")
+    def receipt_journal_write_off_delete():
+        as_of_raw = request.form.get("as_of", "")
+        raw_write_off_id = request.form.get("write_off_id", "")
+        reason = request.form.get("wo_delete_reason", "").strip()
+
+        def _redisplay(message: str):
+            flash(message, "error")
+            return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
+
+        try:
+            write_off_id = int(raw_write_off_id)
+        except ValueError:
+            return _redisplay("Select a valid write-off to delete.")
+        if not reason:
+            return _redisplay("Enter a reason for this delete.")
+
+        store = get_store()
+        try:
+            store.delete_unapplied_write_off(write_off_id, reason, MAKER_ATTRIBUTION, datetime.now())
+        except ValueError as exc:
+            store.close()
+            return _redisplay(str(exc))
+        store.close()
+        flash("Write-off deleted.", "success")
         return redirect(url_for("receipt_journal_register", as_of=as_of_raw))
 
     @app.route("/registers/receipts-journals/delete", methods=["POST"])
@@ -2924,10 +3305,11 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
 
     _REGISTER_LABEL = {
         "sales_dn": "Sales & DN Register", "credit_note": "Credit Note Register", "receipt_journal": "Receipt & Journal Register",
-        "misc_adjustment": "Misc Adjustment Register",
+        "misc_adjustment": "Misc Adjustment Register", "unapplied_write_off": "Unapplied Write-Off Register",
     }
     _AMOUNT_FIELD_BY_REGISTER = {
-        "sales_dn": "invoice_value", "credit_note": "cn_amount", "receipt_journal": "amount", "misc_adjustment": "amount",
+        "sales_dn": "invoice_value", "credit_note": "cn_amount", "receipt_journal": "amount",
+        "misc_adjustment": "amount", "unapplied_write_off": "amount",
     }
 
     def _audit_entry_display(entry):
@@ -3025,6 +3407,7 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         misc_rows = store.all_misc_adjustments()
+        write_offs = store.all_unapplied_write_offs()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         follow_ups = store.all_invoice_follow_ups()
         tally_closing_by_party = _current_tb_closing_by_party(store)
@@ -3035,7 +3418,8 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         ptp_rate = compute_ptp_kept_rate(follow_ups, sales_dn_by_identity, cn_rows, rj_rows, as_of)
 
         snapshot = compute_ar_snapshot(
-            sales_dn_rows, cn_rows, rj_rows, customer_masters, ptp_rate, as_of, tally_closing_by_party, misc_rows
+            sales_dn_rows, cn_rows, rj_rows, customer_masters, ptp_rate, as_of, tally_closing_by_party, misc_rows,
+            write_offs,
         )
         return render_template(
             "ar_snapshot.html", snapshot=snapshot, as_of=as_of.isoformat(), freshness=freshness
@@ -3082,6 +3466,35 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
             "misc_adjustment_register.html", adjustments=list(reversed(adjustments)), freshness=freshness,
         )
 
+    @app.route("/reports/unapplied-write-offs")
+    def unapplied_write_off_register_report():
+        """Durable audit trail for credit_note_write_off/receipt_journal_
+        write_off - same spirit as Misc Adjustment Register. Each write-
+        off only stores its own target row's id, not that row's voucher/
+        party identity, so this resolves and carries those along purely
+        for display. Newest first.
+        """
+        store = get_store()
+        write_offs = store.all_unapplied_write_offs()
+        rows = []
+        for w in write_offs:
+            if w.register == "credit_note":
+                target = store.get_credit_note_row_by_id(w.row_id)
+            else:
+                target = store.get_receipt_journal_row_by_id(w.row_id)
+            rows.append({
+                "write_off": w,
+                "register_label": "Credit Note" if w.register == "credit_note" else "Receipt/Journal",
+                "branch_id": target.branch_id if target else "—",
+                "voucher_number": target.voucher_number if target else "(deleted)",
+                "party_id": target.party_id if target else "—",
+            })
+        freshness = _freshness(store.last_extraction_at())
+        store.close()
+        return render_template(
+            "unapplied_write_off_register.html", rows=list(reversed(rows)), freshness=freshness,
+        )
+
     @app.route("/reports/pre-mis-adjustments/export.xlsx")
     def pre_mis_register_export():
         """Client's explicit ask: this screen had no export at all - every
@@ -3117,11 +3530,12 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         misc_rows = store.all_misc_adjustments()
+        write_offs = store.all_unapplied_write_offs()
         freshness = _freshness(store.last_extraction_at())
         store.close()
 
-        unapplied_cash = compute_unapplied_cash_exceptions(rj_rows)
-        unapplied_cn = compute_unapplied_cn_exceptions(cn_rows)
+        unapplied_cash = compute_unapplied_cash_exceptions(rj_rows, write_offs)
+        unapplied_cn = compute_unapplied_cn_exceptions(cn_rows, write_offs)
         negative_open = compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of, misc_rows)
         non_active = compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of, misc_adjustment_rows=misc_rows)
         unresolved = compute_unresolved_references(cn_rows, rj_rows)
@@ -3152,12 +3566,13 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         misc_rows = store.all_misc_adjustments()
+        write_offs = store.all_unapplied_write_offs()
         store.close()
 
         wb = build_exception_register_workbook(
             as_of,
-            unapplied_cash=compute_unapplied_cash_exceptions(rj_rows),
-            unapplied_cn=compute_unapplied_cn_exceptions(cn_rows),
+            unapplied_cash=compute_unapplied_cash_exceptions(rj_rows, write_offs),
+            unapplied_cn=compute_unapplied_cn_exceptions(cn_rows, write_offs),
             negative_open=compute_negative_open_amount_invoices(sales_dn_rows, cn_rows, rj_rows, as_of, misc_rows),
             non_active=compute_non_active_debtors(sales_dn_rows, cn_rows, rj_rows, as_of, misc_adjustment_rows=misc_rows),
             unresolved=compute_unresolved_references(cn_rows, rj_rows),
@@ -3286,13 +3701,14 @@ def create_app(db_path: str = "data/ar_mis.db") -> Flask:
         cn_rows = store.all_credit_note_rows()
         rj_rows = store.all_receipt_journal_rows()
         misc_rows = store.all_misc_adjustments()
+        write_offs = store.all_unapplied_write_offs()
         customer_masters = {(c.party_id, c.branch_id): c for c in store.all_customer_masters()}
         tally_closing_by_party = _current_tb_closing_by_party(store)
 
         snapshot = compute_ar_snapshot(
             sales_dn_rows, cn_rows, rj_rows, customer_masters,
             ptp_kept_rate=None, as_of=week_ending, tally_closing_by_party=tally_closing_by_party,
-            misc_adjustment_rows=misc_rows,
+            misc_adjustment_rows=misc_rows, unapplied_write_offs=write_offs,
         )
         row = build_weekly_movement_row(snapshot, week_ending, recorded_at=datetime.now())
         store.record_weekly_movement(row)

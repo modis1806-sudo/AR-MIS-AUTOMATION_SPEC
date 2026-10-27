@@ -26,6 +26,7 @@ from ar_mis.models import (
     ReceiptJournalRegisterRow,
     RegisterClassification,
     SalesDNRegisterRow,
+    UnappliedWriteOff,
     Voucher,
     VoucherType,
     YtdDebtorVoucherRow,
@@ -653,8 +654,18 @@ def find_pre_mis_rows_now_resolvable(
     return cn_flagged, rj_flagged
 
 
+def _unapplied_write_off_totals_by_row_id(write_offs: list[UnappliedWriteOff], register: str) -> dict[int, Decimal]:
+    totals: dict[int, Decimal] = {}
+    for w in write_offs:
+        if w.register != register:
+            continue
+        totals[w.row_id] = totals.get(w.row_id, Decimal("0.00")) + w.amount
+    return totals
+
+
 def compute_unapplied_cash_by_party(
     rows: list[ReceiptJournalRegisterRow],
+    write_offs: list[UnappliedWriteOff] = (),
 ) -> dict[str, Decimal]:
     """Item 9: net total per party of every CURRENT, unapplied
     (target_doc_no is None) line - a receipt and its later reversing
@@ -665,25 +676,49 @@ def compute_unapplied_cash_by_party(
     matching item 10: a Pre-MIS-flagged voucher's on-account leg has no
     real counterpart in this system's own data and would otherwise show
     as a phantom imbalance.
+
+    `write_offs` (client's explicit ask: a separate mechanic from Misc
+    Adjustment, for a line Tally itself already resolved through a
+    voucher type this app never parses, e.g. a refund paid back via a
+    Payment voucher) reduces one specific line's own contribution here,
+    keyed by its own row id - never touching the party's TB Cross-Check
+    closing, which already counts this row's real amount regardless of
+    classification (see models.UnappliedWriteOff's own docstring for
+    why the two never need to agree the way Misc Adjustment and TB
+    Cross-Check do). Only applied when the line's own raw amount is
+    positive (a genuine credit balance sitting unapplied) - the same
+    scoping Misc Adjustment uses for an invoice's Open Amount.
     """
+    write_off_by_row_id = _unapplied_write_off_totals_by_row_id(write_offs, "receipt_journal")
     totals: dict[str, Decimal] = {}
     for row in rows:
         if row.target_doc_no is not None or row.classification != RegisterClassification.CURRENT:
             continue
-        totals[row.party_id] = totals.get(row.party_id, Decimal("0.00")) + row.amount
+        amount = row.amount
+        if amount > 0 and row.id in write_off_by_row_id:
+            amount -= write_off_by_row_id[row.id]
+        totals[row.party_id] = totals.get(row.party_id, Decimal("0.00")) + amount
     return totals
 
 
-def compute_unapplied_cn_by_party(rows: list[CreditNoteRegisterRow]) -> dict[str, Decimal]:
+def compute_unapplied_cn_by_party(
+    rows: list[CreditNoteRegisterRow],
+    write_offs: list[UnappliedWriteOff] = (),
+) -> dict[str, Decimal]:
     """Item 9 extended to Credit Notes (confirmed same session) - same
     netting principle as compute_unapplied_cash_by_party, for CNs left
     on-account (bill_allocation_reference is None) rather than receipts.
+    See compute_unapplied_cash_by_party's own docstring for `write_offs`.
     """
+    write_off_by_row_id = _unapplied_write_off_totals_by_row_id(write_offs, "credit_note")
     totals: dict[str, Decimal] = {}
     for row in rows:
         if row.bill_allocation_reference is not None or row.classification != RegisterClassification.CURRENT:
             continue
-        totals[row.party_id] = totals.get(row.party_id, Decimal("0.00")) + row.cn_amount
+        amount = row.cn_amount
+        if amount > 0 and row.id in write_off_by_row_id:
+            amount -= write_off_by_row_id[row.id]
+        totals[row.party_id] = totals.get(row.party_id, Decimal("0.00")) + amount
     return totals
 
 

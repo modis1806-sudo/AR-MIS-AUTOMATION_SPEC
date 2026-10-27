@@ -211,6 +211,55 @@ class MiscAdjustment:
 
 
 @dataclass(frozen=True)
+class UnappliedWriteOff:
+    """An explicit, logged, one-off reduction against one specific CN or
+    Receipt/Journal register row's own still-unapplied balance - a
+    different mechanic from MiscAdjustment (which closes a Sales/DN
+    invoice): a CN or Receipt/Journal row has no "Open Amount" of its
+    own to close, it IS the credit side, and its own real amount is
+    already counted in the party's TB Cross-Check closing regardless of
+    classification (ar_mis.rollforward's own "every movement counted
+    unconditionally" design) - so writing it off never touches that
+    figure. What it fixes instead: ar_mis.registers.compute_unapplied_
+    cash_by_party/compute_unapplied_cn_by_party (and everything built on
+    them - AR Snapshot's Unapplied Cash/CN tiles, Exception Register),
+    for the client's own real case: an on-account CN or an unapplied
+    Receipt/Journal that Tally itself already resolved through a voucher
+    type this app never parses (e.g. a refund paid back via a Payment
+    voucher), so it sits here looking stuck forever with nothing this
+    app's own registers will ever match it against.
+
+    Keyed by `row_id` - the CreditNoteRegisterRow's or ReceiptJournal
+    RegisterRow's own real id, never (branch, voucher, party), since a
+    Receipt/Journal voucher can carry more than one line for the same
+    party (the exact ambiguity this session's own Resolve/Revert fix
+    already had to narrow Receipt/Journal classification around) - `row_
+    id` has no such ambiguity for either register. `register` is
+    "credit_note" or "receipt_journal" (never "sales_dn" - that's
+    MiscAdjustment's own job), needed because a row id is only unique
+    within its own table, not across both.
+
+    `amount` is always positive (the reduction applied), capped at that
+    row's own current unapplied amount by the caller (ar_mis.webapp.app.
+    credit_note_write_off / receipt_journal_write_off). Unlike
+    MiscAdjustment, nothing here needs as-of-date filtering - compute_
+    unapplied_cash_by_party/compute_unapplied_cn_by_party were never
+    as-of scoped either (every CURRENT unapplied line counts,
+    unconditionally, the instant it exists) - so `write_off_date` is
+    purely the record's own effective date for the audit trail, not a
+    filter anything reads by.
+    """
+
+    register: str
+    row_id: int
+    amount: Decimal
+    reason: str
+    adjusted_by: str
+    write_off_date: date
+    id: int | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
 class WeeklySnapshotRow:
     """Layer 2. One row per party per branch per run. All amounts are
     post-sign-flip. `closing_extracted` is the YTD Trial Balance closing

@@ -105,7 +105,11 @@
   {% for d in display_rows %}
     {% set row = d.row %}
     {% set f = d.fields %}
-    <tr data-tt-row data-tt-row-id="{{ row.id }}" data-tt-row-amount="{{ row.amount }}">
+    <tr data-tt-row data-tt-row-id="{{ row.id }}" data-tt-row-amount="{{ row.amount }}"
+        data-tt-row-wo_id="{{ d.write_off.id if d.write_off else '' }}"
+        data-tt-row-wo_amount="{{ d.write_off.amount if d.write_off else '' }}"
+        data-tt-row-wo_reason="{{ d.write_off.reason if d.write_off else '' }}"
+        data-tt-row-wo_date="{{ d.write_off.write_off_date if d.write_off else '' }}">
       <td><input type="checkbox" data-tt-row-select form="receiptjournal-batch-form" name="selected" value="{{ row.id }}"></td>
       <td data-tt-col="branch">{{ row.branch_id }}</td>
       <td>{{ row.txn_date }}</td>
@@ -121,7 +125,7 @@
       <td>{{ f.linked_invoice_date if f.linked_invoice_date else '—' }}</td>
       <td>{{ f.linked_invoice_value|inr if f.linked_invoice_value is not none else '—' }}</td>
       <td data-tt-col="applied_amount"{% if row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if row.target_doc_no else '—' }}</td>
-      <td data-tt-col="unapplied_balance"{% if not row.target_doc_no %} data-value="{{ row.amount }}"{% endif %}>{{ row.amount|inr if not row.target_doc_no else '—' }}</td>
+      <td data-tt-col="unapplied_balance"{% if not row.target_doc_no %} data-value="{{ d.unapplied_balance }}"{% endif %}>{{ d.unapplied_balance|inr if not row.target_doc_no else '—' }}</td>
       <td data-tt-col="classification" data-tt-filter-value="{{ row|rj_classification_label }}">
         {% if row.classification.value == 'Current' %}
           {% if row.target_doc_no is none %}
@@ -136,6 +140,11 @@
                 <button class="btn" type="submit" style="padding:4px 10px;">Mark as Pre-MIS Adjustment</button>
               </form>
             </details>
+            {% if d.unapplied_balance and d.unapplied_balance > 0 %}
+            <details data-tt-lazy="receiptjournal-writeoff" style="margin-top:4px;">
+              <summary class="btn secondary" style="display:inline-block; padding:2px 8px; font-size:12px; cursor:pointer;">Write off</summary>
+            </details>
+            {% endif %}
           {% else %}<span class="pill class-matched">Matched</span>{% endif %}
         {% elif row.classification.value == 'Pending Review' %}
           <span class="pill class-pending">Pending Review</span>
@@ -230,6 +239,41 @@
     </div>
     <div><label style="display:block; font-size:11px; font-weight:600;">Reason</label><input name="reason" style="width:160px;" required></div>
     <button class="btn secondary" type="submit" style="padding:6px 12px;">Save edit</button>
+  </form>
+  <div data-tt-hide-unless="wo_id" style="margin-top:12px; padding-top:10px; border-top:1px solid #e5e7eb;">
+    <div style="font-size:11px; font-weight:600; margin-bottom:6px;">This line's Write-Off</div>
+    <form method="post" action="{{ url_for('receipt_journal_write_off_edit') }}" style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; max-width:620px;">
+      <input type="hidden" name="as_of" value="{{ as_of }}">
+      <input type="hidden" name="write_off_id" data-tt-field="wo_id">
+      <div><label style="display:block; font-size:11px; font-weight:600;">Amount</label><input type="number" step="0.01" name="wo_amount" data-tt-field="wo_amount" style="width:100px;" required></div>
+      <div><label style="display:block; font-size:11px; font-weight:600;">Effective Date</label><input type="date" name="wo_write_off_date" data-tt-field="wo_date" style="width:140px;" required></div>
+      <div><label style="display:block; font-size:11px; font-weight:600;">Reason</label><input name="wo_reason" data-tt-field="wo_reason" style="width:220px;" required></div>
+      <div><label style="display:block; font-size:11px; font-weight:600;">Reason for this edit</label><input name="wo_edit_reason" style="width:160px;" required></div>
+      <button class="btn secondary" type="submit" style="padding:6px 12px;">Save</button>
+    </form>
+    <form method="post" action="{{ url_for('receipt_journal_write_off_delete') }}" style="display:flex; gap:8px; align-items:flex-end; margin-top:6px;"
+          onsubmit="return confirm('Delete this write-off entirely?');">
+      <input type="hidden" name="as_of" value="{{ as_of }}">
+      <input type="hidden" name="write_off_id" data-tt-field="wo_id">
+      <input name="wo_delete_reason" placeholder="Reason for delete" style="width:180px;" required>
+      <button class="btn" type="submit" style="padding:6px 12px;">Delete Write-Off</button>
+    </form>
+  </div>
+</template>
+<template data-tt-lazy-template="receiptjournal-writeoff">
+  <form method="post" action="{{ url_for('receipt_journal_write_off') }}" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; min-width:230px;">
+    <input type="hidden" name="as_of" value="{{ as_of }}">
+    <input type="hidden" name="row_id" data-tt-field="row_id">
+    <div style="font-size:11px; color:#6b7280;">For a real Tally entry that already absorbed this unapplied line through a voucher type this app doesn't track (e.g. a refund via a Payment voucher) - reduces this line's own contribution to Unapplied Cash by up to its own current Unapplied Balance, shown below. Never touches the TB Cross-Check - this line's real amount is already counted there.</div>
+    <label style="font-size:11px; font-weight:600;">Unapplied Balance shown above ({{ as_of }})</label>
+    <input type="text" readonly data-tt-field="unapplied_balance" style="background:#f3f4f6;">
+    <label style="font-size:11px; font-weight:600;">Effective date</label>
+    <input type="date" name="write_off_date" value="{{ today }}" required>
+    <label style="font-size:11px; font-weight:600;">Amount to write off</label>
+    <input type="number" step="0.01" name="amount" required>
+    <label style="font-size:11px; font-weight:600;">Reason</label>
+    <input type="text" name="reason" placeholder="e.g. Refunded via Payment voucher PY/8 in Tally" required>
+    <button class="btn secondary" type="submit" style="padding:4px 10px;">Record Write-Off</button>
   </form>
 </template>
 {% else %}

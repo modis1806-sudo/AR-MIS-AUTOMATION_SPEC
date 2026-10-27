@@ -38,19 +38,24 @@ class UnappliedAmountRow:
     amount: Decimal
 
 
-def compute_unapplied_cash_exceptions(receipt_journal_rows: list[ReceiptJournalRegisterRow]) -> list[UnappliedAmountRow]:
+def compute_unapplied_cash_exceptions(
+    receipt_journal_rows: list[ReceiptJournalRegisterRow], write_offs: list = (),
+) -> list[UnappliedAmountRow]:
     """Item 9: net unapplied receipt/journal total per party, largest
     first. Zero-net parties (a receipt fully offset by its own reversing
-    journal) are excluded - there's nothing exceptional to show.
+    journal, or fully written off) are excluded - there's nothing
+    exceptional to show.
     """
-    totals = compute_unapplied_cash_by_party(receipt_journal_rows)
+    totals = compute_unapplied_cash_by_party(receipt_journal_rows, write_offs)
     rows = [UnappliedAmountRow(party_id=p, amount=a) for p, a in totals.items() if a != 0]
     return sorted(rows, key=lambda r: r.amount, reverse=True)
 
 
-def compute_unapplied_cn_exceptions(credit_note_rows: list[CreditNoteRegisterRow]) -> list[UnappliedAmountRow]:
+def compute_unapplied_cn_exceptions(
+    credit_note_rows: list[CreditNoteRegisterRow], write_offs: list = (),
+) -> list[UnappliedAmountRow]:
     """Item 9 extended to Credit Notes - same netting principle."""
-    totals = compute_unapplied_cn_by_party(credit_note_rows)
+    totals = compute_unapplied_cn_by_party(credit_note_rows, write_offs)
     rows = [UnappliedAmountRow(party_id=p, amount=a) for p, a in totals.items() if a != 0]
     return sorted(rows, key=lambda r: r.amount, reverse=True)
 

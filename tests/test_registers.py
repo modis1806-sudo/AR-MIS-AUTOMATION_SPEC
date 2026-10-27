@@ -732,6 +732,51 @@ def test_unapplied_cn_nets_per_party_and_excludes_allocated():
     assert compute_unapplied_cn_by_party(rows) == {"ACME": Decimal("500.00")}
 
 
+def test_unapplied_cash_by_party_subtracts_a_write_off_for_its_own_row():
+    from ar_mis.models import ReceiptJournalRegisterRow, UnappliedWriteOff
+
+    row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 1), voucher_type="Receipt",
+        voucher_number="R1", party_id="ACME", amount=Decimal("1000.00"), target_doc_no=None,
+        id=42,
+    )
+    other_row = ReceiptJournalRegisterRow(
+        branch_id="B1", txn_date=date(2026, 4, 1), voucher_type="Receipt",
+        voucher_number="R2", party_id="ACME", amount=Decimal("300.00"), target_doc_no=None,
+        id=43,
+    )
+    write_offs = [
+        UnappliedWriteOff(
+            register="receipt_journal", row_id=42, amount=Decimal("600.00"), reason="Refunded via PY/8",
+            adjusted_by="Maker", write_off_date=date(2026, 5, 1),
+        ),
+        # A CN write-off with the same row_id must never bleed into this
+        # RJ-only computation - the two registers' ids are independent.
+        UnappliedWriteOff(
+            register="credit_note", row_id=42, amount=Decimal("999.00"), reason="unrelated",
+            adjusted_by="Maker", write_off_date=date(2026, 5, 1),
+        ),
+    ]
+    totals = compute_unapplied_cash_by_party([row, other_row], write_offs)
+    assert totals == {"ACME": Decimal("700.00")}  # (1000-600) + 300
+
+
+def test_unapplied_cn_by_party_subtracts_a_write_off_for_its_own_row():
+    from ar_mis.models import CreditNoteRegisterRow, UnappliedWriteOff
+
+    row = CreditNoteRegisterRow(
+        branch_id="B1", cn_date=date(2026, 4, 1), voucher_number="CN1",
+        party_id="ACME", cn_amount=Decimal("500.00"), bill_allocation_reference=None, id=7,
+    )
+    write_offs = [
+        UnappliedWriteOff(
+            register="credit_note", row_id=7, amount=Decimal("500.00"), reason="Absorbed by JV/3",
+            adjusted_by="Maker", write_off_date=date(2026, 5, 1),
+        ),
+    ]
+    assert compute_unapplied_cn_by_party([row], write_offs) == {"ACME": Decimal("0.00")}
+
+
 # ---- Ageing bucket --------------------------------------------------------
 
 

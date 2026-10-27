@@ -41,6 +41,7 @@ from ar_mis.models import (
     RegisterClassification,
     RegisterRowAuditEntry,
     SalesDNRegisterRow,
+    UnappliedWriteOff,
     Voucher,
     VoucherType,
     WeeklyMovementRow,
@@ -66,7 +67,7 @@ from ar_mis.reconciliation import DriftFinding, DriftFindingRecord
 # such a database is sitting at SQLite's default user_version of 0
 # despite already having this exact table shape — migrating it to
 # version 1 must be a no-op, not an error).
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -641,6 +642,21 @@ CREATE TABLE IF NOT EXISTS misc_adjustment (
     adjustment_date TEXT NOT NULL
 );
 """,
+    # Unapplied Write-Off (client's explicit ask: a separate mechanic
+    # from Misc Adjustment for a CN or Receipt/Journal row's own stuck
+    # unapplied balance - models.UnappliedWriteOff's own docstring has
+    # the real case and why it's keyed by row_id, not voucher/party).
+    22: """
+CREATE TABLE IF NOT EXISTS unapplied_write_off (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    register TEXT NOT NULL,
+    row_id INTEGER NOT NULL,
+    amount TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    adjusted_by TEXT NOT NULL,
+    write_off_date TEXT NOT NULL
+);
+""",
 }
 
 
@@ -1137,6 +1153,116 @@ class Store:
         self.conn.execute("DELETE FROM misc_adjustment WHERE id=?", (row_id,))
         audit_id = self._record_register_audit(
             "misc_adjustment", "DELETE", row_id, before["branch_id"], before["voucher_number"], before["party_id"],
+            [before], None, reason, deleted_by, deleted_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def _unapplied_write_off_target_identity(self, register: str, row_id: int) -> tuple[str, str, str]:
+        """Resolves a write-off's own (branch_id, voucher_number, party_id)
+        from the CN/RJ row it targets - unapplied_write_off itself stores
+        none of these (just `register`+`row_id`), but register_row_audit
+        wants them for every entry, same as every other register's own.
+        """
+        if register == "credit_note":
+            row = self.get_credit_note_row_by_id(row_id)
+        elif register == "receipt_journal":
+            row = self.get_receipt_journal_row_by_id(row_id)
+        else:
+            raise ValueError(f"Unknown register for a write-off: {register}")
+        if row is None:
+            raise ValueError(f"No {register} row with id={row_id}")
+        return row.branch_id, row.voucher_number, row.party_id
+
+    def record_unapplied_write_off(self, write_off: UnappliedWriteOff) -> None:
+        """Logs a write-off against one specific CN/RJ row - pure append,
+        same as record_misc_adjustment: every reader that cares (ar_mis.
+        registers.compute_unapplied_cash_by_party/compute_unapplied_cn_
+        by_party) re-sums all_unapplied_write_offs fresh.
+        """
+        self.conn.execute(
+            "INSERT INTO unapplied_write_off (register, row_id, amount, reason, adjusted_by, write_off_date)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                write_off.register, write_off.row_id, str(write_off.amount), write_off.reason,
+                write_off.adjusted_by, write_off.write_off_date.isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def _unapplied_write_off_from_row(self, r: sqlite3.Row) -> UnappliedWriteOff:
+        return UnappliedWriteOff(
+            id=r["id"], register=r["register"], row_id=r["row_id"], amount=Decimal(r["amount"]),
+            reason=r["reason"], adjusted_by=r["adjusted_by"], write_off_date=date.fromisoformat(r["write_off_date"]),
+        )
+
+    def all_unapplied_write_offs(self, register: str | None = None) -> list[UnappliedWriteOff]:
+        self.conn.row_factory = sqlite3.Row
+        if register is None:
+            cur = self.conn.execute("SELECT * FROM unapplied_write_off ORDER BY write_off_date ASC, id ASC")
+        else:
+            cur = self.conn.execute(
+                "SELECT * FROM unapplied_write_off WHERE register=? ORDER BY write_off_date ASC, id ASC",
+                (register,),
+            )
+        return [self._unapplied_write_off_from_row(r) for r in cur.fetchall()]
+
+    def get_unapplied_write_off_by_id(self, write_off_id: int) -> UnappliedWriteOff | None:
+        self.conn.row_factory = sqlite3.Row
+        r = self.conn.execute("SELECT * FROM unapplied_write_off WHERE id=?", (write_off_id,)).fetchone()
+        return self._unapplied_write_off_from_row(r) if r is not None else None
+
+    _UNAPPLIED_WRITE_OFF_EDITABLE_COLUMNS = ["amount", "reason", "write_off_date"]
+
+    def edit_unapplied_write_off(
+        self, write_off_id: int, edit_reason: str, edited_by: str, edited_at: datetime,
+        **changes: Decimal | date | str,
+    ) -> int:
+        """Same mutate-in-place mechanics as edit_misc_adjustment, reusing
+        the same generic register_row_audit machinery - `register`/
+        `row_id` are never editable (that's this write-off's own target
+        identity, not a correctable field).
+        """
+        before = self._fetch_row_dict("unapplied_write_off", write_off_id)
+        if before is None:
+            raise ValueError(f"No unapplied_write_off row with id={write_off_id}")
+        unknown = set(changes) - set(self._UNAPPLIED_WRITE_OFF_EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"Not an editable field: {', '.join(sorted(unknown))}")
+        if not changes:
+            raise ValueError("Nothing to update - every field matches its current value.")
+
+        def _serialize(col: str, value) -> str:
+            if col == "write_off_date":
+                return value.isoformat()
+            return str(value)
+
+        serialized = {col: _serialize(col, value) for col, value in changes.items()}
+        set_clause = ", ".join(f"{col}=?" for col in serialized)
+        self.conn.execute(
+            f"UPDATE unapplied_write_off SET {set_clause} WHERE id=?", (*serialized.values(), write_off_id)
+        )
+        after = dict(before, **serialized)
+        branch_id, voucher_number, party_id = self._unapplied_write_off_target_identity(
+            before["register"], before["row_id"]
+        )
+        audit_id = self._record_register_audit(
+            "unapplied_write_off", "EDIT", write_off_id, branch_id, voucher_number, party_id,
+            [before], [after], edit_reason, edited_by, edited_at,
+        )
+        self.conn.commit()
+        return audit_id
+
+    def delete_unapplied_write_off(self, write_off_id: int, reason: str, deleted_by: str, deleted_at: datetime) -> int:
+        before = self._fetch_row_dict("unapplied_write_off", write_off_id)
+        if before is None:
+            raise ValueError(f"No unapplied_write_off row with id={write_off_id}")
+        branch_id, voucher_number, party_id = self._unapplied_write_off_target_identity(
+            before["register"], before["row_id"]
+        )
+        self.conn.execute("DELETE FROM unapplied_write_off WHERE id=?", (write_off_id,))
+        audit_id = self._record_register_audit(
+            "unapplied_write_off", "DELETE", write_off_id, branch_id, voucher_number, party_id,
             [before], None, reason, deleted_by, deleted_at,
         )
         self.conn.commit()
@@ -1864,13 +1990,16 @@ class Store:
     _MISC_ADJUSTMENT_AUDIT_COLUMNS = [
         "branch_id", "voucher_number", "party_id", "amount", "reason", "adjusted_by", "adjustment_date",
     ]
+    # Unapplied Write-Off's own audit columns - same slot-in as Misc
+    # Adjustment above, just targeting a CN/RJ row instead of an invoice.
+    _UNAPPLIED_WRITE_OFF_AUDIT_COLUMNS = ["register", "row_id", "amount", "reason", "adjusted_by", "write_off_date"]
     _AUDIT_TABLE_BY_REGISTER = {
         "sales_dn": "sales_dn_register", "credit_note": "credit_note_register", "receipt_journal": "receipt_journal_register",
-        "misc_adjustment": "misc_adjustment",
+        "misc_adjustment": "misc_adjustment", "unapplied_write_off": "unapplied_write_off",
     }
     _AUDIT_COLUMNS_BY_REGISTER = {
         "sales_dn": _SALES_DN_AUDIT_COLUMNS, "credit_note": _CREDIT_NOTE_AUDIT_COLUMNS, "receipt_journal": _RECEIPT_JOURNAL_AUDIT_COLUMNS,
-        "misc_adjustment": _MISC_ADJUSTMENT_AUDIT_COLUMNS,
+        "misc_adjustment": _MISC_ADJUSTMENT_AUDIT_COLUMNS, "unapplied_write_off": _UNAPPLIED_WRITE_OFF_AUDIT_COLUMNS,
     }
 
     # Sales & DN's own editable field whitelist (client's call: money/

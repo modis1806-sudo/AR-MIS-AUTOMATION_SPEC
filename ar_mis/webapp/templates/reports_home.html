@@ -73,5 +73,11 @@
     <p>Every one-off adjustment recorded against a specific invoice from the Sales &amp; DN Register — a real netting Tally itself reflects through a voucher type this app never parses for the Sundry Debtor side (e.g. a Purchase voucher offset against a receivable). Who, when, why, and how much, for every one ever made.</p>
     <a class="btn" href="{{ url_for('misc_adjustment_register_report') }}">Open Misc Adjustment Register</a>
   </div>
+
+  <div class="card">
+    <h2>Unapplied Write-Off Register</h2>
+    <p>Every write-off recorded against a Credit Note or Receipt/Journal line sitting unapplied — for a real Tally entry that already absorbed it through a voucher type this app never parses. A different mechanic from Misc Adjustment: this never touches the TB Cross-Check, only the Unapplied Cash/CN totals.</p>
+    <a class="btn" href="{{ url_for('unapplied_write_off_register_report') }}">Open Unapplied Write-Off Register</a>
+  </div>
 </div>
 {% endblock %}

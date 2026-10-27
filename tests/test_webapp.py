@@ -5350,6 +5350,274 @@ def test_checker_cannot_edit_or_delete_a_misc_adjustment(roleless_client):
     assert adj.amount == Decimal("400.00")  # untouched by either attempt
 
 
+# ---- Unapplied Write-Off (client's explicit ask: a separate mechanic from
+# Misc Adjustment, for a CN/RJ row's own stuck unapplied balance) ---------
+
+
+def _seed_unapplied_cn_row(client, voucher_number="CN/1", party_id="ACME", cn_amount=Decimal("500.00")):
+    from ar_mis.models import CreditNoteRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_credit_note_row(
+        CreditNoteRegisterRow(
+            branch_id="KOL", cn_date=date(2026, 4, 1), voucher_number=voucher_number, party_id=party_id,
+            cn_amount=cn_amount, bill_allocation_reference=None,
+        )
+    )
+    row_id = store.all_credit_note_rows("KOL")[0].id
+    store.close()
+    return row_id
+
+
+def _seed_unapplied_rj_row(client, voucher_number="R/1", party_id="ACME", amount=Decimal("500.00")):
+    from ar_mis.models import ReceiptJournalRegisterRow
+    from ar_mis.storage import Store
+
+    store = Store(client.application.config["DB_PATH"])
+    store.append_receipt_journal_rows(
+        [
+            ReceiptJournalRegisterRow(
+                branch_id="KOL", txn_date=date(2026, 4, 1), voucher_type="Receipt",
+                voucher_number=voucher_number, party_id=party_id, amount=amount, target_doc_no=None,
+            )
+        ]
+    )
+    row_id = store.all_receipt_journal_rows("KOL")[0].id
+    store.close()
+    return row_id
+
+
+def test_credit_note_write_off_reduces_unapplied_amount(client):
+    row_id = _seed_unapplied_cn_row(client, cn_amount=Decimal("500.00"))
+    resp = client.post(
+        "/registers/credit-notes/write-off",
+        data={
+            "as_of": "2026-06-01", "row_id": str(row_id), "amount": "300.00",
+            "write_off_date": "2026-05-01", "reason": "Absorbed by Journal JV/12 in Tally",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Write-off of" in resp.data
+
+    from ar_mis.registers import compute_unapplied_cn_by_party
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    cn_rows = store.all_credit_note_rows("KOL")
+    write_offs = store.all_unapplied_write_offs("credit_note")
+    store.close()
+    assert compute_unapplied_cn_by_party(cn_rows, write_offs) == {"ACME": Decimal("200.00")}
+
+
+def test_credit_note_write_off_rejects_amount_over_balance(client):
+    row_id = _seed_unapplied_cn_row(client, cn_amount=Decimal("500.00"))
+    resp = client.post(
+        "/registers/credit-notes/write-off",
+        data={
+            "as_of": "2026-06-01", "row_id": str(row_id), "amount": "900.00",
+            "write_off_date": "2026-05-01", "reason": "Too much",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"over-write it off" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.all_unapplied_write_offs("credit_note") == []
+    store.close()
+
+
+def test_credit_note_write_off_never_affects_tb_closing():
+    # The whole point of this being a separate mechanic from Misc
+    # Adjustment: the CN's own real amount is already counted in TB
+    # Cross-Check's closing regardless of classification, so a write-
+    # off here must never change that figure.
+    from ar_mis.models import CreditNoteRegisterRow, CustomerMasterRecord, UnappliedWriteOff
+    from ar_mis.rollforward import compute_party_closings_as_of
+    from ar_mis.storage import Store
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Store(f"{tmp}/t.db")
+        store.upsert_customer_master(CustomerMasterRecord("ACME", "ACME", "KOL", Decimal("0.00")))
+        store.append_credit_note_row(
+            CreditNoteRegisterRow(
+                branch_id="KOL", cn_date=date(2026, 4, 1), voucher_number="CN/1", party_id="ACME",
+                cn_amount=Decimal("500.00"), bill_allocation_reference=None,
+            )
+        )
+        row_id = store.all_credit_note_rows("KOL")[0].id
+        before = compute_party_closings_as_of(store, "KOL", {"ACME"}, date(2026, 6, 1))["ACME"].closing_computed
+
+        store.record_unapplied_write_off(
+            UnappliedWriteOff(
+                register="credit_note", row_id=row_id, amount=Decimal("500.00"), reason="Absorbed by JV/3",
+                adjusted_by="Maker", write_off_date=date(2026, 5, 1),
+            )
+        )
+        after = compute_party_closings_as_of(store, "KOL", {"ACME"}, date(2026, 6, 1))["ACME"].closing_computed
+        store.close()
+        assert before == after
+
+
+def _record_a_write_off(client, register, row_id, amount="300.00", write_off_date="2026-05-01", reason="Absorbed by JV/3 in Tally"):
+    path = "/registers/credit-notes/write-off" if register == "credit_note" else "/registers/receipts-journals/write-off"
+    client.post(
+        path,
+        data={"as_of": "2026-06-01", "row_id": str(row_id), "amount": amount, "write_off_date": write_off_date, "reason": reason},
+        follow_redirects=True,
+    )
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    wo_id = store.all_unapplied_write_offs(register)[-1].id
+    store.close()
+    return wo_id
+
+
+def test_credit_note_write_off_edit_updates_amount(client):
+    row_id = _seed_unapplied_cn_row(client, cn_amount=Decimal("500.00"))
+    wo_id = _record_a_write_off(client, "credit_note", row_id, amount="300.00")
+
+    resp = client.post(
+        "/registers/credit-notes/write-off/edit",
+        data={
+            "as_of": "2026-06-01", "write_off_id": str(wo_id), "wo_amount": "500.00",
+            "wo_write_off_date": "2026-05-01", "wo_reason": "Actually the full amount was absorbed",
+            "wo_edit_reason": "Found the rest",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"updated" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    wo = store.get_unapplied_write_off_by_id(wo_id)
+    store.close()
+    assert wo.amount == Decimal("500.00")
+
+
+def test_credit_note_write_off_delete_removes_it(client):
+    row_id = _seed_unapplied_cn_row(client, cn_amount=Decimal("500.00"))
+    wo_id = _record_a_write_off(client, "credit_note", row_id, amount="300.00")
+
+    resp = client.post(
+        "/registers/credit-notes/write-off/delete",
+        data={"as_of": "2026-06-01", "write_off_id": str(wo_id), "wo_delete_reason": "mistake"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"deleted" in resp.data
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    assert store.get_unapplied_write_off_by_id(wo_id) is None
+    store.close()
+
+
+def test_credit_note_write_off_edit_is_undoable_via_audit_log(client):
+    row_id = _seed_unapplied_cn_row(client, cn_amount=Decimal("500.00"))
+    wo_id = _record_a_write_off(client, "credit_note", row_id, amount="300.00")
+    client.post(
+        "/registers/credit-notes/write-off/edit",
+        data={
+            "as_of": "2026-06-01", "write_off_id": str(wo_id), "wo_amount": "500.00",
+            "wo_write_off_date": "2026-05-01", "wo_reason": "corrected", "wo_edit_reason": "typo",
+        },
+        follow_redirects=True,
+    )
+
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    edit_audit = [e for e in store.all_register_row_audit() if e.register == "unapplied_write_off" and e.action == "EDIT"][0]
+    store.close()
+
+    resp = client.post("/registers/audit-log/undo", data={"audit_ids": [str(edit_audit.id)]}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Undone 1 of 1" in resp.data
+
+    store2 = Store(client.application.config["DB_PATH"])
+    wo = store2.get_unapplied_write_off_by_id(wo_id)
+    store2.close()
+    assert wo.amount == Decimal("300.00")  # restored
+
+
+def test_receipt_journal_write_off_reduces_unapplied_balance(client):
+    row_id = _seed_unapplied_rj_row(client, amount=Decimal("500.00"))
+    resp = client.post(
+        "/registers/receipts-journals/write-off",
+        data={
+            "as_of": "2026-06-01", "row_id": str(row_id), "amount": "200.00",
+            "write_off_date": "2026-05-01", "reason": "Refunded via PY/8 in Tally",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Write-off of" in resp.data
+
+    from ar_mis.registers import compute_unapplied_cash_by_party
+    from ar_mis.storage import Store
+    store = Store(client.application.config["DB_PATH"])
+    rj_rows = store.all_receipt_journal_rows("KOL")
+    write_offs = store.all_unapplied_write_offs("receipt_journal")
+    store.close()
+    assert compute_unapplied_cash_by_party(rj_rows, write_offs) == {"ACME": Decimal("300.00")}
+
+
+def test_checker_cannot_record_edit_or_delete_a_write_off(roleless_client):
+    roleless_client.post("/choose-role", data={"role": "maker"})
+    row_id = _seed_unapplied_cn_row(roleless_client, cn_amount=Decimal("500.00"))
+    wo_id = _record_a_write_off(roleless_client, "credit_note", row_id, amount="300.00")
+    roleless_client.post("/choose-role", data={"role": "checker"})
+
+    resp1 = roleless_client.post(
+        "/registers/credit-notes/write-off",
+        data={"as_of": "2026-06-01", "row_id": str(row_id), "amount": "50.00", "write_off_date": "2026-05-01", "reason": "x"},
+        follow_redirects=True,
+    )
+    assert b"isn&#39;t available for your role" in resp1.data or b"isn't available for your role" in resp1.data
+
+    resp2 = roleless_client.post(
+        "/registers/credit-notes/write-off/edit",
+        data={
+            "as_of": "2026-06-01", "write_off_id": str(wo_id), "wo_amount": "400.00",
+            "wo_write_off_date": "2026-05-01", "wo_reason": "x", "wo_edit_reason": "x",
+        },
+        follow_redirects=True,
+    )
+    assert b"isn&#39;t available for your role" in resp2.data or b"isn't available for your role" in resp2.data
+
+    resp3 = roleless_client.post(
+        "/registers/credit-notes/write-off/delete",
+        data={"as_of": "2026-06-01", "write_off_id": str(wo_id), "wo_delete_reason": "x"},
+        follow_redirects=True,
+    )
+    assert b"isn&#39;t available for your role" in resp3.data or b"isn't available for your role" in resp3.data
+
+    from ar_mis.storage import Store
+    store = Store(roleless_client.application.config["DB_PATH"])
+    wo = store.get_unapplied_write_off_by_id(wo_id)
+    store.close()
+    assert wo.amount == Decimal("300.00")  # untouched by any of the three attempts
+
+
+def test_unapplied_write_off_register_report_lists_recorded_write_offs(client):
+    row_id = _seed_unapplied_cn_row(client, voucher_number="CN/9", cn_amount=Decimal("500.00"))
+    _record_a_write_off(client, "credit_note", row_id, amount="300.00", reason="Absorbed by JV/12 in Tally")
+
+    resp = client.get("/reports/unapplied-write-offs")
+    assert resp.status_code == 200
+    assert b"CN/9" in resp.data
+    assert b"Absorbed by JV/12 in Tally" in resp.data
+    assert b"300.00" in resp.data
+
+    resp_home = client.get("/reports")
+    assert resp_home.status_code == 200
+    assert b"Unapplied Write-Off Register" in resp_home.data
+
+
 def _sales_dn_edit_form(client, row_id, as_of="2026-04-07", reason="test", **overrides):
     # Mirrors the real Edit form: every editable field pre-filled with
     # the row's own current value, so a real submission only ever

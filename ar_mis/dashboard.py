@@ -142,6 +142,7 @@ def compute_ar_snapshot(
     as_of: date,
     tally_closing_by_party: dict[tuple[str, str], Decimal],
     misc_adjustment_rows: list[MiscAdjustment] = (),
+    unapplied_write_offs: list = (),
 ) -> ARSnapshot:
     """`customer_masters` is keyed (party_id, branch_id), matching
     SalesDNRegisterRow's own (party_id, branch_id) fields - needed for
@@ -208,8 +209,8 @@ def compute_ar_snapshot(
         fy = financial_year_label(row.invoice_date)
         open_ar_by_fy[fy] = open_ar_by_fy.get(fy, Decimal("0.00")) + pos.open_amount
 
-    unapplied_cash = sum(compute_unapplied_cash_by_party(receipt_journal_rows).values(), Decimal("0.00"))
-    unapplied_cn = sum(compute_unapplied_cn_by_party(credit_note_rows).values(), Decimal("0.00"))
+    unapplied_cash = sum(compute_unapplied_cash_by_party(receipt_journal_rows, unapplied_write_offs).values(), Decimal("0.00"))
+    unapplied_cn = sum(compute_unapplied_cn_by_party(credit_note_rows, unapplied_write_offs).values(), Decimal("0.00"))
 
     overdue_ar = Decimal("0.00")
     overdue_by_bucket: dict[str, Decimal] = {}

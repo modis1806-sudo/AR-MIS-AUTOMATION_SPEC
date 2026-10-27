@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Unapplied Write-Off Register{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+{% include "_back_to_reports.html" %}
+<h1>Unapplied Write-Off Register</h1>
+<p class="subtitle">Every write-off ever recorded against an Unapplied Credit Note or Receipt/Journal line — a deliberate, logged reduction for a real Tally entry that already absorbed it through a voucher type this app never parses (e.g. a Journal or Payment voucher). Recorded from the row's own "Write off" control on the <a href="{{ url_for('credit_note_register') }}">Credit Note</a> or <a href="{{ url_for('receipt_journal_register') }}">Receipt &amp; Journal Register</a>, where it's also subtracted from that line's own Unapplied total — never the TB Cross-Check, which already counts this line's real amount regardless of classification. This page is the audit trail, not a separate working figure.</p>
+
+{% include "_freshness.html" %}
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Register</th><th>Branch</th><th>Voucher No.</th><th>Party</th><th>Effective Date</th><th>Amount</th><th>Reason</th><th>Adjusted By</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    {% set w = r.write_off %}
+    <tr>
+      <td>{{ r.register_label }}</td>
+      <td>{{ r.branch_id }}</td>
+      <td>
+        {% if w.register == "credit_note" %}<a href="{{ url_for('credit_note_register', q=r.voucher_number) }}">{{ r.voucher_number }}</a>
+        {% else %}<a href="{{ url_for('receipt_journal_register', q=r.voucher_number) }}">{{ r.voucher_number }}</a>{% endif %}
+      </td>
+      <td>{{ r.party_id }}</td>
+      <td>{{ w.write_off_date }}</td>
+      <td>{{ w.amount|inr }}</td>
+      <td>{{ w.reason }}</td>
+      <td>{{ w.adjusted_by }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="empty">No write-offs recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
